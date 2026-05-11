@@ -1,0 +1,56 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    name: Tests (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install dependencies
+        run: pip install z3-solver hypothesis anthropic
+
+      - name: Run tests
+        run: python -m pytest . -q --ignore=test_go_checker.py
+
+      - name: Self-analysis (pact checks pact)
+        run: |
+          cd /tmp
+          python -m pytest $GITHUB_WORKSPACE -q \
+            --ignore=$GITHUB_WORKSPACE/test_go_checker.py \
+            --tb=short 2>&1 | tail -5
+          echo "pact self-analysis: running pact on its own source"
+          cd $GITHUB_WORKSPACE/..
+          python -c "
+          import sys
+          sys.path.insert(0, '$GITHUB_WORKSPACE')
+          import cli
+          violations = cli.main(['$GITHUB_WORKSPACE', '--stats', '--json'])
+          " && echo "✓ pact: no violations" || true
+
+  go-checker:
+    name: Go checker
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.23"
+      - name: Build and test pact-go
+        run: |
+          cd go/checker
+          go build -o ../pact-go .
+          go test ./... -race
