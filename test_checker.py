@@ -568,6 +568,29 @@ def test_objects_get_not_flagged_as_optional(tmp_path):
     assert not v, "Model.objects.get() result must not be flagged as optional"
 
 
+def test_chained_queryset_get_not_flagged_as_optional(tmp_path):
+    # Corpus: pythonzm/Ops — server_obj = ServerAssets.objects.select_related('assets').get(id=pk)
+    # Chained queryset .select_related().get(), .filter().get(), etc. also raise DoesNotExist.
+    _write_src(
+        tmp_path,
+        "views.py",
+        """
+        from django.db import models
+
+        def get_server(pk):
+            server = Server.objects.select_related('assets').get(id=pk)
+            return server.assets.ip
+
+        def get_filtered(pk):
+            obj = MyModel.objects.filter(active=True).get(id=pk)
+            return obj.name
+        """,
+    )
+    violations = check_codebase(tmp_path)
+    v = [v for v in violations if v.context == "optional_dereference"]
+    assert not v, "chained queryset .select_related().get() result must not be flagged as optional"
+
+
 # ---------------------------------------------------------------------------
 # mutable_default_arg mode
 # ---------------------------------------------------------------------------

@@ -220,13 +220,15 @@ def _scan_file_optional_deref(path: str) -> list[FailureEvidence]:
             ):
                 call_args = node.value.args
                 if node.value.func.attr == "get":
-                    # Django ORM: Model.objects.get() raises DoesNotExist, never returns None.
-                    # Detect via receiver chain ending in `.objects`.
+                    # Django ORM: raises DoesNotExist, never returns None.
                     recv = node.value.func.value
-                    if (
-                        isinstance(recv, _ast.Attribute)
-                        and recv.attr == "objects"
-                    ):
+                    # Direct: Model.objects.get(...)
+                    if isinstance(recv, _ast.Attribute) and recv.attr == "objects":
+                        return
+                    # Chained queryset: Model.objects.select_related(...).get(...),
+                    # .filter().get(), .prefetch_related(...).get(), etc.
+                    # dict.get() is never called on a chained method result.
+                    if isinstance(recv, _ast.Call):
                         return
                     # .get(key, non-None-default) — return type is str, not Optional
                     if len(call_args) >= 2 and not (
