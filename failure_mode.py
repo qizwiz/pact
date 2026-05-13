@@ -220,6 +220,14 @@ def _scan_file_optional_deref(path: str) -> list[FailureEvidence]:
             ):
                 call_args = node.value.args
                 if node.value.func.attr == "get":
+                    # Django ORM: Model.objects.get() raises DoesNotExist, never returns None.
+                    # Detect via receiver chain ending in `.objects`.
+                    recv = node.value.func.value
+                    if (
+                        isinstance(recv, _ast.Attribute)
+                        and recv.attr == "objects"
+                    ):
+                        return
                     # .get(key, non-None-default) — return type is str, not Optional
                     if len(call_args) >= 2 and not (
                         isinstance(call_args[1], _ast.Constant)
@@ -502,6 +510,18 @@ BARE_EXCEPT = FailureMode(
 _SAFE_SAVE_RECEIVER_KINDS = frozenset({"form", "serializer", "fs", "storage", "file"})
 
 
+@functools.lru_cache(maxsize=None)
+def _file_imports_django(path: str) -> bool:
+    """Return True if the file contains a Django import."""
+    try:
+        from pathlib import Path as _Path
+
+        src = _Path(path).read_text(encoding="utf-8", errors="replace")
+        return "from django" in src or "import django" in src
+    except OSError:
+        return False
+
+
 def _check_save_without_update_fields(
     call: CallSite,
     models: dict[str, ModelManifest],
@@ -510,6 +530,12 @@ def _check_save_without_update_fields(
     if not call.callee_name.endswith(".save"):
         return []
     if "update_fields" in call.provided_kwargs:
+        return []
+    # Non-Django files cannot have Django model .save() calls.
+    if not _file_imports_django(call.file):
+        return []
+    # Positional args mean this is PIL/file/custom .save(path, format, ...) not Django.
+    if call.positional_count >= 1 or call.has_var_args:
         return []
     # Split on `_` and check the last component: `user_form` → `form`, `serializer` → `serializer`.
     # This correctly skips form/serializer/storage saves (intentional full saves)

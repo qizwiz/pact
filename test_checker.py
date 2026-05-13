@@ -428,6 +428,78 @@ def test_profile_save_is_flagged(tmp_path):
     ), "profile.save() should be flagged — 'profile' ends with 'file' but is not a file object"
 
 
+def test_non_django_save_not_flagged(tmp_path):
+    # Corpus: ragas dataset.save(), PIL img.save(path) — not Django models.
+    # Fix: require Django import in file before flagging .save().
+    _write_src(
+        tmp_path,
+        "pipeline.py",
+        """
+        def run(dataset, img, path):
+            dataset.save()
+            img.save(path)
+            experiment.save()
+        """,
+    )
+    violations = check_codebase(tmp_path)
+    v = [v for v in violations if v.context == "save_without_update_fields"]
+    assert not v, "non-Django .save() calls must not be flagged as missing update_fields"
+
+
+def test_pil_save_with_positional_not_flagged(tmp_path):
+    # img.save("path.png") — positional arg distinguishes from Django .save().
+    _write_src(
+        tmp_path,
+        "render.py",
+        """
+        from django.db import models
+
+        def export(img, path):
+            img.save(path)
+        """,
+    )
+    violations = check_codebase(tmp_path)
+    v = [v for v in violations if v.context == "save_without_update_fields"]
+    assert not v, "save(path) with positional arg must not be flagged"
+
+
+def test_django_save_without_update_fields_still_flagged(tmp_path):
+    # Django model .save() in a Django file — must still be flagged.
+    _write_src(
+        tmp_path,
+        "views.py",
+        """
+        from django.db import models
+
+        def update_profile(profile, name):
+            profile.name = name
+            profile.save()
+        """,
+    )
+    violations = check_codebase(tmp_path)
+    v = [v for v in violations if v.context == "save_without_update_fields"]
+    assert v, "Django .save() without update_fields must still be flagged in Django files"
+
+
+def test_objects_get_not_flagged_as_optional(tmp_path):
+    # Corpus: EvalAI — token = JwtToken.objects.get(user=user); token.refresh_token
+    # Model.objects.get() raises DoesNotExist, never returns None.
+    _write_src(
+        tmp_path,
+        "views.py",
+        """
+        from django.db import models
+
+        def get_token(user):
+            token = Token.objects.get(user=user)
+            return token.key
+        """,
+    )
+    violations = check_codebase(tmp_path)
+    v = [v for v in violations if v.context == "optional_dereference"]
+    assert not v, "Model.objects.get() result must not be flagged as optional"
+
+
 # ---------------------------------------------------------------------------
 # mutable_default_arg mode
 # ---------------------------------------------------------------------------
