@@ -607,6 +607,10 @@ def _scan_file_missing_await(path: str) -> list[FailureEvidence]:
     method_async: set[str] = set()
     for node in _ast.walk(tree):
         if isinstance(node, _ast.AsyncFunctionDef):
+            # Async generators (contain yield) return AsyncGenerator, not a coroutine.
+            # Calling them without await is correct; they're consumed via `async for`.
+            if any(isinstance(n, (_ast.Yield, _ast.YieldFrom)) for n in _ast.walk(node)):
+                continue
             # Heuristic: if the first argument is self/cls, it's a method
             args = node.args.args
             if args and args[0].arg in ("self", "cls"):
@@ -685,6 +689,12 @@ def _scan_file_missing_await(path: str) -> list[FailureEvidence]:
         if isinstance(parent, _ast.Call):
             if isinstance(parent.func, _ast.Attribute) and parent.func.attr == "append":
                 return True
+        # task = coro() — coroutine stored for later scheduling (ensure_future, gather)
+        # The bug pattern is an expression statement (parent is Expr), not an assignment.
+        if isinstance(parent, (_ast.Assign, _ast.AnnAssign, _ast.AugAssign)):
+            return True
+        if isinstance(parent, _ast.NamedExpr):
+            return True
         return False
 
     evidence = []

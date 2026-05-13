@@ -650,6 +650,68 @@ def test_async_with_context_manager_not_flagged(tmp_path):
     assert not v, "async with self._cursor() must not be flagged as missing await"
 
 
+def test_async_generator_not_flagged_as_missing_await(tmp_path):
+    # async def alazy_load(self): yield ... returns AsyncGenerator, not a coroutine.
+    # Corpus: open-webui, langchain-ai/langchain — `async for x in self.alazy_load()`.
+    _write_src(
+        tmp_path,
+        "loader.py",
+        """
+        class Loader:
+            async def alazy_load(self):
+                yield 1
+                yield 2
+
+            async def aload(self):
+                return [doc async for doc in self.alazy_load()]
+        """,
+    )
+    violations = check_codebase(tmp_path)
+    v = [v for v in violations if v.context == "missing_await"]
+    assert not v, "async generator called via async for must not be flagged"
+
+
+def test_coroutine_assigned_to_task_not_flagged(tmp_path):
+    # task = ahandle_event(...) is intentional scheduling; bug pattern is bare expr.
+    # Corpus: langchain-ai/langchain callbacks/manager.py — task = ahandle_event(...)
+    _write_src(
+        tmp_path,
+        "callbacks.py",
+        """
+        import asyncio
+
+        async def ahandle_event(handlers, name):
+            for h in handlers:
+                await h(name)
+
+        async def dispatch(handlers):
+            task = ahandle_event(handlers, "on_start")
+            asyncio.ensure_future(task)
+        """,
+    )
+    violations = check_codebase(tmp_path)
+    v = [v for v in violations if v.context == "missing_await"]
+    assert not v, "coroutine assigned to variable must not be flagged as missing await"
+
+
+def test_bare_unawaited_coroutine_still_flagged(tmp_path):
+    # Expression-statement call with no assignment IS a genuine bug.
+    _write_src(
+        tmp_path,
+        "buggy.py",
+        """
+        async def save_data():
+            pass
+
+        async def run():
+            save_data()  # genuine bug: coroutine discarded
+        """,
+    )
+    violations = check_codebase(tmp_path)
+    v = [v for v in violations if v.context == "missing_await"]
+    assert v, "unawaited bare coroutine call must still be flagged"
+
+
 # ---------------------------------------------------------------------------
 # format_arg_mismatch mode
 # ---------------------------------------------------------------------------
