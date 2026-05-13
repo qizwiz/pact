@@ -7,7 +7,6 @@ e.g., to know whether a value that may be None can reach a NOT NULL field.
 """
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Optional
 
 from .extractor import CallSite, FunctionManifest
 

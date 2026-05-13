@@ -18,13 +18,13 @@ from dataclasses import dataclass, field
 from typing import Callable, Optional
 
 try:
-    from z3 import BoolVal, Solver, sat, unsat, Bool, And, Or, Not, Implies
+    from z3 import BoolVal, Solver, sat, unsat, Bool, And, Or, Not, Implies  # noqa: F401
     _HAS_Z3 = True
 except ImportError:
     _HAS_Z3 = False
 
 from .encoder import check_model_create
-from .extractor import CallSite, FieldConstraint, FunctionManifest, ModelManifest
+from .extractor import CallSite, FunctionManifest, ModelManifest
 
 
 @dataclass

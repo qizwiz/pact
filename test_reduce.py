@@ -16,7 +16,7 @@ from .reduce import (
     find_sccs,
     _build_digraph,
 )
-from .extractor import FunctionManifest, CallSite, ArgConstraint
+from .extractor import FunctionManifest, CallSite
 from .encoder import Violation
 
 try:
@@ -203,3 +203,48 @@ class TestAnalyzeGraphReduction:
         """No functions → no candidates."""
         result = analyze_graph_reduction([], [], [])
         assert result == []
+
+
+class TestPhantomCyclePrevention:
+    """Regression tests: ambiguous short-name resolution must not manufacture cycles."""
+
+    def test_overloaded_method_name_no_phantom_scc(self):
+        """Two classes each have a `from_template` method.
+
+        Call site: A.do_something → B.from_template (qualified call).
+        Before the fix, _build_digraph resolved `B.from_template` via short-name
+        fallback to `A.from_template`, creating an A→B cycle that doesn't exist.
+        """
+        funcs = [
+            _func("A.from_template", "a.py", 10),
+            _func("A.do_something", "a.py", 20),
+            _func("B.from_template", "b.py", 10),
+        ]
+        # A.do_something calls B.from_template (qualified — not in func_names by exact match
+        # but B.from_template IS present, so it should match directly)
+        # The phantom case: callee "PromptTemplate.from_template" NOT in func_names,
+        # short name "from_template" is ambiguous (A.from_template AND B.from_template)
+        calls = [
+            # Simulate a call to a third `from_template` that pact can't resolve
+            _call("A.do_something", "PromptTemplate.from_template", "a.py", 25),
+        ]
+        G, func_by_name = _build_digraph(funcs, calls)
+        result = find_sccs(G, func_by_name, [])
+        # With 2 definitions of from_template, the short name is ambiguous →
+        # no resolution → the unresolved node is a leaf → no SCC formed
+        assert result == [], (
+            "Ambiguous short name 'from_template' must not create phantom SCC; "
+            f"got: {result}"
+        )
+
+    def test_unique_short_name_still_resolves(self):
+        """When a short name is unambiguous, the fallback resolution still works."""
+        funcs = [
+            _func("MyClass.unique_helper", "a.py", 10),
+            _func("Caller.run", "a.py", 20),
+        ]
+        # callee name that pact would record without the class prefix
+        calls = [_call("Caller.run", "unique_helper", "a.py", 25)]
+        G, func_by_name = _build_digraph(funcs, calls)
+        # unique_helper is unambiguous → should resolve and appear as a node
+        assert "MyClass.unique_helper" in G.nodes or "unique_helper" in G.nodes

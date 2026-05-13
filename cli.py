@@ -12,8 +12,7 @@ from .refactor import suggest_refactors
 from .specgen import spec_gen
 from .speccomplete import spec_complete
 from .visualize import (
-    format_pr_comment, render_mermaid, render_reduction_sequence,
-    render_test_coverage_mermaid,
+    format_pr_comment, render_mermaid, render_test_coverage_mermaid,
 )
 
 

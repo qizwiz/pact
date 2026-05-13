@@ -7,19 +7,15 @@ sequence frame count, and PR comment formatting.
 
 from __future__ import annotations
 
-import textwrap
-from pathlib import Path
 
-import pytest
 
 from .encoder import Violation
-from .extractor import ArgConstraint, CallSite, FunctionManifest
+from .extractor import CallSite, FunctionManifest
 from .refactor import RefactorSuggestion
 from .visualize import (
     format_pr_comment,
     render_mermaid,
     render_reduction_sequence,
-    _score,
     _style_class,
 )
 

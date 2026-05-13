@@ -32,17 +32,14 @@ Requirements: requests, z3-solver (same as pact)
 from __future__ import annotations
 
 import argparse
-import base64
 import json
 import sys
 import time
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Iterator, Optional
 
 import requests
 
-from .checker import check_codebase
 from .extractor import extract_from_file
 
 
@@ -208,7 +205,8 @@ def scan_repo(
             continue
 
         # Write to a temp path for the extractor (needs a real file)
-        import tempfile, os
+        import tempfile
+        import os
         with tempfile.NamedTemporaryFile(
             mode="w", suffix=".py", delete=False, encoding="utf-8"
         ) as tmp:
@@ -219,10 +217,7 @@ def scan_repo(
             from pathlib import Path as _Path
             models, functions, calls = extract_from_file(_Path(tmp_path))
 
-            from .checker import check_codebase
             from .failure_mode import DEFAULT_MODES
-            from .extractor import ModelManifest, FunctionManifest
-            from .checker import check_codebase as _cc
 
             # Run failure mode checks on this single file
             model_index = {m.name: m for m in models}
@@ -259,7 +254,6 @@ def scan_repo(
                         if rec:
                             yield rec
 
-            all_files_set = {tmp_path}
             file_modes = [m for m in DEFAULT_MODES if m.file_check is not None]
             for mode in file_modes:
                 for ev in mode.file_check(tmp_path):  # type: ignore[misc]
@@ -361,7 +355,7 @@ def main(argv=None) -> int:
             out.close()
 
     # Summary
-    print(f"\n[pact] corpus scan complete", file=sys.stderr)
+    print("\n[pact] corpus scan complete", file=sys.stderr)
     print(f"  repos scanned : {stats['repos']}", file=sys.stderr)
     print(f"  violations    : {stats['violations']}", file=sys.stderr)
     if stats["by_mode"]:

@@ -11,14 +11,13 @@ from __future__ import annotations
 
 import json
 import subprocess
-import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from .failure_mode import FailureEvidence
-from .go_checker import _find_binary, _can_go_run, run_go_checker
+from .go_checker import _can_go_run, run_go_checker
 
 
 # ---------------------------------------------------------------------------

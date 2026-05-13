@@ -9,7 +9,6 @@ which is what cli.py actually calls.
 import textwrap
 from pathlib import Path
 
-import pytest
 
 from .checker import check_codebase, check_codebase_incremental
 
@@ -657,7 +656,7 @@ def test_bare_except_no_callsite_flagged(tmp_path):
 
 def test_incremental_unchanged_file_not_analyzed(tmp_path):
     """If models.py is unchanged, violations in its callers are not reported."""
-    models_file = _write_src(tmp_path, "models.py", """
+    _write_src(tmp_path, "models.py", """
         from django.db import models
         class Widget(models.Model):
             name = models.CharField(max_length=100)
@@ -683,7 +682,7 @@ def test_incremental_callee_change_marks_caller_dirty(tmp_path):
         def process(x, required_arg):
             return x + required_arg
     """)
-    caller_file = _write_src(tmp_path, "app.py", """
+    _write_src(tmp_path, "app.py", """
         from lib import process
         def run():
             process(1)  # missing required_arg
@@ -728,7 +727,7 @@ def test_incremental_full_match_when_all_changed(tmp_path):
         class Item(models.Model):
             sku = models.CharField(max_length=50)
     """)
-    caller = _write_src(tmp_path, "api.py", """
+    _write_src(tmp_path, "api.py", """
         from models import Item
         def make():
             Item.objects.create()  # missing sku

@@ -1,6 +1,5 @@
 """Tests for pact spec gen (specgen.py)."""
 
-import pytest
 from .specgen import synthesize
 
 

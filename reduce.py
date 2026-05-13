@@ -39,8 +39,7 @@ Usage
 from __future__ import annotations
 
 import collections
-from dataclasses import dataclass, field
-from typing import Optional
+from dataclasses import dataclass
 
 from .extractor import CallSite, FunctionManifest
 from .encoder import Violation
@@ -119,8 +118,17 @@ def _build_digraph(
     for cs in call_sites:
         src = cs.caller_name or "__root__"
         tgt = cs.callee_name
+        # Only resolve short names when the name is unique across the whole extracted
+        # scope — if there are multiple functions with the same short name (e.g.
+        # from_template on different classes), the fallback would collapse them into
+        # one node and manufacture phantom cycles.
         if tgt not in func_names:
-            tgt = short_to_qual.get(tgt.split(".")[-1], tgt)
+            short = tgt.split(".")[-1]
+            qual = short_to_qual.get(short)
+            # Only resolve if this short name is unambiguous (exactly one definition)
+            count = sum(1 for f in func_by_name if f.split(".")[-1] == short)
+            if qual and count == 1:
+                tgt = qual
         G.add_edge(src, tgt)
 
     return G, func_by_name

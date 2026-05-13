@@ -15,8 +15,6 @@ annotation.  Generated stubs are clearly marked with TODO comments.
 from __future__ import annotations
 
 import ast
-import re
-import textwrap
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
@@ -307,7 +305,7 @@ def _render(models: list[_Model], tasks: list[_Task], module_name: str) -> str:
             lines.append(f"  {v}{comma}  \\* {var_comments[v]}")
         lines.append("")
 
-    all_vars = ", ".join(f"<<{', '.join(var_names)}>>") if var_names else "<<>>"
+    ", ".join(f"<<{', '.join(var_names)}>>") if var_names else "<<>>"
 
     # TypeInvariant
     lines.append("TypeInvariant ==")
@@ -328,7 +326,7 @@ def _render(models: list[_Model], tasks: list[_Task], module_name: str) -> str:
                 v = _tla_var(model.name) + "s"
                 inv_name = _tla_ident("_".join(uc)) + "Unique"
                 field_tuple = ", ".join(f"r.{f}" for f in uc)
-                lines.append(f"\\* Derived from unique_together / UniqueConstraint")
+                lines.append("\\* Derived from unique_together / UniqueConstraint")
                 lines.append(f"{inv_name} ==")
                 lines.append(f"  \\A r1, r2 \\in {v} :")
                 lines.append(f"    r1 # r2 => <<{field_tuple.replace('r.', 'r1.')}>> # <<{field_tuple.replace('r.', 'r2.')}>>")
@@ -349,11 +347,11 @@ def _render(models: list[_Model], tasks: list[_Task], module_name: str) -> str:
         param_str = "".join(f", {_tla_ident(a)}" for a in task.args)
         lines.append(f"\\* Corresponds to: @shared_task {task.name}()")
         if task.has_cache_get and task.has_cache_set:
-            lines.append(f"\\* WARNING: non-atomic -- cache.get + cache.set is a split step.")
-            lines.append(f"\\* Model as two separate actions or use atomic Redis primitive.")
+            lines.append("\\* WARNING: non-atomic -- cache.get + cache.set is a split step.")
+            lines.append("\\* Model as two separate actions or use atomic Redis primitive.")
         lines.append(f"{action_name}({param_str.lstrip(', ')}) ==")
-        lines.append(f"  \\* TODO: specify precondition (ENABLED guard)")
-        lines.append(f"  /\\ TRUE")
+        lines.append("  \\* TODO: specify precondition (ENABLED guard)")
+        lines.append("  /\\ TRUE")
         if models:
             other_vars = [_tla_var(m.name) + "s" for m in models]
             lines.append(f"  /\\ UNCHANGED <<{', '.join(other_vars)}>>")
@@ -364,7 +362,7 @@ def _render(models: list[_Model], tasks: list[_Task], module_name: str) -> str:
         lines.append("Next ==")
         for i, task in enumerate(tasks):
             action_name = _tla_ident(task.name)
-            params = "".join(f", _{a}" for a in task.args)
+            "".join(f", _{a}" for a in task.args)
             quantified = "".join(f"\\E _{a} \\in STRING : " for a in task.args)
             prefix = "  \\/" if i > 0 else "  \\/",
             if task.args:
@@ -395,7 +393,7 @@ def _render(models: list[_Model], tasks: list[_Task], module_name: str) -> str:
     lines.append(f"vars == {vars_def}")
     lines.append("")
     lines.append("Spec ==")
-    lines.append(f"  Init")
+    lines.append("  Init")
     lines.append(f"  /\\ [][Next]_{vars_tuple}")
     if tasks:
         lines.append(f"  /\\ WF_{vars_tuple}(Next)  \\* TODO: refine liveness per action")

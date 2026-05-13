@@ -11,7 +11,6 @@ from __future__ import annotations
 import textwrap
 from pathlib import Path
 
-import pytest
 
 from .checker import check_codebase
 from .extractor import (

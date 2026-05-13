@@ -7,13 +7,13 @@ One Z3 formula per field encodes ALL constraints simultaneously:
 Z3 enumerates the violations — we don't write one checker per constraint class.
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Optional
 
 from .extractor import CallSite, FieldConstraint, FunctionManifest, ModelManifest
 
 try:
-    from z3 import (
+    from z3 import (  # noqa: F401
         And, Bool, Int, IntVal, Not, Or, Solver, String,
         Length, StringVal, sat, unsat,
     )

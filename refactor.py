@@ -26,14 +26,14 @@ Usage
 from __future__ import annotations
 
 import collections
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Optional
 
 from .encoder import Violation
-from .extractor import ArgConstraint, CallSite, FunctionManifest
+from .extractor import CallSite, FunctionManifest
 
 try:
-    from z3 import (
+    from z3 import (  # noqa: F401
         And, Bool, BoolVal, Not, Or, Solver, sat, unsat,
         Implies, BoolRef,
     )
