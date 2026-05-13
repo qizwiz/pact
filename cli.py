@@ -7,7 +7,7 @@ from pathlib import Path
 
 from .checker import check_codebase, check_codebase_incremental
 from .extractor import extract_from_codebase
-from .reduce import analyze_graph_reduction
+from .reduce import analyze_graph_reduction, apply_full_reduction
 from .refactor import suggest_refactors
 from .specgen import spec_gen
 from .speccomplete import spec_complete
@@ -213,6 +213,14 @@ def main(argv=None) -> int:
         help="Max simplification targets to show in --reduce output (default: 20)",
     )
     p.add_argument(
+        "--reduce-apply",
+        action="store_true",
+        help=(
+            "Apply the full three-stage reduction pipeline (SCC contraction → "
+            "dead-node pruning → transitive reduction) and show before/after stats"
+        ),
+    )
+    p.add_argument(
         "--graph",
         action="store_true",
         help="Print the violation call graph as a Mermaid flowchart",
@@ -332,6 +340,12 @@ def main(argv=None) -> int:
             print(
                 "\n✓  pact --reduce: call graph has no detected tangles, pass-throughs, or hubs"
             )
+
+    if args.reduce_apply and not args.json_mode:
+        result = apply_full_reduction(functions, call_sites, violations)
+        print("\n⬡ pact --reduce-apply: three-stage graph reduction pipeline\n")
+        print(result.summary())
+        print()
 
     if args.graph:
         # Use suggestion data for accurate attribution if available; else compute

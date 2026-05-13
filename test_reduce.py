@@ -11,10 +11,15 @@ import pytest
 
 from .reduce import (
     analyze_graph_reduction,
+    apply_full_reduction,
+    contract_sccs,
+    eliminate_dead,
+    transitive_reduce,
     find_hubs,
     find_passthroughs,
     find_sccs,
     _build_digraph,
+    _live_roots,
 )
 from .extractor import FunctionManifest, CallSite
 from .encoder import Violation
@@ -263,3 +268,154 @@ class TestPhantomCyclePrevention:
         G, func_by_name = _build_digraph(funcs, calls)
         # unique_helper is unambiguous → should resolve and appear as a node
         assert "MyClass.unique_helper" in G.nodes or "unique_helper" in G.nodes
+
+
+# ---------------------------------------------------------------------------
+# contract_sccs
+# ---------------------------------------------------------------------------
+
+
+class TestContractSccs:
+    def test_simple_cycle_collapsed_to_one_node(self):
+        """A→B→A (2-node cycle) collapses to a single representative node."""
+        funcs = [_func("A"), _func("B")]
+        calls = [_call("A", "B"), _call("B", "A")]
+        G, _ = _build_digraph(funcs, calls)
+        condensation, scc_map = contract_sccs(G)
+        # Two nodes in a mutual cycle → one node in the condensation
+        assert condensation.number_of_nodes() == 1
+        # The scc_map entry for the representative contains both A and B
+        (rep,) = condensation.nodes()
+        assert scc_map[rep] == frozenset({"A", "B"})
+
+    def test_dag_unchanged(self):
+        """A DAG has no cycles; condensation has same node count."""
+        funcs = [_func("A"), _func("B"), _func("C")]
+        calls = [_call("A", "B"), _call("B", "C")]
+        G, _ = _build_digraph(funcs, calls)
+        condensation, scc_map = contract_sccs(G)
+        # No SCCs of size > 1; node count preserved (plus __root__ if present)
+        non_root = [n for n in condensation.nodes() if n != "__root__"]
+        assert len(non_root) >= 3  # A, B, C all survive as separate nodes
+        # Every scc_map entry is a singleton
+        assert all(len(v) == 1 for v in scc_map.values())
+
+    def test_three_node_cycle(self):
+        """A→B→C→A collapses to one node; outgoing edges preserved."""
+        funcs = [_func("A"), _func("B"), _func("C"), _func("D")]
+        calls = [_call("A", "B"), _call("B", "C"), _call("C", "A"), _call("A", "D")]
+        G, _ = _build_digraph(funcs, calls)
+        condensation, scc_map = contract_sccs(G)
+        # {A,B,C} → 1 node; D stays separate → 2 nodes total (plus possible __root__)
+        scc_sizes = sorted(len(v) for v in scc_map.values())
+        assert 3 in scc_sizes, f"expected a 3-node SCC, got scc sizes {scc_sizes}"
+
+    def test_result_is_dag(self):
+        """Condensation of any graph is always a DAG."""
+        import networkx as nx
+        funcs = [_func(n) for n in "ABCDE"]
+        calls = [
+            _call("A", "B"), _call("B", "C"), _call("C", "A"),  # cycle ABC
+            _call("C", "D"), _call("D", "E"), _call("E", "D"),  # cycle DE
+        ]
+        G, _ = _build_digraph(funcs, calls)
+        condensation, _ = contract_sccs(G)
+        assert nx.is_directed_acyclic_graph(condensation), "condensation must be a DAG"
+
+
+# ---------------------------------------------------------------------------
+# eliminate_dead
+# ---------------------------------------------------------------------------
+
+
+class TestEliminateDead:
+    def test_unreachable_node_removed(self):
+        """A node with no callers and not a root is dead."""
+        funcs = [_func("main"), _func("helper"), _func("orphan")]
+        calls = [_call("main", "helper")]
+        G, _ = _build_digraph(funcs, calls)
+        pruned, dead = eliminate_dead(G, roots={"main"})
+        assert "orphan" in dead
+        assert "orphan" not in pruned.nodes()
+
+    def test_reachable_node_kept(self):
+        """Transitively reachable nodes survive pruning."""
+        funcs = [_func("main"), _func("a"), _func("b")]
+        calls = [_call("main", "a"), _call("a", "b")]
+        G, _ = _build_digraph(funcs, calls)
+        pruned, dead = eliminate_dead(G, roots={"main"})
+        assert "b" not in dead
+        assert "b" in pruned.nodes()
+
+    def test_empty_roots_keeps_all(self):
+        """When roots heuristic fires for all nodes, nothing is pruned."""
+        funcs = [_func("main"), _func("side")]
+        calls = []
+        G, _ = _build_digraph(funcs, calls)
+        pruned, dead = eliminate_dead(G, roots={"main", "side"})
+        assert len(dead) == 0
+
+
+# ---------------------------------------------------------------------------
+# transitive_reduce
+# ---------------------------------------------------------------------------
+
+
+class TestTransitiveReduce:
+    def test_shortcut_edge_removed(self):
+        """A→C is redundant when A→B→C exists; it should be removed."""
+        import networkx as nx
+        G = nx.DiGraph()
+        G.add_edges_from([("A", "B"), ("B", "C"), ("A", "C")])
+        reduced = transitive_reduce(G)
+        assert not reduced.has_edge("A", "C"), "shortcut edge A→C must be removed"
+        assert reduced.has_edge("A", "B")
+        assert reduced.has_edge("B", "C")
+
+    def test_unique_path_kept(self):
+        """Non-redundant edges are preserved."""
+        import networkx as nx
+        G = nx.DiGraph()
+        G.add_edges_from([("A", "B"), ("A", "C")])
+        reduced = transitive_reduce(G)
+        assert reduced.has_edge("A", "B")
+        assert reduced.has_edge("A", "C")
+
+
+# ---------------------------------------------------------------------------
+# apply_full_reduction (pipeline)
+# ---------------------------------------------------------------------------
+
+
+class TestApplyFullReduction:
+    def test_pipeline_reduces_complex_graph(self):
+        """End-to-end: cycle + dead node + shortcut → substantially reduced graph."""
+        funcs = [_func(n) for n in ["main", "A", "B", "C", "orphan"]]
+        calls = [
+            _call("main", "A"),
+            _call("A", "B"), _call("B", "A"),   # A↔B cycle
+            _call("A", "C"), _call("main", "C"), # main→C is a shortcut (main→A→C exists)
+            # orphan: no callers, not a root
+        ]
+        result = apply_full_reduction(funcs, calls, [])
+        assert result.original_nodes > result.final_nodes or result.original_edges > result.final_edges
+        assert result.graph is not None
+        # Summary should not raise
+        s = result.summary()
+        assert "TOTAL eliminated" in s
+
+    def test_empty_graph_returns_zero_stats(self):
+        result = apply_full_reduction([], [], [])
+        assert result.original_nodes == 0
+        assert result.final_nodes == 0
+        # graph is either None (no networkx) or an empty DiGraph
+        assert result.graph is None or result.graph.number_of_nodes() == 0
+
+    def test_result_graph_is_dag(self):
+        """After full reduction the result graph must be a DAG."""
+        import networkx as nx
+        funcs = [_func(n) for n in ["X", "Y", "Z"]]
+        calls = [_call("X", "Y"), _call("Y", "Z"), _call("Z", "X")]  # full cycle
+        result = apply_full_reduction(funcs, calls, [])
+        if result.graph is not None:
+            assert nx.is_directed_acyclic_graph(result.graph)

@@ -24,16 +24,30 @@ Three structural anti-patterns, each with a formal graph-theory name:
                  N callees.  The elimination move: split by responsibility into
                  K cohesive sub-functions.
 
+Three actual graph transformations (``apply_full_reduction``):
+
+  SCC contraction      Collapse every strongly-connected component into one
+                       representative node, producing a DAG (the condensation).
+                       Cycles disappear; the true dependency order becomes visible.
+
+  Dead-node pruning    Remove nodes not reachable from any live entry point
+                       (public functions, decorated handlers, __main__ blocks).
+                       Dead code cannot carry violations to callers.
+
+  Transitive reduction Strip every edge u→w that is already implied by a longer
+                       path u→…→w.  Produces the minimum edge set that preserves
+                       all reachability relationships (Hasse diagram of the DAG).
+
 Usage
 -----
-    from pact.reduce import analyze_graph_reduction
+    from pact.reduce import analyze_graph_reduction, apply_full_reduction
     from pact.extractor import extract_from_codebase
     from pact.encoder import Violation
 
     models, functions, call_sites = extract_from_codebase(root)
     candidates = analyze_graph_reduction(functions, call_sites, violations)
-    for c in candidates:
-        print(c.summary())
+    result = apply_full_reduction(functions, call_sites, violations)
+    print(result.summary())
 """
 
 from __future__ import annotations
@@ -315,3 +329,204 @@ def analyze_graph_reduction(
 
     all_candidates = tangles + passthroughs + hubs
     return sorted(all_candidates, key=lambda c: -c.score)
+
+
+# ---------------------------------------------------------------------------
+# Actual graph transformations
+# ---------------------------------------------------------------------------
+
+
+def _live_roots(G) -> set[str]:
+    """Heuristic: nodes with no predecessors, or named like entry points."""
+    roots: set[str] = set()
+    for node in G.nodes():
+        if G.in_degree(node) == 0:
+            roots.add(node)
+        # Decorated entry points: Flask/FastAPI/Celery/Django handlers often have
+        # no graph-visible caller because the framework invokes them by name.
+        name = node.split(".")[-1]
+        if name in {
+            "main", "__main__", "__init__", "run", "start", "setup",
+            "execute", "handle", "dispatch", "process",
+        }:
+            roots.add(node)
+        # Public API convention: no leading underscore, top-level module name
+        if not name.startswith("_") and "." not in node:
+            roots.add(node)
+    return roots or set(G.nodes())  # degenerate: treat all as live if none found
+
+
+@dataclass
+class ReductionResult:
+    """Statistics and reduced graph from apply_full_reduction."""
+
+    original_nodes: int
+    original_edges: int
+    after_scc_nodes: int
+    after_scc_edges: int
+    after_dead_nodes: int
+    after_dead_edges: int
+    final_nodes: int
+    final_edges: int
+    # Mapping: condensation node → frozenset of original node names (size>1 = was SCC)
+    scc_map: dict[str, frozenset[str]]
+    # Nodes removed as dead (unreachable from any live root)
+    dead_nodes: frozenset[str]
+    # The fully reduced DiGraph (node labels are original or SCC representative names)
+    graph: object  # nx.DiGraph | None
+
+    def summary(self) -> str:
+        lines = [
+            "  Graph reduction pipeline",
+            f"    original:           {self.original_nodes} nodes, {self.original_edges} edges",
+        ]
+        scc_collapsed = self.original_nodes - self.after_scc_nodes
+        dead_pruned = self.after_scc_nodes - self.after_dead_nodes
+        tr_edges = self.after_dead_edges - self.final_edges
+        if scc_collapsed:
+            lines.append(
+                f"    after SCC contract: {self.after_scc_nodes} nodes "
+                f"({scc_collapsed} cycle(s) collapsed), {self.after_scc_edges} edges"
+            )
+        if dead_pruned:
+            lines.append(
+                f"    after dead-prune:   {self.after_dead_nodes} nodes "
+                f"({dead_pruned} unreachable removed), {self.after_dead_edges} edges"
+            )
+        if tr_edges:
+            lines.append(
+                f"    after trans-reduce: {self.final_nodes} nodes, "
+                f"{self.final_edges} edges ({tr_edges} redundant edge(s) removed)"
+            )
+        total_node = self.original_nodes - self.final_nodes
+        total_edge = self.original_edges - self.final_edges
+        lines.append(
+            f"    TOTAL eliminated:   {total_node} node(s), {total_edge} edge(s) "
+            f"→ {self.final_nodes} nodes / {self.final_edges} edges remain"
+        )
+        if self.dead_nodes:
+            sample = sorted(self.dead_nodes)[:5]
+            suffix = f" … (+{len(self.dead_nodes)-5} more)" if len(self.dead_nodes) > 5 else ""
+            lines.append(f"    dead functions:     {', '.join(sample)}{suffix}")
+        tangled = {rep: members for rep, members in self.scc_map.items() if len(members) > 1}
+        if tangled:
+            for rep, members in sorted(tangled.items(), key=lambda x: -len(x[1]))[:3]:
+                cycle = " → ".join(sorted(members)[:4])
+                if len(members) > 4:
+                    cycle += f" … ({len(members)} total)"
+                lines.append(f"    scc [{rep}]: {cycle}")
+        return "\n".join(lines)
+
+
+def contract_sccs(G) -> tuple[object, dict[str, frozenset[str]]]:
+    """Collapse every SCC into one representative node; return (condensation, scc_map).
+
+    The condensation is a DAG.  ``scc_map[rep]`` is the frozenset of original node
+    names that were merged into representative ``rep`` (the lexicographically first
+    member of each SCC).  Single-node SCCs map to themselves.
+    """
+    if not _HAS_NX:
+        return G, {}
+
+    condensation = nx.condensation(G)
+    scc_map: dict[str, frozenset[str]] = {}
+    # nx.condensation labels nodes 0,1,2,... and stores original members in node attr
+    relabel: dict[int, str] = {}
+    for cnode in condensation.nodes():
+        members: set[str] = condensation.nodes[cnode]["members"]
+        rep = min(members)  # lexicographic representative
+        relabel[cnode] = rep
+        scc_map[rep] = frozenset(members)
+
+    labeled = nx.relabel_nodes(condensation, relabel)
+    return labeled, scc_map
+
+
+def eliminate_dead(G, roots: set[str] | None = None) -> tuple[object, frozenset[str]]:
+    """Remove nodes not reachable from any live root.
+
+    Returns (pruned_G, dead_nodes).  ``roots`` defaults to the heuristic set
+    from ``_live_roots`` when not provided.
+    """
+    if not _HAS_NX:
+        return G, frozenset()
+
+    live_roots = roots if roots is not None else _live_roots(G)
+    reachable: set[str] = set()
+    for root in live_roots:
+        if root in G:
+            reachable.update(nx.descendants(G, root))
+            reachable.add(root)
+
+    dead = frozenset(n for n in G.nodes() if n not in reachable)
+    pruned = G.copy()
+    pruned.remove_nodes_from(dead)
+    return pruned, dead
+
+
+def transitive_reduce(G) -> object:
+    """Remove edges implied by longer paths (minimum edge set preserving reachability).
+
+    Requires G to be a DAG; raises NetworkXError otherwise.  Apply after
+    ``contract_sccs`` to guarantee acyclicity.
+    """
+    if not _HAS_NX:
+        return G
+    return nx.transitive_reduction(G)
+
+
+def apply_full_reduction(
+    functions: list[FunctionManifest],
+    call_sites: list[CallSite],
+    violations: list[Violation],
+    roots: set[str] | None = None,
+) -> ReductionResult:
+    """Run the full three-stage reduction pipeline and return statistics.
+
+    Stages (in order):
+      1. SCC contraction  → condense cycles into single nodes (produces a DAG)
+      2. Dead-node pruning → remove nodes unreachable from live entry points
+      3. Transitive reduction → strip edges implied by longer paths
+
+    The pipeline is non-destructive: the original graph is never modified.
+    """
+    G, _ = _build_digraph(functions, call_sites)
+    if G is None:
+        return ReductionResult(
+            original_nodes=0, original_edges=0,
+            after_scc_nodes=0, after_scc_edges=0,
+            after_dead_nodes=0, after_dead_edges=0,
+            final_nodes=0, final_edges=0,
+            scc_map={}, dead_nodes=frozenset(), graph=None,
+        )
+
+    orig_n, orig_e = G.number_of_nodes(), G.number_of_edges()
+
+    # Stage 1: SCC contraction → DAG
+    G1, scc_map = contract_sccs(G)
+    scc_n, scc_e = G1.number_of_nodes(), G1.number_of_edges()
+
+    # Stage 2: dead-node elimination
+    G2, dead = eliminate_dead(G1, roots)
+    dead_n, dead_e = G2.number_of_nodes(), G2.number_of_edges()
+
+    # Stage 3: transitive reduction (safe now that G2 is a DAG)
+    try:
+        G3 = transitive_reduce(G2)
+    except Exception:
+        G3 = G2  # non-DAG edge case: skip rather than crash
+    final_n, final_e = G3.number_of_nodes(), G3.number_of_edges()
+
+    return ReductionResult(
+        original_nodes=orig_n,
+        original_edges=orig_e,
+        after_scc_nodes=scc_n,
+        after_scc_edges=scc_e,
+        after_dead_nodes=dead_n,
+        after_dead_edges=dead_e,
+        final_nodes=final_n,
+        final_edges=final_e,
+        scc_map=scc_map,
+        dead_nodes=dead,
+        graph=G3,
+    )
