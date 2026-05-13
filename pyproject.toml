@@ -5,14 +5,14 @@ build-backend = "setuptools.backends.legacy:build"
 [project]
 name = "pact-tool"
 version = "0.2.0"
-description = "Python AST Constraint Tool — formal verification (Z3 + TLA+) for every Python codebase"
+description = "formal analysis for the codebases AI builds"
 readme = "README.md"
 requires-python = ">=3.10"
 license = {text = "MIT"}
 authors = [
     {name = "Jonathan Hill", email = "jonathan.f.hill@gmail.com"},
 ]
-keywords = ["static-analysis", "formal-verification", "z3", "tla+", "ast", "constraints"]
+keywords = ["formal-verification", "static-analysis", "z3", "tla+", "ai-agents", "llm", "bug-detection", "ast", "go", "django", "celery"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",

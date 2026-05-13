@@ -1,1 +1,1 @@
-"""pact — Python AST Constraint Tool."""
+"""pact — formal analysis for the codebases AI builds."""

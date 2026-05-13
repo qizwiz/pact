@@ -5,7 +5,11 @@
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://pypi.org/project/pact-tool/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-**Formal bug detection for Python.** Finds the class of bugs that linters miss: race conditions in ORM writes, unawaited coroutines, silent exception suppression, unguarded LLM response reads, and more — then generates a TLA+ spec you can model-check.
+**Formal analysis for the codebases AI builds.**
+
+LLM-generated code has a signature failure profile: unawaited coroutines, unguarded nullable dereferences, silent exception swallowing, race conditions in ORM writes, unguarded LLM response reads. Tests don't catch them — they only run the paths you thought of. pact encodes each failure mode as a Z3 constraint over your call graph and finds them all, then generates a TLA+ spec you can model-check.
+
+Python and Go supported. More languages follow the same pattern.
 
 ```bash
 pip install pact-tool
@@ -31,6 +35,14 @@ pact .
     except Exception: pass — the Redis timeout that caused
     your 3am incident is silently swallowed here
 ```
+
+---
+
+## Why pact?
+
+The name started as "Python AST Constraint Tool" — a backronym built around the Z3 constraint engine at its core. It stuck because it means something: a pact is a formal agreement, a contract. That's exactly what pact enforces — the implicit contracts your code makes with itself that no linter checks and no test covers unless you already knew to write it.
+
+The Python-specific origin is now a detail. The constraint engine works on any language with an AST.
 
 ---
 
