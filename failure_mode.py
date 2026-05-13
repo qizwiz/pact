@@ -160,6 +160,10 @@ def _scan_file_optional_deref(path: str) -> list[FailureEvidence]:
             self.guarded: set[str] = set()
 
         def visit_Assign(self, node):
+            # Visit RHS children first so the pre-assignment value of the target
+            # is used when checking the RHS (e.g. tgt = d.get(tgt.split(), tgt)
+            # should not flag tgt.split() as an optional dereference).
+            self.generic_visit(node)
             if (len(node.targets) == 1 and
                     isinstance(node.targets[0], _ast.Name) and
                     isinstance(node.value, _ast.Call) and
@@ -167,15 +171,24 @@ def _scan_file_optional_deref(path: str) -> list[FailureEvidence]:
                     node.value.func.attr in _OPTIONAL_RETURNING):
                 self.optional_vars[node.targets[0].id] = node.lineno
                 self.guarded.discard(node.targets[0].id)
-            self.generic_visit(node)
 
         def visit_If(self, node):
-            # If the test references an optional var, mark it guarded
+            # if x / if x is not None / if not x — mark x guarded in body and after
             src = _ast.unparse(node.test) if hasattr(_ast, "unparse") else ""
             for var in list(self.optional_vars):
                 if var in src:
                     self.guarded.add(var)
             self.generic_visit(node)
+
+        def visit_IfExp(self, node):
+            # Ternary guard: `x.attr if x else default` — x is checked before use
+            src = _ast.unparse(node.test) if hasattr(_ast, "unparse") else ""
+            for var in list(self.optional_vars):
+                if var in src:
+                    self.guarded.add(var)
+            self.generic_visit(node)
+            # Ternary result may itself be None in surrounding context; leave guarded
+            # state unchanged — the guard was in the condition, not a surrounding if.
 
         def visit_Attribute(self, node):
             # var.something — flag if var is unguarded optional
