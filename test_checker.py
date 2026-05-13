@@ -669,6 +669,30 @@ def test_django_test_client_get_not_flagged(tmp_path):
     assert not v, "self.client.get() (Django test client) must not be flagged as optional"
 
 
+def test_tornado_test_client_get_string_concat_not_flagged(tmp_path):
+    # Corpus: mher/flower — r = self.get('/api/tasks?' + '&'.join(...))
+    # Tornado AsyncHTTPTestCase.get() returns HTTPResponse, never None.
+    # String-concat URL: leftmost literal starts with '/'.
+    _write_src(
+        tmp_path,
+        "test_tasks.py",
+        """
+        import json
+
+        class TaskTest:
+            def test_list(self):
+                params = dict(limit=4, offset=0)
+                r = self.get('/api/tasks?' + '&'.join(
+                    '%s=%s' % x for x in params.items()))
+                table = json.loads(r.body.decode('utf-8'))
+                self.assertEqual(200, r.code)
+        """,
+    )
+    violations = check_codebase(tmp_path)
+    v = [v for v in violations if v.context == "optional_dereference"]
+    assert not v, "self.get('/path?' + params) Tornado test client must not be flagged as optional"
+
+
 def test_ternary_guard_not_flagged(tmp_path):
     # Corpus: paperless-ngx/suitenumerique — request.user if request else None
     # When `request` is tested as the ternary condition, access in the body is safe.

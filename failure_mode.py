@@ -282,6 +282,21 @@ def _scan_file_optional_deref(path: str) -> list[FailureEvidence]:
                             )
                         ):
                             return
+                    # HTTP client .get("/path?" + params) — string concat where
+                    # the leftmost literal looks like a URL path or absolute URL.
+                    if len(call_args) >= 1 and isinstance(call_args[0], _ast.BinOp):
+                        left = call_args[0].left
+                        while isinstance(left, _ast.BinOp):
+                            left = left.left
+                        if (
+                            isinstance(left, _ast.Constant)
+                            and isinstance(left.value, str)
+                            and (
+                                left.value.startswith("/")
+                                or "://" in left.value
+                            )
+                        ):
+                            return
                     # Known HTTP client receiver names: requests.get(), session.get(),
                     # self.client.get() (Django test client), async_client.get(), etc.
                     _HTTP_CLIENTS = frozenset(
