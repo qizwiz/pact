@@ -6,7 +6,9 @@ I built pact because AI systems need formal guarantees, not just tests. Tests ve
 
 ## What it finds
 
-Against [future-agi/future-agi](https://github.com/future-agi/future-agi) (a production AI observability platform, ~120k lines):
+Two real-world benchmarks:
+
+**[future-agi/future-agi](https://github.com/future-agi/future-agi)** — production AI observability platform, ~120k lines:
 
 ```
 $ pact futureagi/
@@ -29,6 +31,19 @@ $ pact futureagi/
 ```
 
 Full findings: [`examples/future-agi/findings.md`](examples/future-agi/findings.md)
+
+**[home-assistant/core](https://github.com/home-assistant/core)** — largest pure-Python open-source project, 87k stars, 14,096 files:
+
+```
+$ pact /tmp/ha-core/
+✗  pact: 34,701 violation(s) in 14,096 files  (2m 43s)
+
+  optional_dereference  22,458   StateType is pervasively nullable across 3,000+ integrations
+  required_arg_missing  11,148   integration plugin pattern omits positional args at call sites
+  missing_await          1,068   async device polling called without await — body never runs
+```
+
+Full findings: [`examples/home-assistant/findings.md`](examples/home-assistant/findings.md)
 
 ## Install
 
