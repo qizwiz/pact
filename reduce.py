@@ -232,7 +232,7 @@ def find_passthroughs(
         out_deg = G.out_degree(node)
         if in_deg != 1 or out_deg != 1:
             continue
-        node_viols = [v for v in violations if v.file == f.file]
+        node_viols = _viols_for_member(node, func_by_name, violations)
         # Pass-throughs without violations are pure structural noise
         candidates.append(
             ReductionCandidate(
@@ -270,7 +270,7 @@ def find_hubs(
         out_deg = G.out_degree(node)
         if out_deg < threshold:
             continue
-        node_viols = [v for v in violations if v.file == f.file]
+        node_viols = _viols_for_member(node, func_by_name, violations)
         # Splitting into K groups of ≤4 reduces fan-out from N to ≤4
         k = (out_deg + 3) // 4  # ceil(out_deg / 4) groups
         reduction_potential = out_deg - k * 4  # edges pruned from the hub node

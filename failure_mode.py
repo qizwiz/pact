@@ -184,6 +184,28 @@ def _scan_file_optional_deref(path: str) -> list[FailureEvidence]:
             self.optional_vars: dict[str, int] = {}
             self.guarded: set[str] = set()
 
+        def _enter_scope(self):
+            """Save and reset optional_vars at function/class boundaries."""
+            saved = (dict(self.optional_vars), set(self.guarded))
+            self.optional_vars = {}
+            self.guarded = set()
+            return saved
+
+        def _exit_scope(self, saved):
+            self.optional_vars, self.guarded = saved
+
+        def visit_FunctionDef(self, node):
+            saved = self._enter_scope()
+            self.generic_visit(node)
+            self._exit_scope(saved)
+
+        visit_AsyncFunctionDef = visit_FunctionDef
+
+        def visit_ClassDef(self, node):
+            saved = self._enter_scope()
+            self.generic_visit(node)
+            self._exit_scope(saved)
+
         def visit_Assign(self, node):
             # Visit the RHS *before* updating optional_vars so that uses of
             # the variable inside its own assignment expression (e.g.
@@ -224,6 +246,35 @@ def _scan_file_optional_deref(path: str) -> list[FailureEvidence]:
                             and first_part.value.startswith("/")
                         ):
                             return
+                    # Custom class .get(non_string_key) — not a dict lookup; skip.
+                    # dict.get() keys are almost always string literals or string
+                    # variables (name, key, attr_name, etc.). A non-string constant
+                    # key (int, bool) or a variable whose name doesn't suggest a
+                    # string key (e.g. ctx, id, idx, num) indicates a custom class
+                    # .get() method and should not be treated as nullable.
+                    if len(call_args) >= 1:
+                        key_arg = call_args[0]
+                        if isinstance(key_arg, _ast.Constant) and not isinstance(
+                            key_arg.value, str
+                        ):
+                            return  # non-string constant key → custom class
+                        if isinstance(key_arg, _ast.Name) and key_arg.id in (
+                            "ctx",
+                            "context",
+                            "id",
+                            "idx",
+                            "num",
+                            "index",
+                            "i",
+                            "n",
+                            "node",
+                            "obj",
+                            "ref",
+                            "ptr",
+                            "handle",
+                            "fd",
+                        ):
+                            return  # integer-semantics variable name → custom class
                 self.optional_vars[node.targets[0].id] = node.lineno
                 self.guarded.discard(node.targets[0].id)
 
@@ -297,10 +348,15 @@ def _check_required_arg(
     # Enumerate positional-only required args separately so a kwonly arg at
     # index i is never falsely marked covered because positional_count > i.
     positional_required = [a for a in func.required_args if not a.kwonly]
+    # For method calls (obj.foo(args)), the receiver is implicit and not
+    # counted in positional_count, but a module-level function with the same
+    # name has 'self' (or equivalent first param) as an explicit required arg.
+    # Add 1 so the receiver is treated as positionally covered.
+    effective_positional = call.positional_count + (1 if call.is_method_call else 0)
     positional_covered = {
         arg.name
         for i, arg in enumerate(positional_required)
-        if i < call.positional_count
+        if i < effective_positional
     }
     provided = call.provided_kwargs | positional_covered
     missing = _z3_missing([a.name for a in func.required_args], provided)

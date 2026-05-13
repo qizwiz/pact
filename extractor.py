@@ -71,6 +71,7 @@ class CallSite:
     )  # name → literal value
     positional_count: int = 0
     is_create_call: bool = False
+    is_method_call: bool = False  # True when call is obj.method(...) — receiver is implicit
     model_name: Optional[str] = None
     caller_name: Optional[str] = (
         None  # qualified name of the enclosing function, if any
@@ -450,6 +451,7 @@ class _CallVisitor(ast.NodeVisitor):
                 provided_kwargs=kwargs,
                 kwarg_values=kwarg_values,
                 positional_count=positional,
+                is_method_call=isinstance(func, ast.Attribute),
                 caller_name=caller,
             )
         return None
