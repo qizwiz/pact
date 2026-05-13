@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 from typing import Callable, Optional
 
 try:
-    from z3 import (
+    from z3 import (  # noqa: F401
         BoolVal,
         Solver,
         sat,
@@ -28,7 +28,7 @@ try:
         Or,
         Not,
         Implies,
-    )  # noqa: F401
+    )
 
     _HAS_Z3 = True
 except ImportError:
