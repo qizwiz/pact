@@ -1341,6 +1341,13 @@ def _scan_file_unvalidated_lookup_chain(path: str) -> list[FailureEvidence]:
                 # defaultdict never raises KeyError on missing keys
                 self.generic_visit(node)
                 return
+            if isinstance(node.ctx, pyast.Store):
+                # Dict write: collection[var] = ... — never raises KeyError.
+                # Also serves as an implicit guard: var is now in collection for
+                # subsequent reads (e.g. collection[var]["sub"] = ... on next line).
+                self._guarded.setdefault(var, set()).add(collection)
+                self.generic_visit(node)
+                return
             guarded_against = self._guarded.get(var, set())
             if collection not in guarded_against:
                 results.append(

@@ -1440,6 +1440,37 @@ def test_unvalidated_lookup_chain_annotated_defaultdict_not_flagged(tmp_path):
     assert not v, "annotated defaultdict subscript must not be flagged"
 
 
+def test_unvalidated_lookup_chain_dict_write_not_flagged(tmp_path):
+    """Dict write d[k] = v where k came from .get() must NOT be flagged.
+    Corpus: tadata-org/fastapi_mcp — operation_map[operation_id] = {...}
+    where operation_id = operation.get('operationId'). Dict writes never raise
+    KeyError; also serves as implicit guard for subsequent reads."""
+    _write_src(
+        tmp_path,
+        "convert.py",
+        """
+        def build_map(operations):
+            operation_map = {}
+            properties = {}
+            for operation in operations:
+                operation_id = operation.get('operationId')
+                if not operation_id:
+                    continue
+                # Write — must NOT flag (no KeyError possible on dict write)
+                operation_map[operation_id] = {'method': 'get'}
+                param_schema = operation.get('schema', {})
+                param_name = operation.get('name')
+                if param_name:
+                    properties[param_name] = param_schema.copy()
+                    # Subsequent read after write above — still NOT a bug
+                    properties[param_name]['title'] = param_name
+    """,
+    )
+    violations = check_codebase(tmp_path)
+    v = [v for v in violations if v.context == "unvalidated_lookup_chain"]
+    assert not v, f"dict write d[k]=v must not be flagged as unvalidated_lookup_chain: {v}"
+
+
 def test_optional_dereference_get_with_default_not_flagged(tmp_path):
     """.get(key, default) with a non-None default must not be flagged."""
     _write_src(
