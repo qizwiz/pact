@@ -223,6 +223,16 @@ def scan_repo(
 
     # Process up to max_files to avoid runaway on monorepos
     for path in py_files[:max_files]:
+        # Skip test files: temp file loses original name so _is_test_file in the
+        # call-site checker won't fire — skip here at the source instead.
+        _basename = path.split("/")[-1]
+        _parts = path.split("/")
+        if (
+            _basename.startswith("test_")
+            or _basename.endswith("_test.py")
+            or any(p in {"test", "tests", "testing"} for p in _parts)
+        ):
+            continue
         source = fetch_file_content(owner, repo, path, default_branch, session)
         if not source:
             continue

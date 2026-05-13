@@ -635,6 +635,26 @@ def test_save_in_test_file_not_flagged(tmp_path):
     assert not v, f"save() in test files must not be flagged: {v}"
 
 
+def test_save_in_subdir_test_file_not_flagged(tmp_path):
+    # Regression: celery/django-celery-beat t/unit/test_schedulers.py leaked through
+    # scan_github because temp files lose the original name, making _is_test_file miss
+    # basename-prefixed test files nested under non-test directories (t/unit/).
+    # The fix: skip test-named files in scan_github *before* writing the temp file.
+    # Locally, check_codebase detects test files correctly via basename.
+    test_dir = tmp_path / "t" / "unit"
+    test_dir.mkdir(parents=True)
+    (test_dir / "test_schedulers.py").write_text(
+        "import django.db.models\n"
+        "def test_update():\n"
+        "    m = MyModel.objects.get(pk=1)\n"
+        "    m.enabled = True\n"
+        "    m.save()\n"
+    )
+    violations = check_codebase(tmp_path)
+    v = [v for v in violations if v.context == "save_without_update_fields"]
+    assert not v, f"save() in t/unit/test_*.py must not be flagged: {v}"
+
+
 def test_objects_get_not_flagged_as_optional(tmp_path):
     # Corpus: EvalAI — token = JwtToken.objects.get(user=user); token.refresh_token
     # Model.objects.get() raises DoesNotExist, never returns None.
