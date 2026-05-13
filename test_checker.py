@@ -2051,3 +2051,41 @@ def test_dual_sync_async_client_missing_await_not_flagged(tmp_path):
     violations = check_codebase(tmp_path)
     ma = [v for v in violations if v.context == "missing_await" and "clients.py" in v.file]
     assert len(ma) == 0, f"Expected 0 missing_await for dual sync/async client, got {len(ma)}: {[(v.line, v.call) for v in ma]}"
+
+
+def test_main_in_dunder_main_block_not_flagged(tmp_path):
+    """`if __name__ == "__main__": main()` must not be flagged as required_arg_missing."""
+    _write_src(
+        tmp_path,
+        "cli_tool.py",
+        """
+        import argparse
+
+        def main(config: str, verbose: bool = False) -> None:
+            print(config, verbose)
+
+        if __name__ == "__main__":
+            main()
+        """,
+    )
+    violations = check_codebase(tmp_path)
+    ra = [v for v in violations if v.context == "required_arg_missing" and "cli_tool.py" in v.file]
+    assert len(ra) == 0, f"Expected 0 required_arg_missing in __main__ block, got {len(ra)}: {[(v.line, v.call) for v in ra]}"
+
+
+def test_main_called_outside_dunder_block_still_flagged(tmp_path):
+    """The same missing-arg call outside __main__ block IS a real bug."""
+    _write_src(
+        tmp_path,
+        "caller.py",
+        """
+        def main(config: str) -> None:
+            print(config)
+
+        def run_pipeline():
+            main()  # missing required arg — real bug
+        """,
+    )
+    violations = check_codebase(tmp_path)
+    ra = [v for v in violations if v.context == "required_arg_missing" and "caller.py" in v.file]
+    assert len(ra) == 1, f"Expected 1 required_arg_missing outside __main__ block, got {len(ra)}"

@@ -76,6 +76,7 @@ class CallSite:
     is_method_call: bool = False  # True when call is obj.method(...) — receiver is implicit
     has_var_args: bool = False   # True when call uses *args spread — positional coverage unknown
     has_var_kwargs: bool = False  # True when call uses **kwargs spread — kwarg coverage unknown
+    is_in_main_block: bool = False  # True when inside `if __name__ == "__main__":` body
     model_name: Optional[str] = None
     caller_name: Optional[str] = (
         None  # qualified name of the enclosing function, if any
@@ -414,6 +415,7 @@ class _CallVisitor(ast.NodeVisitor):
         self.call_sites: list[CallSite] = []
         self._class_stack: list[str] = []  # class names (mirrors _FunctionVisitor)
         self._func_stack: list[str] = []  # qualified function names within classes
+        self._in_main_block: bool = False  # inside `if __name__ == "__main__":` body
 
     def visit_ClassDef(self, node: ast.ClassDef) -> None:
         self._class_stack.append(node.name)
@@ -429,6 +431,32 @@ class _CallVisitor(ast.NodeVisitor):
 
     visit_FunctionDef = _enter_func
     visit_AsyncFunctionDef = _enter_func
+
+    def visit_If(self, node: ast.If) -> None:
+        # Detect `if __name__ == "__main__":` (both orderings of the comparison)
+        def _is_main_guard(test):
+            if not isinstance(test, ast.Compare):
+                return False
+            if len(test.ops) != 1 or not isinstance(test.ops[0], ast.Eq):
+                return False
+            lhs, rhs = test.left, test.comparators[0]
+            def _is_dunder_name(n): return isinstance(n, ast.Name) and n.id == "__name__"
+            def _is_main_str(n): return isinstance(n, ast.Constant) and n.value == "__main__"
+            return (_is_dunder_name(lhs) and _is_main_str(rhs)) or (
+                _is_main_str(lhs) and _is_dunder_name(rhs)
+            )
+
+        if _is_main_guard(node.test):
+            old = self._in_main_block
+            self._in_main_block = True
+            for stmt in node.body:
+                self.visit(stmt)
+            self._in_main_block = old
+            # else branch is not a __main__ guard
+            for stmt in node.orelse:
+                self.visit(stmt)
+        else:
+            self.generic_visit(node)
 
     def visit_Call(self, node: ast.Call) -> None:
         site = self._make_site(node)
@@ -490,6 +518,7 @@ class _CallVisitor(ast.NodeVisitor):
                 caller_name=caller,
                 has_var_args=has_var_args,
                 has_var_kwargs=has_var_kwargs,
+                is_in_main_block=self._in_main_block,
             )
         return None
 

@@ -472,6 +472,10 @@ def _check_required_arg(
     # calling main() with no args reads from sys.argv. Not a missing-arg bug.
     if func.is_click_command:
         return []
+    # `if __name__ == "__main__": main()` — entry point call, args come from
+    # the runtime / argparse inside the function body, not the call site.
+    if call.is_in_main_block:
+        return []
     # Only non-kwonly required args can be covered by positional args.
     # Enumerate positional-only required args separately so a kwonly arg at
     # index i is never falsely marked covered because positional_count > i.
