@@ -577,3 +577,119 @@ def test_incremental_full_match_when_all_changed(tmp_path):
     assert full_keys == inc_keys, (
         "incremental with all files dirty must match full scan"
     )
+
+
+# ---------------------------------------------------------------------------
+# prompt_injection mode
+# ---------------------------------------------------------------------------
+
+from .failure_mode import _scan_file_prompt_injection
+
+
+def test_prompt_injection_request_data_fstring(tmp_path):
+    """request.data value interpolated into LLM call is flagged."""
+    f = _write_src(tmp_path, "views.py", """
+        import litellm
+
+        def chat_view(request):
+            user_msg = request.data.get("message")
+            prompt = f"Answer this: {user_msg}"
+            resp = litellm.completion(
+                model="gpt-4",
+                messages=[{"role": "user", "content": prompt}]
+            )
+            return resp
+    """)
+    findings = _scan_file_prompt_injection(str(f))
+    assert findings, "expected prompt_injection violation"
+    assert findings[0].mode_name == "prompt_injection"
+    assert "prompt" in findings[0].message or "tainted" in findings[0].message
+
+
+def test_prompt_injection_request_post_direct(tmp_path):
+    """request.POST value in messages kwarg is flagged."""
+    f = _write_src(tmp_path, "views.py", """
+        import openai
+
+        def ask(request):
+            query = request.POST.get("query")
+            response = openai.chat.completions.create(
+                model="gpt-4o",
+                messages=[{"role": "user", "content": query}]
+            )
+            return response
+    """)
+    findings = _scan_file_prompt_injection(str(f))
+    assert any(e.mode_name == "prompt_injection" for e in findings)
+
+
+def test_prompt_injection_no_taint_clean(tmp_path):
+    """Hardcoded prompt with no user data produces no violation."""
+    f = _write_src(tmp_path, "views.py", """
+        import litellm
+
+        def summarise(text):
+            prompt = "Summarise the following document in 3 bullet points."
+            resp = litellm.completion(
+                model="gpt-4",
+                messages=[{"role": "user", "content": prompt}]
+            )
+            return resp
+    """)
+    findings = _scan_file_prompt_injection(str(f))
+    assert not findings, f"unexpected violations: {findings}"
+
+
+def test_prompt_injection_env_var(tmp_path):
+    """os.environ.get() value flowing into LLM call is flagged."""
+    f = _write_src(tmp_path, "service.py", """
+        import os
+        import anthropic
+
+        client = anthropic.Anthropic()
+
+        def run():
+            system_prompt = os.environ.get("SYSTEM_PROMPT_OVERRIDE")
+            msg = client.messages.create(
+                model="claude-3-opus-20240229",
+                system=system_prompt,
+                messages=[{"role": "user", "content": "hello"}]
+            )
+            return msg
+    """)
+    findings = _scan_file_prompt_injection(str(f))
+    assert any(e.mode_name == "prompt_injection" for e in findings)
+
+
+def test_prompt_injection_taint_does_not_cross_scope(tmp_path):
+    """Tainted var in one function does not taint a sibling function."""
+    f = _write_src(tmp_path, "service.py", """
+        import litellm
+
+        def dangerous(request):
+            user_input = request.data.get("q")  # tainted here
+
+        def safe():
+            user_input = "hardcoded"  # same name, different scope — NOT tainted
+            resp = litellm.completion(
+                model="gpt-4",
+                messages=[{"role": "user", "content": user_input}]
+            )
+            return resp
+    """)
+    findings = _scan_file_prompt_injection(str(f))
+    assert not findings, f"taint incorrectly crossed function scope: {findings}"
+
+
+def test_prompt_injection_fstring_concat(tmp_path):
+    """Taint through f-string concatenation is detected."""
+    f = _write_src(tmp_path, "api.py", """
+        import litellm
+
+        def process(request):
+            raw = request.data["text"]
+            full = "Context: " + raw + "\\nAnswer:"
+            litellm.completion(model="gpt-4o", prompt=full)
+    """)
+    findings = _scan_file_prompt_injection(str(f))
+    assert findings, "expected violation for binary concat taint propagation"

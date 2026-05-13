@@ -861,6 +861,262 @@ UNVALIDATED_LOOKUP_CHAIN = FailureMode(
 )
 
 
+# --- 10. Prompt injection — tainted external data flows into LLM call -------
+#
+# Detects intra-procedural taint: a value read from an HTTP request, database
+# row, or environment variable is interpolated into a string (f-string, concat,
+# .format()) that is then passed to an LLM API call without sanitization.
+#
+# Taint sources: request.data/.POST/.GET/.json(), serializer.validated_data,
+#   os.environ.get(), input(), dataset row field access.
+# Taint sinks: litellm.completion(), openai.chat.completions.create(),
+#   anthropic.messages.create(), and any call whose function name or module
+#   matches _LLM_SINK_NAMES.
+# Propagation: assignment, f-string, binary-add concat, str.format().
+#
+# "Sanitized" means the tainted variable passed through a call that pact
+# cannot see into (e.g. sanitize(), escape(), strip_tags()). Those break
+# the taint chain and suppress the violation.
+
+_TAINT_SOURCE_ATTRS = frozenset({
+    "data", "POST", "GET", "FILES", "body", "json",
+    "validated_data", "cleaned_data",
+})
+_TAINT_SOURCE_NAMES = frozenset({"input"})
+_TAINT_ENV_ATTRS = frozenset({"environ"})
+
+_LLM_SINK_NAMES = frozenset({
+    "completion", "acompletion", "create", "acreate", "generate", "agenerate",
+    "invoke", "ainvoke", "complete", "ask", "chat", "stream",
+})
+_LLM_SINK_MODULES = frozenset({
+    "litellm", "openai", "anthropic", "cohere", "gemini", "bedrock",
+    "llm", "model", "client", "claude", "gpt",
+})
+
+
+def _is_llm_sink(node) -> bool:
+    """True if the Call node looks like an LLM API call."""
+    import ast as _ast
+    func = node.func
+    if isinstance(func, _ast.Attribute):
+        if func.attr in _LLM_SINK_NAMES:
+            return True
+        # module.method form: check the object too
+        obj = func.value
+        if isinstance(obj, _ast.Attribute):
+            # e.g. openai.chat.completions.create
+            if obj.attr in _LLM_SINK_MODULES or obj.attr in _LLM_SINK_NAMES:
+                return True
+        if isinstance(obj, _ast.Name) and obj.id in _LLM_SINK_MODULES:
+            return True
+    if isinstance(func, _ast.Name) and func.id in _LLM_SINK_NAMES:
+        return True
+    return False
+
+
+def _tainted_in_expr(node, taint: set[str]) -> bool:
+    """True if any tainted variable name appears inside the expression."""
+    import ast as _ast
+    for child in _ast.walk(node):
+        if isinstance(child, _ast.Name) and child.id in taint:
+            return True
+    return False
+
+
+@functools.lru_cache(maxsize=None)
+def _scan_file_prompt_injection(path: str) -> list[FailureEvidence]:
+    """
+    File-level scan: track taint from external sources through string
+    building to LLM call arguments.
+    """
+    import ast as _ast
+    from pathlib import Path as _Path
+
+    try:
+        source = _Path(path).read_text(encoding="utf-8", errors="replace")
+        tree = _ast.parse(source, filename=path)
+    except (SyntaxError, OSError):
+        return []
+
+    evidence: list[FailureEvidence] = []
+
+    class _FuncVisitor(_ast.NodeVisitor):
+        """One instance per function scope — taint does not escape scope."""
+
+        def __init__(self):
+            self.taint: set[str] = set()   # tainted variable names
+
+        # ---- taint sources -------------------------------------------------
+
+        def _mark_taint_from_call(self, var_name: str, node) -> bool:
+            """Return True and mark var_name tainted if node is a taint source."""
+            import ast as _ast
+            func = node.func if isinstance(node, _ast.Call) else None
+            if func is None:
+                return False
+
+            # request.data / request.POST / request.GET / serializer.validated_data
+            if isinstance(func, _ast.Attribute):
+                if func.attr in _TAINT_SOURCE_ATTRS:
+                    self.taint.add(var_name)
+                    return True
+                # request.data.get("key") or request.POST.get("key")
+                if func.attr == "get" and isinstance(func.value, _ast.Attribute):
+                    if func.value.attr in _TAINT_SOURCE_ATTRS:
+                        self.taint.add(var_name)
+                        return True
+                # os.environ.get("KEY")
+                if func.attr == "get" and isinstance(func.value, _ast.Attribute):
+                    if func.value.attr in _TAINT_ENV_ATTRS:
+                        self.taint.add(var_name)
+                        return True
+
+            # bare input() call
+            if isinstance(func, _ast.Name) and func.id in _TAINT_SOURCE_NAMES:
+                self.taint.add(var_name)
+                return True
+
+            return False
+
+        def visit_Assign(self, node):
+            import ast as _ast
+            if len(node.targets) == 1 and isinstance(node.targets[0], _ast.Name):
+                var = node.targets[0].id
+                val = node.value
+
+                # Direct taint source: x = request.data.get(...)
+                if isinstance(val, _ast.Call):
+                    if self._mark_taint_from_call(var, val):
+                        self.generic_visit(node)
+                        return
+
+                # Taint propagation through attribute access: x = request.data
+                if isinstance(val, _ast.Attribute) and val.attr in _TAINT_SOURCE_ATTRS:
+                    self.taint.add(var)
+                    self.generic_visit(node)
+                    return
+
+                # Subscript of taint source: x = request.data["key"] or x = request.POST[k]
+                if isinstance(val, _ast.Subscript):
+                    base = val.value
+                    if (isinstance(base, _ast.Attribute) and base.attr in _TAINT_SOURCE_ATTRS):
+                        self.taint.add(var)
+                        self.generic_visit(node)
+                        return
+                    # x = tainted_dict[key] — propagate from already-tainted base
+                    if isinstance(base, _ast.Name) and base.id in self.taint:
+                        self.taint.add(var)
+                        self.generic_visit(node)
+                        return
+
+                # Propagate: if RHS contains any tainted var, result is tainted
+                if _tainted_in_expr(val, self.taint):
+                    self.taint.add(var)
+                else:
+                    # Assignment clears previous taint for this var
+                    self.taint.discard(var)
+
+            self.generic_visit(node)
+
+        # ---- taint sink detection ------------------------------------------
+
+        def visit_Call(self, node):
+            import ast as _ast
+            if _is_llm_sink(node) and self.taint:
+                # Check all keyword args and positional args for tainted content
+                tainted_arg = None
+                tainted_line = node.lineno
+
+                for kw in node.keywords:
+                    if kw.arg in ("messages", "prompt", "content", "input", "text"):
+                        if _tainted_in_expr(kw.value, self.taint):
+                            tainted_arg = kw.arg
+                            break
+                    # Even unlabelled **kwargs — check value
+                    if _tainted_in_expr(kw.value, self.taint):
+                        tainted_arg = kw.arg or "**kwargs"
+                        break
+
+                if tainted_arg is None:
+                    for arg in node.args:
+                        if _tainted_in_expr(arg, self.taint):
+                            tainted_arg = "positional"
+                            break
+
+                if tainted_arg:
+                    # Reconstruct sink name for the message
+                    func = node.func
+                    if isinstance(func, _ast.Attribute):
+                        sink = f"{_ast.unparse(func.value) if hasattr(_ast, 'unparse') else '?'}.{func.attr}()"
+                    elif isinstance(func, _ast.Name):
+                        sink = f"{func.id}()"
+                    else:
+                        sink = "llm_call()"
+
+                    tainted_vars = sorted(
+                        v for v in self.taint
+                        if any(
+                            (isinstance(n, _ast.Name) and n.id == v)
+                            for arg in list(node.args) + [kw.value for kw in node.keywords]
+                            for n in _ast.walk(arg)
+                        )
+                    )
+                    var_list = ", ".join(tainted_vars) if tainted_vars else "tainted input"
+
+                    evidence.append(FailureEvidence(
+                        mode_name="prompt_injection",
+                        file=path,
+                        line=tainted_line,
+                        call=sink,
+                        message=(
+                            f"{sink} receives tainted input ({var_list}) from an external "
+                            f"source via `{tainted_arg}` argument — unsanitized user data "
+                            "in an LLM prompt enables prompt injection attacks"
+                        ),
+                    ))
+
+            self.generic_visit(node)
+
+    class _FileVisitor(_ast.NodeVisitor):
+        """Walk the file; spawn a fresh _FuncVisitor for each function scope."""
+
+        def visit_FunctionDef(self, node):
+            v = _FuncVisitor()
+            v.visit(node)
+            # Recurse into nested functions independently
+            for child in _ast.walk(node):
+                if isinstance(child, (_ast.FunctionDef, _ast.AsyncFunctionDef)) and child is not node:
+                    self.visit(child)
+
+        visit_AsyncFunctionDef = visit_FunctionDef
+
+        # Module-level code: run a single shared visitor
+        def visit_Module(self, node):
+            module_visitor = _FuncVisitor()
+            for stmt in node.body:
+                # Don't descend into functions — handled above
+                import ast as _ast
+                if not isinstance(stmt, (_ast.FunctionDef, _ast.AsyncFunctionDef, _ast.ClassDef)):
+                    module_visitor.visit(stmt)
+            self.generic_visit(node)
+
+    _FileVisitor().visit(tree)
+    return evidence
+
+
+PROMPT_INJECTION = FailureMode(
+    name="prompt_injection",
+    description=(
+        "Unsanitized external input (HTTP request data, env vars, user input()) "
+        "flows into an LLM call argument via string interpolation. Enables prompt "
+        "injection attacks where adversarial user content hijacks LLM behaviour."
+    ),
+    check=None,
+    file_check=_scan_file_prompt_injection,
+)
+
+
 # ---------------------------------------------------------------------------
 # Registry — all active failure modes
 # ---------------------------------------------------------------------------
@@ -876,4 +1132,5 @@ DEFAULT_MODES: list[FailureMode] = [
     FORMAT_ARG_MISMATCH,
     LLM_RESPONSE_UNGUARDED,
     UNVALIDATED_LOOKUP_CHAIN,
+    PROMPT_INJECTION,
 ]
