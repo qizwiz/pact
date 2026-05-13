@@ -1927,3 +1927,24 @@ def test_gather_star_comprehension_not_flagged(tmp_path):
     violations = check_codebase(tmp_path)
     ma = [v for v in violations if v.context == "missing_await" and "direct_gather.py" in v.file]
     assert len(ma) == 0, f"Expected 0 missing_await for starred comprehension, got {len(ma)}: {[(v.line, v.call) for v in ma]}"
+
+
+def test_optional_dereference_zero_arg_get_not_flagged(tmp_path):
+    """obj.get() with no args is a custom method (e.g. Twisted DeferredQueue), not dict.get().
+    dict.get() always requires at least one positional key argument."""
+    _write_src(
+        tmp_path,
+        "twisted_queue.py",
+        """
+        class DeferredQueue:
+            def get(self):
+                return Deferred()
+
+        def process(queue):
+            d = queue.get()
+            d.addCallback(handler)
+        """,
+    )
+    violations = check_codebase(tmp_path)
+    od = [v for v in violations if v.context == "optional_dereference" and "twisted_queue.py" in v.file]
+    assert len(od) == 0, f"Expected 0 optional_dereference for zero-arg .get(), got {len(od)}: {[(v.line, v.call) for v in od]}"

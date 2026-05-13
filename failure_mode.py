@@ -230,6 +230,11 @@ def _scan_file_optional_deref(path: str) -> list[FailureEvidence]:
                     # dict.get() is never called on a chained method result.
                     if isinstance(recv, _ast.Call):
                         return
+                    # Zero-arg .get() — dict.get() requires at least one positional
+                    # arg (the key); a bare .get() call is a custom class method
+                    # (e.g. Twisted DeferredQueue.get(), stats collector .get()).
+                    if not call_args and not node.value.keywords:
+                        return
                     # Django ORM queryset.get(**kwargs) — no positional args, only
                     # keyword field lookups like .get(pk=1) or .get(user=user).
                     # dict.get() ALWAYS takes a positional key; kwargs-only means ORM.
