@@ -121,6 +121,18 @@ def check_codebase(
                 for evidence in mode.file_check(str(path)):  # type: ignore[misc]
                     _add(evidence)
 
+    # TypeScript / TSX — tree-sitter backed; no-op if tree-sitter not installed
+    try:
+        from .ts_checker import check_ts_files
+
+        for v in check_ts_files(root):
+            key = (v.file, v.line, v.context, v.call)
+            if key not in seen:
+                seen.add(key)
+                violations.append(v)
+    except ImportError:
+        pass
+
     return violations
 
 
