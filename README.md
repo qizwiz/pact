@@ -1,21 +1,34 @@
 # pact
 
-**Python AST Constraint Tool** — formal verification for every Python codebase.
+**Python AST Constraint Tool** — Z3 + TLA+ formal verification for every Python codebase.
 
-pact finds structural bugs before they reach production: missing required arguments, unguarded `None` dereferences, bare `except` clauses, missing `await`, and more. It encodes your codebase as Z3 constraints and solves them in a single pass.
+I built pact because AI systems need formal guarantees, not just tests. Tests verify specific paths; formal methods verify all paths. pact makes that accessible: point it at any Python codebase and it finds structural bugs that type checkers, linters, and test suites miss — then generates a TLA+ spec you can model-check.
+
+## What it finds
+
+Against [future-agi/future-agi](https://github.com/future-agi/future-agi) (a production AI observability platform, ~120k lines):
 
 ```
 $ pact futureagi/
-✗  pact: 1,756 violation(s)
+✗  pact: 9,280 violation(s)
 
-  accounts/utils.py:220  user.save()
-    .save() without update_fields re-writes every column
+  tracer/socket.py:55  [optional_dereference]
+    'filter_config' assigned from .get() at line 54 but used without None check
 
-  sockets/session_manager.py:31  _heartbeat_loop()
-    coroutine called without await — body never runs
+  accounts/utils.py:220  [save_without_update_fields]
+    .save() without update_fields re-writes every column;
+    use save(update_fields=[...]) to prevent clobbering concurrent writes
 
-  ...
+  sockets/simulation_consumer.py:58  [missing_await]
+    coroutine '_subscribe_redis' called without await —
+    body never runs
+
+  accounts/user_onboard.py:156  [unvalidated_lookup_chain]
+    'original_metric_source_id' came from .get() but used as dict key
+    without guard — KeyError if absent
 ```
+
+Full findings: [`examples/future-agi/findings.md`](examples/future-agi/findings.md)
 
 ## Install
 
@@ -31,88 +44,75 @@ pip install "pact-tool[llm]"
 ## Usage
 
 ```bash
-# Scan a codebase
+# Full scan
 pact path/to/project/
 
-# Only report violations in files changed since main
+# Only violations in files changed since main (fast CI mode)
 pact path/to/project/ --diff main
 
-# Only analyze the dirty subgraph (callee changes propagate to callers)
+# Graph-aware incremental analysis — callee changes propagate to callers
 pact path/to/project/ --incremental main --stats
-
-# Emit results as JSON
-pact path/to/project/ --json
 
 # Suggest safe refactor targets (high violation density, low coupling)
 pact path/to/project/ --suggest
 
 # Full GitHub PR comment: call graph + reduction sequence + test coverage
 pact path/to/project/ --pr-comment
+
+# JSON output for downstream tooling
+pact path/to/project/ --json
 ```
 
 ## TLA+ spec synthesis
 
-pact can generate a TLA+ specification skeleton from Django models and Celery tasks:
+pact synthesizes a TLA+ spec from your Python source — mechanically extracting 70% from the AST, then using an LLM to fill in the remaining 30% (liveness, domain invariants).
 
 ```bash
-# Generate the 70% skeleton from AST extraction
+# Generate skeleton from Django models + Celery tasks
 pact spec gen futureagi/model_hub/models/dataset_eval_config.py
 ```
 
 ```tla
 ---------------------------- MODULE DatasetEvalConfig ----------------------------
-EXTENDS Naturals, Sequences, FiniteSets, TLC
-
 VARIABLES
-  datasetevalconfigs  \* SET OF DatasetEvalConfig records
+  datasetevalconfigs
 
 TypeInvariant ==
   /\ \A r \in datasetevalconfigs :
        /\ r.enabled \in BOOLEAN
        /\ r.debounce_seconds \in Nat
-       /\ r.column_mapping \in STRING
 
 DatasetEvalTemplateUnique ==
   \A r1, r2 \in datasetevalconfigs :
     r1 # r2 => <<r1.dataset, r1.eval_template>> # <<r2.dataset, r2.eval_template>>
-
-INVARIANT TypeInvariant
-INVARIANT DatasetEvalTemplateUnique
 ```
 
 ```bash
-# Fill in the remaining 30% (liveness, domain invariants) via LLM
+# Fill in liveness + domain invariants via LLM
 export ANTHROPIC_API_KEY=sk-...
 pact spec complete futureagi/model_hub/tasks/auto_eval.py -o AutoEval.tla
+
+# Model-check with TLC
+java -jar tla2tools.jar -config AutoEval.cfg AutoEval.tla
 ```
 
-The resulting `.tla` file is ready for [TLC model checking](https://github.com/tlaplus/tlaplus).
+The formal spec for pact itself lives at [`docs/tla/Pact.tla`](docs/tla/Pact.tla), verified under TLC in CI.
 
-## What pact finds
+## Failure modes
 
-| Failure mode | Example |
-|---|---|
-| `save_without_update_fields` | `user.save()` overwrites all columns |
-| `optional_dereference` | `result = obj.get(k); result.field` without None check |
-| `bare_except` | `except Exception: pass` silently drops errors |
-| `missing_await` | `async_fn()` called without `await` |
-| `required_arg_missing` | `Model.objects.create()` omits a required field |
-| `mutable_default_arg` | `def f(x=[]):` — shared across calls |
-| `format_arg_mismatch` | `"{} {}".format(a)` — too few arguments |
+| Mode | What it catches |
+|------|-----------------|
+| `optional_dereference` | `.first()` / `.get()` result used without `None` check |
+| `save_without_update_fields` | `.save()` overwrites all columns, races concurrent writes |
+| `bare_except` | `except Exception: pass` — silent error suppression |
+| `missing_await` | Async function called without `await` — body never runs |
+| `required_arg_missing` | Call omits a required argument |
+| `unvalidated_lookup_chain` | `d.get(k)` result used as dict key without guard |
+| `model_constraint` | Django model instantiation missing required field |
 | `llm_response_unguarded` | `response.choices[0]` without length check |
-| `unvalidated_lookup_chain` | `d[obj.get(k)]` — KeyError if get returns None |
+| `mutable_default_arg` | `def f(x=[]):` — shared state across all calls |
 
-Go support (via `pact-go`): `go_ignored_error`, `go_bare_recover`, `go_unchecked_assertion`, `go_goroutine_no_sync`.
-
-## Mermaid call graphs
-
-`--pr-comment` generates a full GitHub PR comment with:
-
-- Violation call graph (color-coded by severity)
-- Animated reduction sequence (shows which refactors eliminate the most violations)
-- Test coverage graph (test → production function edges)
-
-![pact call graph example](https://raw.githubusercontent.com/qizwiz/pact/main/docs/call_graph_example.png)
+Go support via `pact-go`: `go_ignored_error`, `go_bare_recover`, `go_unchecked_assertion`, `go_goroutine_no_sync`.
 
 ## CI integration
 
@@ -123,27 +123,46 @@ Go support (via `pact-go`): `go_ignored_error`, `go_bare_recover`, `go_unchecked
     pact . --incremental --stats --strict
 ```
 
-Or use the [GitHub Action](https://github.com/future-agi/future-agi/tree/main/.github/actions/pact).
+pact also runs against future-agi on every push (see [dogfood.yml](.github/workflows/dogfood.yml)).
 
-## Architecture
+## How it works
 
 ```
 extractor.py    AST visitor → ModelManifest, FunctionManifest, CallSite
-checker.py      Z3 constraint solver → Violation list
-z3_engine.py    Datalog (Z3 Fixedpoint) engine for whole-program queries
-specgen.py      AST → TLA+ skeleton (70%)
+failure_mode.py FailureMode plugin layer (per-call-site + file-level checks)
+z3_engine.py    Z3 Fixedpoint Datalog engine for whole-program queries
+checker.py      Orchestration: extraction → Z3 → deduplication → Violation list
+refactor.py     Suggestion engine: violation density ÷ caller coupling
+specgen.py      AST → TLA+ skeleton (70% mechanical)
 speccomplete.py Anthropic API → fills TODO stubs (30%)
-refactor.py     Refactor suggestion engine (violation density × coupling)
-visualize.py    Mermaid call graph + reduction sequence renderer
-go_checker.py   Python bridge to pact-go (Go AST checker)
-cli.py          CLI entry point
+visualize.py    Mermaid call graph + reduction sequence
+go/checker/     Go AST checker (Go codebase support)
+cli.py          Entry point
 ```
 
-## Contributing
+pact encodes each failure mode as a Z3 constraint over the call graph. The incremental engine performs BFS from changed files through the call graph, so only the dirty subgraph is re-analyzed — unchanged subtrees are cached.
 
-pact is extracted from [future-agi/future-agi](https://github.com/future-agi/future-agi) where it was developed as a CI gate. All contributions welcome — the [issue tracker](https://github.com/qizwiz/pact/issues) is open.
+## Formal verification layers
 
-The design philosophy: pact should be the formal verification layer that every AI developer adds to their CI without needing to know TLA+ or Z3. `spec gen` + `spec complete` + `tlc` = fully automated formal analysis from source code.
+pact uses three verification layers on itself:
+
+1. **Z3** — constraint satisfiability for per-call-site checks
+2. **Hypothesis** — property-based tests for the extraction and analysis pipeline
+3. **TLA+** — model-checked spec for the checker's termination, coverage, and monotonicity properties
+
+```bash
+# Run all three layers
+pytest . -q                    # Z3 + Hypothesis
+java -jar tla2tools.jar \
+  -config docs/tla/Pact.cfg \
+  -deadlock docs/tla/Pact.tla  # TLC
+```
+
+## Architecture decisions
+
+Design rationale is in [`docs/adr/`](docs/adr/). Start with
+[ADR-036](docs/adr/ADR-036-pact-formal-analysis-toolkit.md) — why Z3 Fixedpoint
+over traditional dataflow analysis, and why TLA+ over property testing alone.
 
 ## License
 

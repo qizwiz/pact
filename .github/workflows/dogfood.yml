@@ -1,0 +1,60 @@
+name: Dogfood — pact on future-agi
+
+on:
+  schedule:
+    - cron: "0 6 * * 1"   # every Monday at 06:00 UTC
+  workflow_dispatch:        # manual trigger
+  push:
+    branches: [main]
+    paths:
+      - "*.py"
+      - "go/**"
+
+jobs:
+  scan:
+    name: pact → future-agi/future-agi
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout pact
+        uses: actions/checkout@v4
+        with:
+          path: pact
+
+      - name: Checkout future-agi
+        uses: actions/checkout@v4
+        with:
+          repository: future-agi/future-agi
+          path: future-agi
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install pact + deps
+        run: pip install z3-solver networkx ./pact
+
+      - name: Run pact (full scan)
+        id: full
+        run: |
+          pact future-agi/futureagi/ --stats --json > /tmp/violations.json
+          count=$(python3 -c "import json; d=json.load(open('/tmp/violations.json')); print(len(d))")
+          echo "count=$count" >> $GITHUB_OUTPUT
+          echo "pact found $count violations in future-agi"
+
+      - name: Summarize by mode
+        run: |
+          python3 - <<'EOF'
+          import json, collections
+          data = json.load(open("/tmp/violations.json"))
+          by_mode = collections.Counter(v["context"] for v in data)
+          print(f"Total: {len(data)} violations\n")
+          for mode, count in by_mode.most_common():
+              print(f"  {count:5d}  {mode}")
+          EOF
+
+      - name: Upload violation report
+        uses: actions/upload-artifact@v4
+        with:
+          name: pact-future-agi-violations
+          path: /tmp/violations.json
+          retention-days: 30

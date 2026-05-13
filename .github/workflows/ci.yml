@@ -7,50 +7,68 @@ on:
 
 jobs:
   test:
-    name: Tests (Python ${{ matrix.python-version }})
+    name: pytest (${{ matrix.python-version }})
     runs-on: ubuntu-latest
     strategy:
       matrix:
         python-version: ["3.10", "3.11", "3.12"]
-
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
-
       - name: Install dependencies
-        run: pip install z3-solver hypothesis anthropic
-
-      - name: Run tests
-        run: python -m pytest . -q --ignore=test_go_checker.py
-
-      - name: Self-analysis (pact checks pact)
+        run: pip install z3-solver hypothesis pytest networkx
+      - name: Run test suite
+        run: pytest . -q --ignore=go --ignore=test_go_checker.py --tb=short
+      - name: pact self-analysis (dogfood)
         run: |
-          cd /tmp
-          python -m pytest $GITHUB_WORKSPACE -q \
-            --ignore=$GITHUB_WORKSPACE/test_go_checker.py \
-            --tb=short 2>&1 | tail -5
-          echo "pact self-analysis: running pact on its own source"
-          cd $GITHUB_WORKSPACE/..
-          python -c "
-          import sys
-          sys.path.insert(0, '$GITHUB_WORKSPACE')
-          import cli
-          violations = cli.main(['$GITHUB_WORKSPACE', '--stats', '--json'])
-          " && echo "✓ pact: no violations" || true
+          python - <<'EOF'
+          import sys, pathlib
+          sys.path.insert(0, str(pathlib.Path(".").resolve().parent))
+          from pact.checker import check_codebase
+          violations = check_codebase(pathlib.Path("."))
+          print(f"pact self-analysis: {len(violations)} violation(s) in pact source")
+          EOF
+
+  lint:
+    name: ruff + black
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install ruff black
+      - run: ruff check .
+      - run: black --check .
+
+  tla:
+    name: TLC model check (Pact.tla)
+    runs-on: ubuntu-latest
+    if: >
+      github.event_name == 'push' ||
+      github.event_name == 'workflow_dispatch'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download TLA+ tools
+        run: wget -q -O tla2tools.jar https://github.com/tlaplus/tlaplus/releases/download/v1.8.0/tla2tools.jar
+      - name: Run TLC on Pact.tla
+        run: |
+          java -XX:+UseParallelGC -jar tla2tools.jar \
+            -config docs/tla/Pact.cfg \
+            -deadlock \
+            docs/tla/Pact.tla 2>&1 | tail -20
 
   go-checker:
-    name: Go checker
+    name: Go checker (build + test)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
           go-version: "1.23"
-      - name: Build and test pact-go
-        run: |
-          cd go/checker
-          go build -o ../pact-go .
-          go test ./... -race
+      - name: Build
+        run: cd go/checker && go build -o ../pact-go .
+      - name: Test with race detector
+        run: cd go/checker && go test ./... -race -count=1
