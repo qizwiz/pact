@@ -608,6 +608,33 @@ def test_fetched_object_save_still_flagged(tmp_path):
     assert v, "Fetched object .save() (UPDATE) must still be flagged"
 
 
+def test_save_in_test_file_not_flagged(tmp_path):
+    # Corpus: celery/django-celery-beat, healthchecks — 521/1241 (42%) of
+    # save_without_update_fields violations are in test_*.py files.
+    # Test fixture setup is not subject to concurrent-update races.
+    _write_src(
+        tmp_path,
+        "test_models.py",  # filename starts with test_ → test file
+        """
+        from django.db import models
+
+        class ScheduleTests:
+            def create_model_interval(self, schedule):
+                interval = IntervalSchedule.from_schedule(schedule)
+                interval.save()  # INSERT fixture — must NOT flag
+                return interval
+
+            def test_update(self):
+                obj = MyModel.objects.get(pk=1)
+                obj.enabled = True
+                obj.save()  # test UPDATE — must NOT flag
+        """,
+    )
+    violations = check_codebase(tmp_path)
+    v = [v for v in violations if v.context == "save_without_update_fields"]
+    assert not v, f"save() in test files must not be flagged: {v}"
+
+
 def test_objects_get_not_flagged_as_optional(tmp_path):
     # Corpus: EvalAI — token = JwtToken.objects.get(user=user); token.refresh_token
     # Model.objects.get() raises DoesNotExist, never returns None.

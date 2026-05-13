@@ -636,6 +636,19 @@ def _new_object_save_lines(path: str) -> frozenset:
     return frozenset(new_obj_save_lines)
 
 
+def _is_test_file(path: str) -> bool:
+    """Return True if path looks like a test file (test_*.py, *_test.py, tests/ dir)."""
+    import os as _os
+    basename = _os.path.basename(path)
+    return (
+        basename.startswith("test_")
+        or basename.endswith("_test.py")
+        or "/test/" in path
+        or "/tests/" in path
+        or "/testing/" in path
+    )
+
+
 def _check_save_without_update_fields(
     call: CallSite,
     models: dict[str, ModelManifest],
@@ -647,6 +660,9 @@ def _check_save_without_update_fields(
         return []
     # Non-Django files cannot have Django model .save() calls.
     if not _file_imports_django(call.file):
+        return []
+    # Test files: .save() calls are fixture setup, not concurrent-update races.
+    if _is_test_file(call.file):
         return []
     # Positional args mean this is PIL/file/custom .save(path, format, ...) not Django.
     if call.positional_count >= 1 or call.has_var_args:
