@@ -1835,3 +1835,49 @@ def test_typing_overload_mutable_default_not_flagged(tmp_path):
     violations = check_codebase(tmp_path)
     mda = [v for v in violations if v.context == "mutable_default_arg" and "validators.py" in v.file]
     assert len(mda) == 1, f"Expected 1 (impl only), got {len(mda)}"
+
+
+def test_list_comprehension_gather_pattern_not_flagged(tmp_path):
+    """tasks = [coro(item) for item in items] is the asyncio batch/gather pattern — not a bug."""
+    _write_src(
+        tmp_path,
+        "batch_runner.py",
+        """
+        import asyncio
+
+        async def process_item(item):
+            return item * 2
+
+        def run_batch(items):
+            tasks = [process_item(item) for item in items]
+            return asyncio.get_event_loop().run_until_complete(asyncio.gather(*tasks))
+
+        def run_annotated(items):
+            tasks: list = [process_item(item) for item in items]
+            return asyncio.get_event_loop().run_until_complete(asyncio.gather(*tasks))
+        """,
+    )
+    violations = check_codebase(tmp_path)
+    ma = [v for v in violations if v.context == "missing_await" and "batch_runner.py" in v.file]
+    assert len(ma) == 0, f"Expected 0 missing_await in list-comp gather pattern, got {len(ma)}: {[(v.line, v.call) for v in ma]}"
+
+
+def test_gather_star_comprehension_not_flagged(tmp_path):
+    """asyncio.gather(*[coro(item) for item in items]) — starred comprehension passed directly."""
+    _write_src(
+        tmp_path,
+        "direct_gather.py",
+        """
+        import asyncio
+
+        async def fetch(url):
+            return url
+
+        async def main(urls):
+            results = await asyncio.gather(*[fetch(url) for url in urls])
+            return results
+        """,
+    )
+    violations = check_codebase(tmp_path)
+    ma = [v for v in violations if v.context == "missing_await" and "direct_gather.py" in v.file]
+    assert len(ma) == 0, f"Expected 0 missing_await for starred comprehension, got {len(ma)}: {[(v.line, v.call) for v in ma]}"

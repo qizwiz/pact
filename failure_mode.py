@@ -916,6 +916,25 @@ def _scan_file_missing_await(path: str) -> list[FailureEvidence]:
         if isinstance(parent, _ast.Call):
             if isinstance(parent.func, _ast.Attribute) and parent.func.attr == "append":
                 return True
+        # tasks = [coro(item) for item in items] — batch/gather collection pattern.
+        # The call is the `elt` of a list/set/generator comprehension that is assigned
+        # to a variable (not discarded as an expression statement).
+        if isinstance(parent, (_ast.ListComp, _ast.SetComp, _ast.GeneratorExp)):
+            gp = parent_map.get(id(parent))
+            if isinstance(gp, (_ast.Assign, _ast.AnnAssign, _ast.AugAssign)):
+                return True
+            # asyncio.gather(*[coro(item) for item in items])
+            if isinstance(gp, _ast.Starred):
+                ggp = parent_map.get(id(gp))
+                if isinstance(ggp, _ast.Call):
+                    func = ggp.func
+                    fname = (
+                        func.attr
+                        if isinstance(func, _ast.Attribute)
+                        else func.id if isinstance(func, _ast.Name) else None
+                    )
+                    if fname in _CORO_CONSUMERS:
+                        return True
         # task = coro() — coroutine stored for later scheduling (ensure_future, gather)
         # The bug pattern is an expression statement (parent is Expr), not an assignment.
         if isinstance(parent, (_ast.Assign, _ast.AnnAssign, _ast.AugAssign)):
