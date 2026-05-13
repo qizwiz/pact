@@ -17,7 +17,6 @@ from typing import Optional
 
 from .specgen import synthesize as _spec_synthesize
 
-
 _SYSTEM = (
     "You are a TLA+ specification expert. Your job is to complete a partially"
     " generated TLA+ spec by filling in every TODO comment.\n\n"
@@ -44,13 +43,9 @@ def _build_user_msg(filename: str, source: str, skeleton: str) -> str:
     """
     return (
         f"## Python source ({filename})\n\n"
-        "```python\n"
-        + source
-        + "\n```\n\n"
+        "```python\n" + source + "\n```\n\n"
         "## TLA+ skeleton to complete\n\n"
-        "```tla\n"
-        + skeleton
-        + "\n```\n\n"
+        "```tla\n" + skeleton + "\n```\n\n"
         "Complete the spec. Output only the TLA+ text.\n"
     )
 
@@ -72,7 +67,11 @@ def spec_complete(
     module_name = "".join(w.capitalize() for w in path.stem.split("_"))
     skeleton = _spec_synthesize(source, module_name)
 
-    key = api_key or os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("PACT_ANTHROPIC_API_KEY")
+    key = (
+        api_key
+        or os.environ.get("ANTHROPIC_API_KEY")
+        or os.environ.get("PACT_ANTHROPIC_API_KEY")
+    )
     if not key:
         raise RuntimeError(
             "ANTHROPIC_API_KEY not set. "
@@ -80,11 +79,12 @@ def spec_complete(
         )
 
     import anthropic
+
     client = anthropic.Anthropic(api_key=key)
 
     user_msg = _build_user_msg(
         filename=path.name,
-        source=source[:8000],   # stay within context; models.py rarely exceeds this
+        source=source[:8000],  # stay within context; models.py rarely exceeds this
         skeleton=skeleton,
     )
 
@@ -95,15 +95,16 @@ def spec_complete(
         messages=[{"role": "user", "content": user_msg}],
     )
     if not response.content:
-        raise RuntimeError("API returned empty content — check model, key, and rate limits")
+        raise RuntimeError(
+            "API returned empty content — check model, key, and rate limits"
+        )
     completed = response.content[0].text.strip()
 
     # Strip markdown code fences if the model adds them
     if completed.startswith("```"):
         lines = completed.splitlines()
         completed = "\n".join(
-            line for line in lines
-            if not line.startswith("```")
+            line for line in lines if not line.startswith("```")
         ).strip()
 
     if output:

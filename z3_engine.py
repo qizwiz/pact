@@ -37,9 +37,22 @@ from pathlib import Path
 
 import z3 as _z3
 from z3 import (
-    And, BitVecSort, BitVecVal, BitVecs, BoolSort,
-    Exists, Fixedpoint, ForAll, Function, Implies, Not,
-    is_and, is_eq, is_false, is_or, sat,
+    And,
+    BitVecSort,
+    BitVecVal,
+    BitVecs,
+    BoolSort,
+    Exists,
+    Fixedpoint,
+    ForAll,
+    Function,
+    Implies,
+    Not,
+    is_and,
+    is_eq,
+    is_false,
+    is_or,
+    sat,
 )
 
 from .extractor import extract_from_codebase
@@ -81,23 +94,25 @@ def _extract_tuples(formula: _z3.BoolRef) -> list[tuple[int, int]]:
             tuples.append((vals[0], vals[1]))  # (site, field)
     return tuples
 
+
 # Domain size: supports up to 2^BITS distinct IDs per intern table.
 # 16 bits = 65536 — more than enough for any codebase.
 _BITS = 16
 _BVS = BitVecSort(_BITS)
+
 
 def _bv(n: int):
     return BitVecVal(n, _BITS)
 
 
 # ── EDB ───────────────────────────────────────────────────────────────────────
-site_creates  = Function('site_creates',  _BVS, _BVS, BoolSort())
-site_provides = Function('site_provides', _BVS, _BVS, BoolSort())
-model_req     = Function('model_req',     _BVS, _BVS, BoolSort())
+site_creates = Function("site_creates", _BVS, _BVS, BoolSort())
+site_provides = Function("site_provides", _BVS, _BVS, BoolSort())
+model_req = Function("model_req", _BVS, _BVS, BoolSort())
 
 # ── IDB ───────────────────────────────────────────────────────────────────────
-site_req   = Function('site_req',   _BVS, _BVS, BoolSort())  # derived join
-violation  = Function('violation',  _BVS, _BVS, BoolSort())  # the violations
+site_req = Function("site_req", _BVS, _BVS, BoolSort())  # derived join
+violation = Function("violation", _BVS, _BVS, BoolSort())  # the violations
 
 
 @dataclass
@@ -109,7 +124,9 @@ class Z3Violation:
     context: str = "model_constraint"
 
     def __str__(self) -> str:
-        return f"{self.file}:{self.line}  {self.call}  missing: {', '.join(self.missing)}"
+        return (
+            f"{self.file}:{self.line}  {self.call}  missing: {', '.join(self.missing)}"
+        )
 
 
 class PactEngine:
@@ -120,30 +137,37 @@ class PactEngine:
 
     def __init__(self) -> None:
         self._fp = Fixedpoint()
-        self._fp.set(engine='datalog')
+        self._fp.set(engine="datalog")
         for rel in (site_creates, site_provides, model_req, site_req, violation):
             self._fp.register_relation(rel)
 
         # Stratum 1: materialize the join (no negation, existential _m is fine here)
         # site_req(S, F) :- site_creates(S, M), model_req(M, F)
-        _s, _m, _f = BitVecs('_s _m _f', _BITS)
-        self._fp.add_rule(ForAll(
-            [_s, _m, _f],
-            Implies(And(site_creates(_s, _m), model_req(_m, _f)), site_req(_s, _f)),
-        ))
+        _s, _m, _f = BitVecs("_s _m _f", _BITS)
+        self._fp.add_rule(
+            ForAll(
+                [_s, _m, _f],
+                Implies(And(site_creates(_s, _m), model_req(_m, _f)), site_req(_s, _f)),
+            )
+        )
 
         # Stratum 2: negate site_provides — now no existential in the negated atom
         # violation(S, F) :- site_req(S, F), not site_provides(S, F)
-        _s2, _f2 = BitVecs('_s2 _f2', _BITS)
-        self._fp.add_rule(ForAll(
-            [_s2, _f2],
-            Implies(And(site_req(_s2, _f2), Not(site_provides(_s2, _f2))), violation(_s2, _f2)),
-        ))
+        _s2, _f2 = BitVecs("_s2 _f2", _BITS)
+        self._fp.add_rule(
+            ForAll(
+                [_s2, _f2],
+                Implies(
+                    And(site_req(_s2, _f2), Not(site_provides(_s2, _f2))),
+                    violation(_s2, _f2),
+                ),
+            )
+        )
 
         # Intern tables
-        self._site_id:  dict[tuple, int] = {}
-        self._field_id: dict[str, int]   = {}
-        self._model_id: dict[str, int]   = {}
+        self._site_id: dict[tuple, int] = {}
+        self._field_id: dict[str, int] = {}
+        self._model_id: dict[str, int] = {}
         self._site_meta: dict[int, dict] = {}
 
     def _sid(self, file: str, line: int, call: str) -> int:
@@ -186,7 +210,7 @@ class PactEngine:
 
     def violations(self) -> list[Z3Violation]:
         """One query. Z3 derives all violations."""
-        qs, qf = BitVecs('qs qf', _BITS)
+        qs, qf = BitVecs("qs qf", _BITS)
         result = self._fp.query(Exists([qs, qf], violation(qs, qf)))
         if result != sat:
             return []

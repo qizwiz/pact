@@ -66,6 +66,7 @@ def _can_go_run() -> bool:
 # Core runner
 # ---------------------------------------------------------------------------
 
+
 def run_go_checker(
     paths: list[str | Path],
     *,
@@ -144,19 +145,22 @@ def run_go_checker(
 
     evidence = []
     for rec in records:
-        evidence.append(FailureEvidence(
-            mode_name=rec.get("mode", "go_unknown"),
-            file=rec.get("file", ""),
-            line=rec.get("line", 0),
-            call=rec.get("call", ""),
-            message=rec.get("message", ""),
-        ))
+        evidence.append(
+            FailureEvidence(
+                mode_name=rec.get("mode", "go_unknown"),
+                file=rec.get("file", ""),
+                line=rec.get("line", 0),
+                call=rec.get("call", ""),
+                message=rec.get("message", ""),
+            )
+        )
     return evidence
 
 
 # ---------------------------------------------------------------------------
 # CLI entry point
 # ---------------------------------------------------------------------------
+
 
 def main(argv=None) -> int:
     import argparse
@@ -166,11 +170,27 @@ def main(argv=None) -> int:
         description="Run pact Go failure-mode analysis and emit violations as JSON.",
     )
     p.add_argument("paths", nargs="*", help="Go files or directories to analyze")
-    p.add_argument("--file", dest="files", action="append", default=[],
-                   metavar="FILE", help="Go source file (repeatable)")
-    p.add_argument("--dir", dest="dirs", action="append", default=[],
-                   metavar="DIR", help="Directory to analyze recursively (repeatable)")
-    p.add_argument("--json", action="store_true", help="Emit raw JSON array (default: human-readable)")
+    p.add_argument(
+        "--file",
+        dest="files",
+        action="append",
+        default=[],
+        metavar="FILE",
+        help="Go source file (repeatable)",
+    )
+    p.add_argument(
+        "--dir",
+        dest="dirs",
+        action="append",
+        default=[],
+        metavar="DIR",
+        help="Directory to analyze recursively (repeatable)",
+    )
+    p.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit raw JSON array (default: human-readable)",
+    )
     p.add_argument("--binary", help="Path to pact-go binary")
     args = p.parse_args(argv)
 
@@ -183,6 +203,7 @@ def main(argv=None) -> int:
 
     if args.json:
         import dataclasses
+
         print(json.dumps([dataclasses.asdict(e) for e in evidence], indent=2))
     else:
         if not evidence:

@@ -12,7 +12,9 @@ from .refactor import suggest_refactors
 from .specgen import spec_gen
 from .speccomplete import spec_complete
 from .visualize import (
-    format_pr_comment, render_mermaid, render_test_coverage_mermaid,
+    format_pr_comment,
+    render_mermaid,
+    render_test_coverage_mermaid,
 )
 
 
@@ -23,16 +25,23 @@ class DiffResolutionError(RuntimeError):
 def _changed_files_on_branch(base: str = "main", cwd: Path = None) -> set[str]:
     """Return absolute paths of files changed vs base branch."""
     import subprocess
+
     cwd = cwd or Path(".").resolve()
     try:
         git_root = subprocess.run(
             ["git", "rev-parse", "--show-toplevel"],
-            capture_output=True, text=True, check=True, cwd=cwd,
+            capture_output=True,
+            text=True,
+            check=True,
+            cwd=cwd,
         ).stdout.strip()
         git_root_path = Path(git_root)
         result = subprocess.run(
             ["git", "diff", "--name-only", f"{base}...HEAD"],
-            capture_output=True, text=True, check=True, cwd=git_root_path,
+            capture_output=True,
+            text=True,
+            check=True,
+            cwd=git_root_path,
         )
         return {
             str(git_root_path / p.strip())
@@ -56,20 +65,38 @@ def _spec_cmd(argv) -> int:
 
     gen_p = sub.add_parser("gen", help="Generate a TLA+ skeleton from a Python file")
     gen_p.add_argument("file", metavar="FILE", help="Python source file to analyze")
-    gen_p.add_argument("--output", "-o", metavar="OUT", default=None,
-                       help="Write spec to OUT instead of stdout")
+    gen_p.add_argument(
+        "--output",
+        "-o",
+        metavar="OUT",
+        default=None,
+        help="Write spec to OUT instead of stdout",
+    )
 
     cmp_p = sub.add_parser(
         "complete",
         help="Fill in TODO stubs using an LLM (requires ANTHROPIC_API_KEY)",
     )
     cmp_p.add_argument("file", metavar="FILE", help="Python source file to analyze")
-    cmp_p.add_argument("--output", "-o", metavar="OUT", default=None,
-                       help="Write completed spec to OUT instead of stdout")
-    cmp_p.add_argument("--model", default="claude-haiku-4-5-20251001", metavar="MODEL",
-                       help="Claude model to use (default: claude-haiku-4-5-20251001)")
-    cmp_p.add_argument("--api-key", default=None, metavar="KEY",
-                       help="Anthropic API key (default: $ANTHROPIC_API_KEY)")
+    cmp_p.add_argument(
+        "--output",
+        "-o",
+        metavar="OUT",
+        default=None,
+        help="Write completed spec to OUT instead of stdout",
+    )
+    cmp_p.add_argument(
+        "--model",
+        default="claude-haiku-4-5-20251001",
+        metavar="MODEL",
+        help="Claude model to use (default: claude-haiku-4-5-20251001)",
+    )
+    cmp_p.add_argument(
+        "--api-key",
+        default=None,
+        metavar="KEY",
+        help="Anthropic API key (default: $ANTHROPIC_API_KEY)",
+    )
 
     args = p.parse_args(argv)
 
@@ -111,27 +138,40 @@ def main(argv=None) -> int:
         description="Python AST Constraint Tool — verify constraints across a codebase using Z3.",
     )
     p.add_argument(
-        "root", nargs="?", default=".", metavar="DIR",
+        "root",
+        nargs="?",
+        default=".",
+        metavar="DIR",
         help="Root directory to analyze (default: current directory)",
     )
     p.add_argument(
-        "--json", action="store_true", dest="json_mode",
+        "--json",
+        action="store_true",
+        dest="json_mode",
         help="Emit results as JSON array",
     )
     p.add_argument(
-        "--strict", action="store_true",
+        "--strict",
+        action="store_true",
         help="Exit 1 if any violation found",
     )
     p.add_argument(
-        "--stats", action="store_true",
+        "--stats",
+        action="store_true",
         help="Print extraction statistics before results",
     )
     p.add_argument(
-        "--diff", metavar="BASE", nargs="?", const="main",
+        "--diff",
+        metavar="BASE",
+        nargs="?",
+        const="main",
         help="Only report violations in files changed vs BASE branch (default: main)",
     )
     p.add_argument(
-        "--incremental", metavar="BASE", nargs="?", const="main",
+        "--incremental",
+        metavar="BASE",
+        nargs="?",
+        const="main",
         help=(
             "Analyze only the dirty subgraph: files changed vs BASE plus their "
             "transitive callers (default BASE: main). Faster than --diff because "
@@ -139,38 +179,52 @@ def main(argv=None) -> int:
         ),
     )
     p.add_argument(
-        "--suggest", action="store_true",
+        "--suggest",
+        action="store_true",
         help="Suggest safe refactor targets: functions with high violation density and low coupling",
     )
     p.add_argument(
-        "--suggest-min", type=int, default=1, metavar="N",
+        "--suggest-min",
+        type=int,
+        default=1,
+        metavar="N",
         help="Minimum violations to include in refactor suggestions (default: 1)",
     )
     p.add_argument(
-        "--reduce", action="store_true",
+        "--reduce",
+        action="store_true",
         help=(
             "Graph reduction analysis: find call cycles (SCCs), pass-through nodes, "
             "and fan-out hubs — the structural moving pieces that drive fragility"
         ),
     )
     p.add_argument(
-        "--hub-threshold", type=int, default=8, metavar="N",
+        "--hub-threshold",
+        type=int,
+        default=8,
+        metavar="N",
         help="Fan-out threshold for hub detection in --reduce (default: 8)",
     )
     p.add_argument(
-        "--reduce-limit", type=int, default=20, metavar="N",
+        "--reduce-limit",
+        type=int,
+        default=20,
+        metavar="N",
         help="Max simplification targets to show in --reduce output (default: 20)",
     )
     p.add_argument(
-        "--graph", action="store_true",
+        "--graph",
+        action="store_true",
         help="Print the violation call graph as a Mermaid flowchart",
     )
     p.add_argument(
-        "--graph-tests", action="store_true",
+        "--graph-tests",
+        action="store_true",
         help="Print a separate test coverage graph (test→production edges)",
     )
     p.add_argument(
-        "--pr-comment", action="store_true",
+        "--pr-comment",
+        action="store_true",
         help="Print a full GitHub PR comment body (call graph + reduction sequence + test coverage)",
     )
     args = p.parse_args(argv)
@@ -184,13 +238,17 @@ def main(argv=None) -> int:
     models, functions, call_sites = extracted
 
     if args.stats:
-        print(f"models: {len(models)}  functions: {len(functions)}  call sites: {len(call_sites)}")
+        print(
+            f"models: {len(models)}  functions: {len(functions)}  call sites: {len(call_sites)}"
+        )
 
     incremental_stats: dict = {}
     if args.incremental is not None:
         changed = _changed_files_on_branch(args.incremental, cwd=root)
         violations, incremental_stats = check_codebase_incremental(
-            root, changed, _extracted=extracted,
+            root,
+            changed,
+            _extracted=extracted,
         )
         if args.stats:
             s = incremental_stats
@@ -211,12 +269,21 @@ def main(argv=None) -> int:
             print(f"files changed vs {args.diff}: {len(changed)}")
 
     if args.json_mode:
-        print(json.dumps(
-            [{"file": v.file, "line": v.line, "call": v.call,
-              "missing": v.missing, "context": v.context}
-             for v in violations],
-            indent=2,
-        ))
+        print(
+            json.dumps(
+                [
+                    {
+                        "file": v.file,
+                        "line": v.line,
+                        "call": v.call,
+                        "missing": v.missing,
+                        "context": v.context,
+                    }
+                    for v in violations
+                ],
+                indent=2,
+            )
+        )
     else:
         if not violations:
             label = f"(diff vs {args.diff})" if args.diff else ""
@@ -231,7 +298,9 @@ def main(argv=None) -> int:
     suggestions: list = []
     if args.suggest or args.pr_comment:
         suggestions = suggest_refactors(
-            violations, functions, call_sites,
+            violations,
+            functions,
+            call_sites,
             min_violations=args.suggest_min,
         )
         if args.suggest and not args.json_mode:
@@ -245,28 +314,38 @@ def main(argv=None) -> int:
 
     if args.reduce and not args.json_mode:
         reduction = analyze_graph_reduction(
-            functions, call_sites, violations,
+            functions,
+            call_sites,
+            violations,
             hub_threshold=args.hub_threshold,
         )
         if reduction:
-            shown = reduction[:args.reduce_limit]
-            print(f"\n⬡ pact --reduce: {len(reduction)} simplification target(s)"
-                  f"  (showing top {len(shown)})\n")
+            shown = reduction[: args.reduce_limit]
+            print(
+                f"\n⬡ pact --reduce: {len(reduction)} simplification target(s)"
+                f"  (showing top {len(shown)})\n"
+            )
             for c in shown:
                 print(c.summary())
                 print()
         else:
-            print("\n✓  pact --reduce: call graph has no detected tangles, pass-throughs, or hubs")
+            print(
+                "\n✓  pact --reduce: call graph has no detected tangles, pass-throughs, or hubs"
+            )
 
     if args.graph:
         # Use suggestion data for accurate attribution if available; else compute
         if not suggestions and violations:
-            _graph_suggestions = suggest_refactors(violations, functions, call_sites, verify=False)
+            _graph_suggestions = suggest_refactors(
+                violations, functions, call_sites, verify=False
+            )
         else:
             _graph_suggestions = suggestions
         vcounts = {s.func_name: s.violation_count for s in _graph_suggestions}
         diagram = render_mermaid(
-            violations, functions, call_sites,
+            violations,
+            functions,
+            call_sites,
             highlight={s.func_name for s in _graph_suggestions},
             violation_counts=vcounts,
         )

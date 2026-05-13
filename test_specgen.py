@@ -2,10 +2,10 @@
 
 from .specgen import synthesize
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _spec(src: str, name: str = "Test") -> str:
     return synthesize(src, name)
@@ -14,6 +14,7 @@ def _spec(src: str, name: str = "Test") -> str:
 # ---------------------------------------------------------------------------
 # Model extraction
 # ---------------------------------------------------------------------------
+
 
 class TestModelExtraction:
     def test_detects_django_model_class(self):
@@ -92,6 +93,7 @@ class Foo(models.Model):
 # Unique constraints
 # ---------------------------------------------------------------------------
 
+
 class TestUniqueConstraints:
     def test_unique_together_extracted(self):
         src = """
@@ -130,6 +132,7 @@ class Config(models.Model):
 # ---------------------------------------------------------------------------
 # Task extraction
 # ---------------------------------------------------------------------------
+
 
 class TestTaskExtraction:
     def test_shared_task_produces_action(self):
@@ -195,6 +198,7 @@ def read_config(key):
 # ---------------------------------------------------------------------------
 # Spec structure
 # ---------------------------------------------------------------------------
+
 
 class TestSpecStructure:
     def test_module_header_present(self):

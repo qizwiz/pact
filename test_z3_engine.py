@@ -24,6 +24,7 @@ def _make_fixture(source: str) -> Path:
 # Helpers
 # ──────────────────────────────────────────────────────────────────────────────
 
+
 def _run(source: str) -> list:
     root = _make_fixture(source)
     engine = PactEngine()
@@ -34,6 +35,7 @@ def _run(source: str) -> list:
 # ──────────────────────────────────────────────────────────────────────────────
 # Happy-path: no violations
 # ──────────────────────────────────────────────────────────────────────────────
+
 
 def test_no_violation_when_all_required_fields_provided():
     viols = _run("""
@@ -78,6 +80,7 @@ def test_field_with_default_not_required():
 # Single violation
 # ──────────────────────────────────────────────────────────────────────────────
 
+
 def test_missing_required_field_detected():
     viols = _run("""
         import django.db.models as m
@@ -88,7 +91,7 @@ def test_missing_required_field_detected():
         Widget.objects.create()
     """)
     assert len(viols) == 1
-    assert 'name' in viols[0].missing
+    assert "name" in viols[0].missing
 
 
 def test_violation_reports_correct_file_and_line():
@@ -111,7 +114,7 @@ def test_violation_reports_correct_file_and_line():
 
     assert len(viols) == 1
     assert viols[0].file == str(fixture)
-    assert viols[0].line == 6   # Widget.objects.create() is line 6
+    assert viols[0].line == 6  # Widget.objects.create() is line 6
 
 
 def test_multiple_missing_fields_all_reported():
@@ -126,12 +129,13 @@ def test_multiple_missing_fields_all_reported():
         Order.objects.create(user='alice')
     """)
     assert len(viols) == 1
-    assert set(viols[0].missing) == {'total', 'status'}
+    assert set(viols[0].missing) == {"total", "status"}
 
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Multiple sites
 # ──────────────────────────────────────────────────────────────────────────────
+
 
 def test_only_bad_site_flagged_not_good_site():
     viols = _run("""
@@ -161,13 +165,14 @@ def test_two_models_only_bad_create_flagged():
         Gadget.objects.create()              # missing title
     """)
     assert len(viols) == 1
-    assert 'title' in viols[0].missing
-    assert 'Widget' not in viols[0].call
+    assert "title" in viols[0].missing
+    assert "Widget" not in viols[0].call
 
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Cross-file: model defined in one file, create() in another
 # ──────────────────────────────────────────────────────────────────────────────
+
 
 def test_cross_file_violation_detected():
     d = Path(tempfile.mkdtemp())
@@ -187,13 +192,14 @@ def test_cross_file_violation_detected():
     engine.load(d)
     viols = engine.violations()
     assert len(viols) == 1
-    assert 'name' in viols[0].missing
-    assert 'views.py' in viols[0].file
+    assert "name" in viols[0].missing
+    assert "views.py" in viols[0].file
 
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Unknown model — no violation (open-world assumption)
 # ──────────────────────────────────────────────────────────────────────────────
+
 
 def test_unknown_model_not_flagged():
     viols = _run("""

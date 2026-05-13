@@ -34,14 +34,15 @@ from .encoder import Violation
 from .extractor import CallSite, FunctionManifest
 from .refactor import RefactorSuggestion
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _is_test_file(path: str) -> bool:
     """True if path looks like a test file (test_*.py or conftest.py)."""
     import os
+
     base = os.path.basename(path)
     return base.startswith("test_") or base == "conftest.py"
 
@@ -49,6 +50,7 @@ def _is_test_file(path: str) -> bool:
 # ---------------------------------------------------------------------------
 # Colour mapping: violation score → Mermaid style class
 # ---------------------------------------------------------------------------
+
 
 def _score(func_name: str, violations: list[Violation]) -> int:
     return sum(1 for v in violations if _attr_func(v) == func_name)
@@ -78,6 +80,7 @@ def _node_id(name: str) -> str:
 # Core: build a graph of which functions call which
 # ---------------------------------------------------------------------------
 
+
 def _call_edges(
     functions: list[FunctionManifest],
     call_sites: list[CallSite],
@@ -104,6 +107,7 @@ def _call_edges(
 # ---------------------------------------------------------------------------
 # Mermaid renderer
 # ---------------------------------------------------------------------------
+
 
 def render_mermaid(
     violations: list[Violation],
@@ -133,8 +137,7 @@ def render_mermaid(
     # Optionally filter out test files so tests don't pollute the graph
     if skip_test_files:
         functions = [f for f in functions if not _is_test_file(f.file)]
-        call_sites = [cs for cs in call_sites
-                      if not _is_test_file(cs.file)]
+        call_sites = [cs for cs in call_sites if not _is_test_file(cs.file)]
 
     # Per-function violation counts — prefer caller-attributed data
     if violation_counts is not None:
@@ -182,7 +185,7 @@ def render_mermaid(
             label = f"{label}\\n({count}✗)"
         cls = "resolved" if name in resolved else _style_class(count)
         shape_open, shape_close = ("([", "])") if name in highlight else ("[", "]")
-        lines.append(f"  {nid}{shape_open}\"{label}\"{shape_close}:::{cls}")
+        lines.append(f'  {nid}{shape_open}"{label}"{shape_close}:::{cls}')
 
     # Edges
     seen_edges: set[tuple[str, str]] = set()
@@ -212,6 +215,7 @@ def render_mermaid(
 # Test coverage graph
 # ---------------------------------------------------------------------------
 
+
 def render_test_coverage_mermaid(
     functions: list[FunctionManifest],
     call_sites: list[CallSite],
@@ -231,9 +235,10 @@ def render_test_coverage_mermaid(
     for cs in call_sites:
         caller = cs.caller_name or ""
         callee = cs.callee_name
-        if caller in test_funcs and (callee in prod_funcs or callee.split(".")[-1] in {
-            n.split(".")[-1] for n in prod_funcs
-        }):
+        if caller in test_funcs and (
+            callee in prod_funcs
+            or callee.split(".")[-1] in {n.split(".")[-1] for n in prod_funcs}
+        ):
             # Resolve short name
             if callee not in prod_funcs:
                 for pf in prod_funcs:
@@ -248,7 +253,10 @@ def render_test_coverage_mermaid(
     if not involved_tests:
         return f"flowchart {direction}\n  %% no test→production edges found"
 
-    lines = [f"flowchart {direction}", "  %% test coverage — left: tests, right: production"]
+    lines = [
+        f"flowchart {direction}",
+        "  %% test coverage — left: tests, right: production",
+    ]
 
     # Count how many tests cover each prod function
     cover_count: dict[str, int] = {}
@@ -258,7 +266,7 @@ def render_test_coverage_mermaid(
     for name in sorted(involved_tests):
         nid = _node_id(name)
         label = name.split(".")[-1].replace("test_", "")
-        lines.append(f"  {nid}[\"{label}\"]:::test")
+        lines.append(f'  {nid}["{label}"]:::test')
 
     for name in sorted(involved_prod):
         nid = _node_id(name)
@@ -266,7 +274,7 @@ def render_test_coverage_mermaid(
         n = cover_count.get(name, 0)
         label_full = f"{label}\\n({n} test{'s' if n != 1 else ''})"
         cls = "well_covered" if n >= 3 else "covered" if n >= 1 else "uncovered"
-        lines.append(f"  {nid}([\"{label_full}\"]):::{cls}")
+        lines.append(f'  {nid}(["{label_full}"]):::{cls}')
 
     seen: set[tuple[str, str]] = set()
     for a, b in edges:
@@ -288,6 +296,7 @@ def render_test_coverage_mermaid(
 # ---------------------------------------------------------------------------
 # Reduction sequence: animate refactors one by one
 # ---------------------------------------------------------------------------
+
 
 def render_reduction_sequence(
     suggestions: list[RefactorSuggestion],
@@ -312,31 +321,39 @@ def render_reduction_sequence(
     frames = []
 
     # Frame 0: baseline
-    frames.append((
-        "Baseline — all violations",
-        render_mermaid(
-            violations, functions, call_sites,
-            highlight=candidate_names,
-            violation_counts=all_vcounts,
-            title="pact refactor targets (dashed = extraction candidate)",
-        ),
-    ))
+    frames.append(
+        (
+            "Baseline — all violations",
+            render_mermaid(
+                violations,
+                functions,
+                call_sites,
+                highlight=candidate_names,
+                violation_counts=all_vcounts,
+                title="pact refactor targets (dashed = extraction candidate)",
+            ),
+        )
+    )
 
     resolved: set[str] = set()
     for s in suggestions:
         resolved.add(s.func_name)
         remaining_vcounts = {k: v for k, v in all_vcounts.items() if k not in resolved}
-        frames.append((
-            f"After extracting `{s.func_name.split('.')[-1]}` "
-            f"({s.violation_count} violation{'s' if s.violation_count != 1 else ''} resolved)",
-            render_mermaid(
-                violations, functions, call_sites,
-                highlight=candidate_names - resolved,
-                resolved=resolved,
-                violation_counts=remaining_vcounts,
-                title=f"resolved: {', '.join(sorted(resolved))}",
-            ),
-        ))
+        frames.append(
+            (
+                f"After extracting `{s.func_name.split('.')[-1]}` "
+                f"({s.violation_count} violation{'s' if s.violation_count != 1 else ''} resolved)",
+                render_mermaid(
+                    violations,
+                    functions,
+                    call_sites,
+                    highlight=candidate_names - resolved,
+                    resolved=resolved,
+                    violation_counts=remaining_vcounts,
+                    title=f"resolved: {', '.join(sorted(resolved))}",
+                ),
+            )
+        )
 
     return frames
 
@@ -344,6 +361,7 @@ def render_reduction_sequence(
 # ---------------------------------------------------------------------------
 # GitHub PR comment formatter
 # ---------------------------------------------------------------------------
+
 
 def format_pr_comment(
     suggestions: list[RefactorSuggestion],
@@ -365,7 +383,11 @@ def format_pr_comment(
     header = (
         f"## pact analysis\n\n"
         f"**{n_v} violation{'s' if n_v != 1 else ''}** found"
-        + (f" · **{n_s} refactor target{'s' if n_s != 1 else ''}** identified" if n_s else "")
+        + (
+            f" · **{n_s} refactor target{'s' if n_s != 1 else ''}** identified"
+            if n_s
+            else ""
+        )
         + "\n"
     )
 
@@ -377,10 +399,7 @@ def format_pr_comment(
     if not frames:
         # Just the static graph
         static = render_mermaid(violations, functions, call_sites)
-        return (
-            header
-            + "\n```mermaid\n" + static + "\n```\n"
-        )
+        return header + "\n```mermaid\n" + static + "\n```\n"
 
     parts = [header]
 

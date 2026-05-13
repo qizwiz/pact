@@ -12,6 +12,7 @@ from .extractor import CallSite, FunctionManifest
 
 try:
     import networkx as nx
+
     _HAS_NX = True
 except ImportError:
     _HAS_NX = False

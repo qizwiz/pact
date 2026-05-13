@@ -6,7 +6,12 @@ from pathlib import Path
 from typing import Optional
 
 from .encoder import Violation
-from .extractor import FunctionManifest, ModelManifest, extract_from_codebase, iter_python_files
+from .extractor import (
+    FunctionManifest,
+    ModelManifest,
+    extract_from_codebase,
+    iter_python_files,
+)
 from .failure_mode import DEFAULT_MODES, FailureEvidence, FailureMode
 
 
@@ -47,7 +52,9 @@ def _compute_dirty_set(
             for caller_file in callee_to_caller_files.get(func_name, set()):
                 if caller_file not in dirty_files:
                     dirty_files.add(caller_file)
-                    new_funcs = {f.name for f in functions if f.file == caller_file} - dirty_funcs
+                    new_funcs = {
+                        f.name for f in functions if f.file == caller_file
+                    } - dirty_funcs
                     dirty_funcs |= new_funcs
                     next_frontier |= new_funcs
         frontier = next_frontier

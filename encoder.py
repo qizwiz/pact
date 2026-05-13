@@ -14,9 +14,20 @@ from .extractor import CallSite, FieldConstraint, FunctionManifest, ModelManifes
 
 try:
     from z3 import (  # noqa: F401
-        And, Bool, Int, IntVal, Not, Or, Solver, String,
-        Length, StringVal, sat, unsat,
+        And,
+        Bool,
+        Int,
+        IntVal,
+        Not,
+        Or,
+        Solver,
+        String,
+        Length,
+        StringVal,
+        sat,
+        unsat,
     )
+
     _HAS_Z3 = True
 except ImportError:
     _HAS_Z3 = False
@@ -38,6 +49,7 @@ class Violation:
 # Universal field constraint encoder
 # ---------------------------------------------------------------------------
 
+
 def _check_field(fc: FieldConstraint, provided: bool, value: object) -> list[str]:
     """
     Check ALL constraints for one field against one call-site value.
@@ -53,14 +65,14 @@ def _check_field(fc: FieldConstraint, provided: bool, value: object) -> list[str
     if not provided:
         if fc.required:
             violations.append(f"missing required field '{fc.name}'")
-        return violations   # no value → can't check further
+        return violations  # no value → can't check further
 
     # Value unknown (computed expression) — presence verified, value-level skipped
     if value is None:
         return violations
 
     if not _HAS_Z3:
-        return violations   # no Z3 installed — presence already checked above
+        return violations  # no Z3 installed — presence already checked above
 
     if isinstance(value, str):
         v = StringVal(value)
@@ -90,17 +102,13 @@ def _check_field(fc: FieldConstraint, provided: bool, value: object) -> list[str
             s = Solver()
             s.add(v < fc.min_value)
             if s.check() == sat:
-                violations.append(
-                    f"'{fc.name}' value {value} < min {fc.min_value}"
-                )
+                violations.append(f"'{fc.name}' value {value} < min {fc.min_value}")
 
         if fc.max_value is not None:
             s = Solver()
             s.add(v > fc.max_value)
             if s.check() == sat:
-                violations.append(
-                    f"'{fc.name}' value {value} > max {fc.max_value}"
-                )
+                violations.append(f"'{fc.name}' value {value} > max {fc.max_value}")
 
         if fc.choices:
             int_choices = [c for c in fc.choices if isinstance(c, int)]
@@ -124,28 +132,36 @@ def check_model_create(call: CallSite, model: ModelManifest) -> list[Violation]:
     all_missing: list[str] = []
 
     for fc in model.fields:
-        if fc.field_type in ("ManyToManyField", "ManyToManyRel", "ManyToOneRel", "OneToOneRel"):
+        if fc.field_type in (
+            "ManyToManyField",
+            "ManyToManyRel",
+            "ManyToOneRel",
+            "OneToOneRel",
+        ):
             continue
         provided = fc.name in call.provided_kwargs
-        value = call.kwarg_values.get(fc.name)   # None = not provided or computed
+        value = call.kwarg_values.get(fc.name)  # None = not provided or computed
         violations = _check_field(fc, provided, value)
         all_missing.extend(violations)
 
     if not all_missing:
         return []
 
-    return [Violation(
-        file=call.file,
-        line=call.line,
-        call=call.callee_name,
-        missing=all_missing,
-        context="model_create",
-    )]
+    return [
+        Violation(
+            file=call.file,
+            line=call.line,
+            call=call.callee_name,
+            missing=all_missing,
+            context="model_create",
+        )
+    ]
 
 
 # ---------------------------------------------------------------------------
 # Function call checker (presence only — type checking needs return-type inference)
 # ---------------------------------------------------------------------------
+
 
 def _z3_check_presence(required: list[str], provided: set[str]) -> list[str]:
     missing = [f for f in required if f not in provided]
@@ -166,7 +182,9 @@ def check_function_call(call: CallSite, func: FunctionManifest) -> Optional[Viol
 
     positional_required = [a for a in required_args if not a.kwonly]
     positional_satisfied = {
-        arg.name for i, arg in enumerate(positional_required) if i < call.positional_count
+        arg.name
+        for i, arg in enumerate(positional_required)
+        if i < call.positional_count
     }
     effectively_provided = call.provided_kwargs | positional_satisfied
     missing = _z3_check_presence([a.name for a in required_args], effectively_provided)

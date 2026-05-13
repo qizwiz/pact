@@ -8,7 +8,6 @@ sequence frame count, and PR comment formatting.
 from __future__ import annotations
 
 
-
 from .encoder import Violation
 from .extractor import CallSite, FunctionManifest
 from .refactor import RefactorSuggestion
@@ -19,10 +18,10 @@ from .visualize import (
     _style_class,
 )
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _func(name: str, file: str = "x.py", line: int = 1) -> FunctionManifest:
     return FunctionManifest(name=name, file=file, line=line, module_path="", args=[])
@@ -30,27 +29,38 @@ def _func(name: str, file: str = "x.py", line: int = 1) -> FunctionManifest:
 
 def _site(caller: str, callee: str, file: str = "x.py", line: int = 10) -> CallSite:
     return CallSite(
-        callee_name=callee, file=file, line=line,
-        provided_kwargs=set(), positional_count=0,
+        callee_name=callee,
+        file=file,
+        line=line,
+        provided_kwargs=set(),
+        positional_count=0,
         caller_name=caller,
     )
 
 
-def _viol(call: str, file: str = "x.py", line: int = 5, ctx: str = "bare_except") -> Violation:
+def _viol(
+    call: str, file: str = "x.py", line: int = 5, ctx: str = "bare_except"
+) -> Violation:
     return Violation(file=file, line=line, call=call, missing=["msg"], context=ctx)
 
 
 def _suggestion(name: str, n: int = 3) -> RefactorSuggestion:
     return RefactorSuggestion(
-        func_name=name, file="x.py", line=1,
-        violation_count=n, caller_count=1,
-        modes=["bare_except"], violations=[], z3_safe=True,
+        func_name=name,
+        file="x.py",
+        line=1,
+        violation_count=n,
+        caller_count=1,
+        modes=["bare_except"],
+        violations=[],
+        z3_safe=True,
     )
 
 
 # ---------------------------------------------------------------------------
 # Unit: _style_class
 # ---------------------------------------------------------------------------
+
 
 class TestStyleClass:
     def test_zero_is_clean(self):
@@ -70,6 +80,7 @@ class TestStyleClass:
 # ---------------------------------------------------------------------------
 # Unit: render_mermaid
 # ---------------------------------------------------------------------------
+
 
 class TestRenderMermaid:
     def _setup(self):
@@ -146,6 +157,7 @@ class TestRenderMermaid:
 # Unit: render_reduction_sequence
 # ---------------------------------------------------------------------------
 
+
 class TestRenderReductionSequence:
     def test_empty_suggestions_returns_empty(self):
         assert render_reduction_sequence([], [], [], []) == []
@@ -187,6 +199,7 @@ class TestRenderReductionSequence:
 # ---------------------------------------------------------------------------
 # Integration: format_pr_comment
 # ---------------------------------------------------------------------------
+
 
 class TestFormatPrComment:
     def test_no_violations_returns_checkmark(self):

@@ -22,10 +22,22 @@ PYTHON = str(_VENV_PYTHON) if _VENV_PYTHON.exists() else sys.executable
 
 def get_open_prs() -> list[dict]:
     result = subprocess.run(
-        ["gh", "pr", "list", "--repo", "future-agi/future-agi",
-         "--author", "@me", "--state", "open",
-         "--json", "number,title,headRefName"],
-        capture_output=True, text=True, check=True,
+        [
+            "gh",
+            "pr",
+            "list",
+            "--repo",
+            "future-agi/future-agi",
+            "--author",
+            "@me",
+            "--state",
+            "open",
+            "--json",
+            "number,title,headRefName",
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
     )
     return json.loads(result.stdout)
 
@@ -39,14 +51,18 @@ def scan_branch(pr: dict, worktree_base: Path) -> dict:
         # Create worktree checked out to the fork branch
         subprocess.run(
             ["git", "worktree", "add", "--quiet", str(worktree), f"fork/{branch}"],
-            cwd=REPO_ROOT, capture_output=True, check=True,
+            cwd=REPO_ROOT,
+            capture_output=True,
+            check=True,
         )
 
         result = subprocess.run(
             [PYTHON, "-m", "tools.pact.cli", "--diff", "--json", str(worktree)],
             cwd=worktree,
             env={**os.environ, "PYTHONPATH": str(REPO_ROOT)},
-            capture_output=True, text=True, timeout=120,
+            capture_output=True,
+            text=True,
+            timeout=120,
         )
 
         if result.returncode != 0:
@@ -99,7 +115,8 @@ def scan_branch(pr: dict, worktree_base: Path) -> dict:
         try:
             subprocess.run(
                 ["git", "worktree", "remove", "--force", str(worktree)],
-                cwd=REPO_ROOT, capture_output=True,
+                cwd=REPO_ROOT,
+                capture_output=True,
             )
         except Exception:
             pass
@@ -108,7 +125,9 @@ def scan_branch(pr: dict, worktree_base: Path) -> dict:
 def main():
     print("Fetching open PRs...")
     prs = get_open_prs()
-    print(f"Found {len(prs)} open PRs. Scanning with {MAX_WORKERS} parallel workers...\n")
+    print(
+        f"Found {len(prs)} open PRs. Scanning with {MAX_WORKERS} parallel workers...\n"
+    )
 
     worktree_base = Path(tempfile.mkdtemp(prefix="pact-scan-"))
 
@@ -128,7 +147,9 @@ def main():
         print("\n" + "=" * 70)
         print("SUMMARY — PRs with violations\n")
 
-        dirty = sorted([r for r in results if r["violations"]], key=lambda x: -len(x["violations"]))
+        dirty = sorted(
+            [r for r in results if r["violations"]], key=lambda x: -len(x["violations"])
+        )
         if not dirty:
             print("✓  All PRs clean.")
         else:
@@ -141,7 +162,9 @@ def main():
                     # strip the pr-NNN/ prefix
                     parts = short_file.split("/", 1)
                     short_file = parts[1] if len(parts) > 1 else short_file
-                    print(f"  {short_file}:{v['line']}  {v['call']}()  missing: {missing}")
+                    print(
+                        f"  {short_file}:{v['line']}  {v['call']}()  missing: {missing}"
+                    )
 
     finally:
         shutil.rmtree(worktree_base, ignore_errors=True)

@@ -34,9 +34,18 @@ from .extractor import CallSite, FunctionManifest
 
 try:
     from z3 import (  # noqa: F401
-        And, Bool, BoolVal, Not, Or, Solver, sat, unsat,
-        Implies, BoolRef,
+        And,
+        Bool,
+        BoolVal,
+        Not,
+        Or,
+        Solver,
+        sat,
+        unsat,
+        Implies,
+        BoolRef,
     )
+
     _HAS_Z3 = True
 except ImportError:
     _HAS_Z3 = False
@@ -46,18 +55,20 @@ except ImportError:
 # RefactorSuggestion
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class RefactorSuggestion:
     """A ranked suggestion to extract a function into its own unit."""
+
     func_name: str
     file: str
     line: int
     violation_count: int
     caller_count: int
-    modes: list[str]               # violation mode names, deduplicated
+    modes: list[str]  # violation mode names, deduplicated
     violations: list[Violation]
-    z3_safe: Optional[bool]        # True = Z3 proved safe; False = unsafe; None = skipped
-    z3_detail: str = ""            # human-readable reason when z3_safe is False
+    z3_safe: Optional[bool]  # True = Z3 proved safe; False = unsafe; None = skipped
+    z3_detail: str = ""  # human-readable reason when z3_safe is False
 
     @property
     def score(self) -> float:
@@ -66,9 +77,11 @@ class RefactorSuggestion:
 
     def summary(self) -> str:
         safety = (
-            "Z3-safe ✓" if self.z3_safe is True
-            else f"Z3-unsafe ✗ ({self.z3_detail})" if self.z3_safe is False
-            else "Z3 n/a"
+            "Z3-safe ✓"
+            if self.z3_safe is True
+            else (
+                f"Z3-unsafe ✗ ({self.z3_detail})" if self.z3_safe is False else "Z3 n/a"
+            )
         )
         modes_str = ", ".join(sorted(set(self.modes)))
         return (
@@ -82,6 +95,7 @@ class RefactorSuggestion:
 # ---------------------------------------------------------------------------
 # Z3 extraction-safety verifier
 # ---------------------------------------------------------------------------
+
 
 def _verify_extraction_safe(
     func: FunctionManifest,
@@ -146,6 +160,7 @@ def _verify_extraction_safe(
 # ---------------------------------------------------------------------------
 # Core suggester
 # ---------------------------------------------------------------------------
+
 
 def suggest_refactors(
     violations: list[Violation],
@@ -257,9 +272,15 @@ def suggest_refactors(
         # under both the qualified key and the short key when they differ, so a plain
         # + concatenation would double-count and corrupt unsafe_conditions counts).
         short = func.name.split(".")[-1]
-        callers = list({id(cs): cs for cs in (
-            callee_to_callers.get(func_name, []) + callee_to_callers.get(short, [])
-        )}.values())
+        callers = list(
+            {
+                id(cs): cs
+                for cs in (
+                    callee_to_callers.get(func_name, [])
+                    + callee_to_callers.get(short, [])
+                )
+            }.values()
+        )
 
         # Z3 safety check
         z3_safe: Optional[bool] = None
@@ -267,20 +288,24 @@ def suggest_refactors(
         if verify and func.args:
             z3_safe, z3_detail = _verify_extraction_safe(func, callers)
 
-        suggestions.append(RefactorSuggestion(
-            func_name=func_name,
-            file=func.file,
-            line=func.line,
-            violation_count=len(func_viols),
-            caller_count=len({
-                cs.caller_name if cs.caller_name else f"__module__:{cs.file}"
-                for cs in callers
-            }),
-            modes=[v.context for v in func_viols],
-            violations=func_viols,
-            z3_safe=z3_safe,
-            z3_detail=z3_detail,
-        ))
+        suggestions.append(
+            RefactorSuggestion(
+                func_name=func_name,
+                file=func.file,
+                line=func.line,
+                violation_count=len(func_viols),
+                caller_count=len(
+                    {
+                        cs.caller_name if cs.caller_name else f"__module__:{cs.file}"
+                        for cs in callers
+                    }
+                ),
+                modes=[v.context for v in func_viols],
+                violations=func_viols,
+                z3_safe=z3_safe,
+                z3_detail=z3_detail,
+            )
+        )
 
     suggestions.sort(key=lambda s: s.score, reverse=True)
     return suggestions[:max_suggestions]

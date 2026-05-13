@@ -46,6 +46,7 @@ from .encoder import Violation
 
 try:
     import networkx as nx
+
     _HAS_NX = True
 except ImportError:
     _HAS_NX = False
@@ -55,17 +56,19 @@ except ImportError:
 # Data structures
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class ReductionCandidate:
     """One structural simplification target."""
-    kind: str                  # "tangle" | "passthrough" | "hub"
-    primary: str               # main function name (or representative for tangle)
-    members: list[str]         # all function names involved
+
+    kind: str  # "tangle" | "passthrough" | "hub"
+    primary: str  # main function name (or representative for tangle)
+    members: list[str]  # all function names involved
     file: str
     line: int
-    reduction_potential: int   # estimated nodes+edges eliminated by simplification
-    violation_count: int       # total violations across all members
-    detail: str                # human-readable explanation
+    reduction_potential: int  # estimated nodes+edges eliminated by simplification
+    violation_count: int  # total violations across all members
+    detail: str  # human-readable explanation
 
     @property
     def score(self) -> float:
@@ -95,6 +98,7 @@ class ReductionCandidate:
 # ---------------------------------------------------------------------------
 # Core analysis
 # ---------------------------------------------------------------------------
+
 
 def _build_digraph(
     functions: list[FunctionManifest],
@@ -143,7 +147,9 @@ def _violations_by_func(violations: list[Violation]) -> dict[str, list[Violation
     return by_func
 
 
-def _viols_for_member(member: str, func_by_name, violations: list[Violation]) -> list[Violation]:
+def _viols_for_member(
+    member: str, func_by_name, violations: list[Violation]
+) -> list[Violation]:
     """Return violations directly inside `member`'s function scope.
 
     Uses line-range attribution: violations whose line is >= the function's
@@ -164,14 +170,15 @@ def _viols_for_member(member: str, func_by_name, violations: list[Violation]) ->
     if my_idx is not None and my_idx + 1 < len(file_funcs):
         next_line = file_funcs[my_idx + 1].line
         return [
-            v for v in violations
-            if v.file == f.file and f.line <= v.line < next_line
+            v for v in violations if v.file == f.file and f.line <= v.line < next_line
         ]
     # Last function in file — attribute anything after its start line
     return [v for v in violations if v.file == f.file and v.line >= f.line]
 
 
-def find_sccs(G, func_by_name: dict, violations: list[Violation]) -> list[ReductionCandidate]:
+def find_sccs(
+    G, func_by_name: dict, violations: list[Violation]
+) -> list[ReductionCandidate]:
     """Find strongly connected components (call cycles) with size > 1."""
     if G is None:
         return []
@@ -181,7 +188,9 @@ def find_sccs(G, func_by_name: dict, violations: list[Violation]) -> list[Reduct
             continue
         members = sorted(scc)
         # Find a representative: node with most violations or highest in-degree
-        viols = [v for m in members for v in _viols_for_member(m, func_by_name, violations)]
+        viols = [
+            v for m in members for v in _viols_for_member(m, func_by_name, violations)
+        ]
         rep = members[0]
         f = func_by_name.get(rep)
         file_ = f.file if f else ""
@@ -189,24 +198,28 @@ def find_sccs(G, func_by_name: dict, violations: list[Violation]) -> list[Reduct
         # reduction_potential: breaking an SCC of size N eliminates O(N) back-edges
         # and makes the subgraph a DAG — estimate: N-1 edges eliminated
         reduction_potential = len(members) - 1
-        candidates.append(ReductionCandidate(
-            kind="tangle",
-            primary=rep,
-            members=members,
-            file=file_,
-            line=line_,
-            reduction_potential=reduction_potential,
-            violation_count=len(viols),
-            detail=(
-                f"{len(members)} functions in a mutual call cycle — "
-                f"breaking the cycle removes {reduction_potential} back-edge(s) "
-                f"and makes the subgraph a DAG"
-            ),
-        ))
+        candidates.append(
+            ReductionCandidate(
+                kind="tangle",
+                primary=rep,
+                members=members,
+                file=file_,
+                line=line_,
+                reduction_potential=reduction_potential,
+                violation_count=len(viols),
+                detail=(
+                    f"{len(members)} functions in a mutual call cycle — "
+                    f"breaking the cycle removes {reduction_potential} back-edge(s) "
+                    f"and makes the subgraph a DAG"
+                ),
+            )
+        )
     return sorted(candidates, key=lambda c: -c.score)
 
 
-def find_passthroughs(G, func_by_name: dict, violations: list[Violation]) -> list[ReductionCandidate]:
+def find_passthroughs(
+    G, func_by_name: dict, violations: list[Violation]
+) -> list[ReductionCandidate]:
     """Find nodes with in-degree=1 and out-degree=1 and no violations of their own."""
     if G is None:
         return []
@@ -221,25 +234,29 @@ def find_passthroughs(G, func_by_name: dict, violations: list[Violation]) -> lis
             continue
         node_viols = [v for v in violations if v.file == f.file]
         # Pass-throughs without violations are pure structural noise
-        candidates.append(ReductionCandidate(
-            kind="passthrough",
-            primary=node,
-            members=[node],
-            file=f.file,
-            line=f.line,
-            # Eliminating removes 1 node + 2 edges = 3 graph elements
-            reduction_potential=3,
-            violation_count=len(node_viols),
-            detail=(
-                f"in={in_deg} caller  out={out_deg} callee — "
-                f"pure hop with no logic of its own; inline to collapse 1 node + 2 edges"
-            ),
-        ))
+        candidates.append(
+            ReductionCandidate(
+                kind="passthrough",
+                primary=node,
+                members=[node],
+                file=f.file,
+                line=f.line,
+                # Eliminating removes 1 node + 2 edges = 3 graph elements
+                reduction_potential=3,
+                violation_count=len(node_viols),
+                detail=(
+                    f"in={in_deg} caller  out={out_deg} callee — "
+                    f"pure hop with no logic of its own; inline to collapse 1 node + 2 edges"
+                ),
+            )
+        )
     return sorted(candidates, key=lambda c: -c.score)
 
 
 def find_hubs(
-    G, func_by_name: dict, violations: list[Violation],
+    G,
+    func_by_name: dict,
+    violations: list[Violation],
     threshold: int = 8,
 ) -> list[ReductionCandidate]:
     """Find nodes whose out-degree exceeds threshold (cognitive complexity hubs)."""
@@ -257,20 +274,22 @@ def find_hubs(
         # Splitting into K groups of ≤4 reduces fan-out from N to ≤4
         k = (out_deg + 3) // 4  # ceil(out_deg / 4) groups
         reduction_potential = out_deg - k * 4  # edges pruned from the hub node
-        candidates.append(ReductionCandidate(
-            kind="hub",
-            primary=node,
-            members=[node],
-            file=f.file,
-            line=f.line,
-            reduction_potential=max(0, reduction_potential),
-            violation_count=len(node_viols),
-            detail=(
-                f"fan-out={out_deg} (calls {out_deg} functions) — "
-                f"split by responsibility into {k} cohesive group(s) "
-                f"to reduce fan-out to ≤4 per group"
-            ),
-        ))
+        candidates.append(
+            ReductionCandidate(
+                kind="hub",
+                primary=node,
+                members=[node],
+                file=f.file,
+                line=f.line,
+                reduction_potential=max(0, reduction_potential),
+                violation_count=len(node_viols),
+                detail=(
+                    f"fan-out={out_deg} (calls {out_deg} functions) — "
+                    f"split by responsibility into {k} cohesive group(s) "
+                    f"to reduce fan-out to ≤4 per group"
+                ),
+            )
+        )
     return sorted(candidates, key=lambda c: -c.score)
 
 

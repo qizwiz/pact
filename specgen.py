@@ -19,15 +19,15 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
-
 # ---------------------------------------------------------------------------
 # Data structures
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class _Field:
     name: str
-    django_type: str   # e.g. "CharField", "ForeignKey"
+    django_type: str  # e.g. "CharField", "ForeignKey"
     nullable: bool = False
     required: bool = True
 
@@ -63,7 +63,7 @@ class _Field:
         }
         base = _MAP.get(self.django_type, "STRING")
         if self.nullable:
-            return f"{base} \\union {{\"NULL\"}}"
+            return f'{base} \\union {{"NULL"}}'
         return base
 
 
@@ -87,6 +87,7 @@ class _Task:
 # AST visitors
 # ---------------------------------------------------------------------------
 
+
 class _SpecVisitor(ast.NodeVisitor):
     def __init__(self):
         self.models: list[_Model] = []
@@ -96,8 +97,12 @@ class _SpecVisitor(ast.NodeVisitor):
 
     def visit_ClassDef(self, node: ast.ClassDef):
         is_model = any(
-            (isinstance(b, ast.Attribute) and b.attr == "Model") or
-            (isinstance(b, ast.Name) and b.id in ("Model", "BaseModel", "TimestampedModel", "SoftDeleteModel"))
+            (isinstance(b, ast.Attribute) and b.attr == "Model")
+            or (
+                isinstance(b, ast.Name)
+                and b.id
+                in ("Model", "BaseModel", "TimestampedModel", "SoftDeleteModel")
+            )
             for b in node.bases
         )
         if is_model:
@@ -111,7 +116,9 @@ class _SpecVisitor(ast.NodeVisitor):
 
     def visit_Assign(self, node: ast.Assign):
         if self._current_model is None:
-            self.generic_visit(node)  # still recurse so visit_Call fires inside task bodies
+            self.generic_visit(
+                node
+            )  # still recurse so visit_Call fires inside task bodies
             return
         if not (len(node.targets) == 1 and isinstance(node.targets[0], ast.Name)):
             return
@@ -131,35 +138,48 @@ class _SpecVisitor(ast.NodeVisitor):
 
         nullable = any(
             isinstance(kw.value, ast.Constant) and kw.value.value is True
-            for kw in call.keywords if kw.arg in ("null", "blank")
+            for kw in call.keywords
+            if kw.arg in ("null", "blank")
         )
         # FKs and M2Ms aren't "required" at create time in the usual sense
         required = django_type not in ("ForeignKey", "ManyToManyField", "OneToOneField")
         if nullable:
             required = False
 
-        f = _Field(name=fname, django_type=django_type, nullable=nullable, required=required)
+        f = _Field(
+            name=fname, django_type=django_type, nullable=nullable, required=required
+        )
         self._current_model.fields.append(f)
 
-    _TASK_DECORATOR_NAMES = frozenset({
-        "shared_task", "task",           # Celery
-        "temporal_activity",             # Temporal
-        "activity_method",               # Temporal SDK variants
-    })
+    _TASK_DECORATOR_NAMES = frozenset(
+        {
+            "shared_task",
+            "task",  # Celery
+            "temporal_activity",  # Temporal
+            "activity_method",  # Temporal SDK variants
+        }
+    )
 
     def visit_FunctionDef(self, node: ast.FunctionDef):
         is_task = any(
-            (isinstance(d, ast.Attribute) and d.attr in self._TASK_DECORATOR_NAMES) or
-            (isinstance(d, ast.Name) and d.id in self._TASK_DECORATOR_NAMES) or
-            (isinstance(d, ast.Call) and isinstance(d.func, ast.Attribute) and d.func.attr in self._TASK_DECORATOR_NAMES) or
-            (isinstance(d, ast.Call) and isinstance(d.func, ast.Name) and d.func.id in self._TASK_DECORATOR_NAMES)
+            (isinstance(d, ast.Attribute) and d.attr in self._TASK_DECORATOR_NAMES)
+            or (isinstance(d, ast.Name) and d.id in self._TASK_DECORATOR_NAMES)
+            or (
+                isinstance(d, ast.Call)
+                and isinstance(d.func, ast.Attribute)
+                and d.func.attr in self._TASK_DECORATOR_NAMES
+            )
+            or (
+                isinstance(d, ast.Call)
+                and isinstance(d.func, ast.Name)
+                and d.func.id in self._TASK_DECORATOR_NAMES
+            )
             for d in node.decorator_list
         )
         if is_task:
-            args = [
-                a.arg for a in node.args.args
-                if a.arg not in ("self", "cls")
-            ] + [a.arg for a in (node.args.posonlyargs or [])]
+            args = [a.arg for a in node.args.args if a.arg not in ("self", "cls")] + [
+                a.arg for a in (node.args.posonlyargs or [])
+            ]
             task = _Task(name=node.name, args=args)
             prev = self._current_task
             self._current_task = task
@@ -183,9 +203,18 @@ class _SpecVisitor(ast.NodeVisitor):
             if isinstance(func, ast.Attribute):
                 if func.attr == "get" and _is_cache_obj(func.value):
                     self._current_task.has_cache_get = True
-                elif func.attr in ("set", "setex", "rpush", "lpush") and _is_cache_obj(func.value):
+                elif func.attr in ("set", "setex", "rpush", "lpush") and _is_cache_obj(
+                    func.value
+                ):
                     self._current_task.has_cache_set = True
-                elif func.attr in ("save", "create", "update", "delete", "bulk_create", "bulk_update"):
+                elif func.attr in (
+                    "save",
+                    "create",
+                    "update",
+                    "delete",
+                    "bulk_create",
+                    "bulk_update",
+                ):
                     self._current_task.has_db_write = True
         self.generic_visit(node)
 
@@ -196,7 +225,9 @@ class _SpecVisitor(ast.NodeVisitor):
                 for stmt in item.body:
                     if not isinstance(stmt, ast.Assign):
                         continue
-                    if not (len(stmt.targets) == 1 and isinstance(stmt.targets[0], ast.Name)):
+                    if not (
+                        len(stmt.targets) == 1 and isinstance(stmt.targets[0], ast.Name)
+                    ):
                         continue
                     attr = stmt.targets[0].id
                     if attr == "unique_together":
@@ -209,13 +240,19 @@ class _SpecVisitor(ast.NodeVisitor):
                             for elt in stmt.value.elts:
                                 if isinstance(elt, ast.Call):
                                     for kw in elt.keywords:
-                                        if kw.arg == "fields" and isinstance(kw.value, ast.List):
+                                        if kw.arg == "fields" and isinstance(
+                                            kw.value, ast.List
+                                        ):
                                             flds = [
-                                                c.value for c in kw.value.elts
-                                                if isinstance(c, ast.Constant) and isinstance(c.value, str)
+                                                c.value
+                                                for c in kw.value.elts
+                                                if isinstance(c, ast.Constant)
+                                                and isinstance(c.value, str)
                                             ]
                                             if flds:
-                                                self._current_model.unique_constraints.append(flds)
+                                                self._current_model.unique_constraints.append(
+                                                    flds
+                                                )
 
 
 def _is_cache_obj(node: ast.expr) -> bool:
@@ -232,7 +269,8 @@ def _extract_string_tuples(node: ast.expr) -> list[list[str]]:
         for elt in node.elts:
             if isinstance(elt, (ast.List, ast.Tuple)):
                 group = [
-                    e.value for e in elt.elts
+                    e.value
+                    for e in elt.elts
                     if isinstance(e, ast.Constant) and isinstance(e.value, str)
                 ]
                 if group:
@@ -245,6 +283,7 @@ def _extract_string_tuples(node: ast.expr) -> list[list[str]]:
 # ---------------------------------------------------------------------------
 # Synthesis
 # ---------------------------------------------------------------------------
+
 
 def _tla_ident(name: str) -> str:
     """Convert snake_case to CamelCase for TLA+ identifiers."""
@@ -282,7 +321,9 @@ def _render(models: list[_Model], tasks: list[_Task], module_name: str) -> str:
     lines.append("")
 
     if not models and not tasks:
-        lines.append("\\* pact spec gen: no Django models or Celery tasks found in this file.")
+        lines.append(
+            "\\* pact spec gen: no Django models or Celery tasks found in this file."
+        )
         lines.append("\\* Point at a models.py or tasks.py file.")
         lines.append(f"{'=' * (len(module_name) + 62)}")
         return "\n".join(lines)
@@ -329,7 +370,9 @@ def _render(models: list[_Model], tasks: list[_Task], module_name: str) -> str:
                 lines.append("\\* Derived from unique_together / UniqueConstraint")
                 lines.append(f"{inv_name} ==")
                 lines.append(f"  \\A r1, r2 \\in {v} :")
-                lines.append(f"    r1 # r2 => <<{field_tuple.replace('r.', 'r1.')}>> # <<{field_tuple.replace('r.', 'r2.')}>>")
+                lines.append(
+                    f"    r1 # r2 => <<{field_tuple.replace('r.', 'r1.')}>> # <<{field_tuple.replace('r.', 'r2.')}>>"
+                )
                 lines.append("")
 
     # Init
@@ -347,8 +390,12 @@ def _render(models: list[_Model], tasks: list[_Task], module_name: str) -> str:
         param_str = "".join(f", {_tla_ident(a)}" for a in task.args)
         lines.append(f"\\* Corresponds to: @shared_task {task.name}()")
         if task.has_cache_get and task.has_cache_set:
-            lines.append("\\* WARNING: non-atomic -- cache.get + cache.set is a split step.")
-            lines.append("\\* Model as two separate actions or use atomic Redis primitive.")
+            lines.append(
+                "\\* WARNING: non-atomic -- cache.get + cache.set is a split step."
+            )
+            lines.append(
+                "\\* Model as two separate actions or use atomic Redis primitive."
+            )
         lines.append(f"{action_name}({param_str.lstrip(', ')}) ==")
         lines.append("  \\* TODO: specify precondition (ENABLED guard)")
         lines.append("  /\\ TRUE")
@@ -364,17 +411,23 @@ def _render(models: list[_Model], tasks: list[_Task], module_name: str) -> str:
             action_name = _tla_ident(task.name)
             "".join(f", _{a}" for a in task.args)
             quantified = "".join(f"\\E _{a} \\in STRING : " for a in task.args)
-            prefix = "  \\/" if i > 0 else "  \\/",
+            prefix = ("  \\/" if i > 0 else "  \\/",)
             if task.args:
-                lines.append(f"  \\/ {quantified}{action_name}({', '.join('_' + a for a in task.args)})")
+                lines.append(
+                    f"  \\/ {quantified}{action_name}({', '.join('_' + a for a in task.args)})"
+                )
             else:
                 lines.append(f"  \\/ {action_name}")
         lines.append("")
 
     # Next (only when tasks present; without tasks the spec is pure model typing)
     if not tasks:
-        lines.append("\\* No task functions found (expected @shared_task, @temporal_activity, etc.)")
-        lines.append("\\* Define actions manually or point at a tasks.py / activities.py file.")
+        lines.append(
+            "\\* No task functions found (expected @shared_task, @temporal_activity, etc.)"
+        )
+        lines.append(
+            "\\* Define actions manually or point at a tasks.py / activities.py file."
+        )
         lines.append("Next == FALSE  \\* placeholder")
         lines.append("")
 
@@ -384,7 +437,9 @@ def _render(models: list[_Model], tasks: list[_Task], module_name: str) -> str:
         vars_def = vars_tuple
     else:
         # No models found -- emit a placeholder variable so the spec is syntactically valid
-        lines.append("\\* TODO: add state variables (point pact spec gen at a models.py too)")
+        lines.append(
+            "\\* TODO: add state variables (point pact spec gen at a models.py too)"
+        )
         lines.append("VARIABLES task_state  \\* placeholder")
         lines.append("")
         var_names = ["task_state"]
@@ -396,7 +451,9 @@ def _render(models: list[_Model], tasks: list[_Task], module_name: str) -> str:
     lines.append("  Init")
     lines.append(f"  /\\ [][Next]_{vars_tuple}")
     if tasks:
-        lines.append(f"  /\\ WF_{vars_tuple}(Next)  \\* TODO: refine liveness per action")
+        lines.append(
+            f"  /\\ WF_{vars_tuple}(Next)  \\* TODO: refine liveness per action"
+        )
     lines.append("")
 
     # INVARIANTS
@@ -414,6 +471,7 @@ def _render(models: list[_Model], tasks: list[_Task], module_name: str) -> str:
 # ---------------------------------------------------------------------------
 # Public entry point
 # ---------------------------------------------------------------------------
+
 
 def spec_gen(path: Path, output: Optional[Path] = None) -> str:
     """

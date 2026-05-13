@@ -42,7 +42,6 @@ import requests
 
 from .extractor import extract_from_file
 
-
 # ---------------------------------------------------------------------------
 # GitHub API client
 # ---------------------------------------------------------------------------
@@ -50,10 +49,20 @@ from .extractor import extract_from_file
 _API = "https://api.github.com"
 _RAW = "https://raw.githubusercontent.com"
 
-_SKIP_PATHS = frozenset({
-    "migrations", ".venv", "venv", "node_modules", "__pycache__",
-    ".git", "dist", "build", ".eggs", ".tox",
-})
+_SKIP_PATHS = frozenset(
+    {
+        "migrations",
+        ".venv",
+        "venv",
+        "node_modules",
+        "__pycache__",
+        ".git",
+        "dist",
+        "build",
+        ".eggs",
+        ".tox",
+    }
+)
 
 
 def _gh_session(token: Optional[str]) -> requests.Session:
@@ -72,7 +81,10 @@ def _rate_check(resp: requests.Response, session: requests.Session) -> None:
     if remaining < 10:
         reset_at = int(resp.headers.get("X-RateLimit-Reset", time.time() + 60))
         wait = max(0, reset_at - time.time()) + 2
-        print(f"[pact] rate limit near ({remaining} left), sleeping {wait:.0f}s", file=sys.stderr)
+        print(
+            f"[pact] rate limit near ({remaining} left), sleeping {wait:.0f}s",
+            file=sys.stderr,
+        )
         time.sleep(wait)
 
 
@@ -89,12 +101,20 @@ def search_repos(
     while yielded < limit:
         resp = session.get(
             f"{_API}/search/repositories",
-            params={"q": query, "sort": "stars", "order": "desc",
-                    "per_page": per_page, "page": page},
+            params={
+                "q": query,
+                "sort": "stars",
+                "order": "desc",
+                "per_page": per_page,
+                "page": page,
+            },
         )
         _rate_check(resp, session)
         if resp.status_code != 200:
-            print(f"[pact] search error {resp.status_code}: {resp.text[:200]}", file=sys.stderr)
+            print(
+                f"[pact] search error {resp.status_code}: {resp.text[:200]}",
+                file=sys.stderr,
+            )
             break
 
         data = resp.json()
@@ -162,6 +182,7 @@ def fetch_file_content(
 # Corpus generation
 # ---------------------------------------------------------------------------
 
+
 def _code_context(source: str, line: int, window: int = 2) -> str:
     """Return `window` lines around `line` (1-indexed) with a marker."""
     lines = source.splitlines()
@@ -207,6 +228,7 @@ def scan_repo(
         # Write to a temp path for the extractor (needs a real file)
         import tempfile
         import os
+
         with tempfile.NamedTemporaryFile(
             mode="w", suffix=".py", delete=False, encoding="utf-8"
         ) as tmp:
@@ -215,6 +237,7 @@ def scan_repo(
 
         try:
             from pathlib import Path as _Path
+
             models, functions, calls = extract_from_file(_Path(tmp_path))
 
             from .failure_mode import DEFAULT_MODES
@@ -277,32 +300,60 @@ def scan_repo(
 # CLI
 # ---------------------------------------------------------------------------
 
+
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(
         prog="pact-scan-github",
         description="Scan GitHub Python repos and emit a labeled violation corpus as JSONL.",
     )
-    p.add_argument("--token", metavar="TOKEN",
-                   help="GitHub personal access token (or set GITHUB_TOKEN env var)")
-    p.add_argument("--query", metavar="Q",
-                   default="language:python stars:>100",
-                   help='GitHub search query (default: "language:python stars:>100")')
-    p.add_argument("--repos", metavar="OWNER/REPO,...",
-                   help="Comma-separated list of specific repos to scan (overrides --query)")
-    p.add_argument("--limit", type=int, default=20, metavar="N",
-                   help="Max repos to scan (default: 20)")
-    p.add_argument("--max-files", type=int, default=100, metavar="N",
-                   help="Max Python files per repo (default: 100)")
-    p.add_argument("--stats-only", action="store_true",
-                   help="Print summary stats; suppress JSONL violation output")
-    p.add_argument("--out", metavar="FILE",
-                   help="Write JSONL to FILE instead of stdout")
+    p.add_argument(
+        "--token",
+        metavar="TOKEN",
+        help="GitHub personal access token (or set GITHUB_TOKEN env var)",
+    )
+    p.add_argument(
+        "--query",
+        metavar="Q",
+        default="language:python stars:>100",
+        help='GitHub search query (default: "language:python stars:>100")',
+    )
+    p.add_argument(
+        "--repos",
+        metavar="OWNER/REPO,...",
+        help="Comma-separated list of specific repos to scan (overrides --query)",
+    )
+    p.add_argument(
+        "--limit",
+        type=int,
+        default=20,
+        metavar="N",
+        help="Max repos to scan (default: 20)",
+    )
+    p.add_argument(
+        "--max-files",
+        type=int,
+        default=100,
+        metavar="N",
+        help="Max Python files per repo (default: 100)",
+    )
+    p.add_argument(
+        "--stats-only",
+        action="store_true",
+        help="Print summary stats; suppress JSONL violation output",
+    )
+    p.add_argument(
+        "--out", metavar="FILE", help="Write JSONL to FILE instead of stdout"
+    )
     args = p.parse_args(argv)
 
     import os
+
     token = args.token or os.environ.get("GITHUB_TOKEN")
     if not token:
-        print("[pact] warning: no GitHub token — rate limited to 60 req/hr", file=sys.stderr)
+        print(
+            "[pact] warning: no GitHub token — rate limited to 60 req/hr",
+            file=sys.stderr,
+        )
 
     session = _gh_session(token)
     out = open(args.out, "w") if args.out else sys.stdout
@@ -318,17 +369,17 @@ def main(argv=None) -> int:
     try:
         if args.repos:
             repo_list = [r.strip() for r in args.repos.split(",") if r.strip()]
-            repo_iter = (
-                {"full_name": r, "stargazers_count": 0}
-                for r in repo_list
-            )
+            repo_iter = ({"full_name": r, "stargazers_count": 0} for r in repo_list)
         else:
             repo_iter = search_repos(args.query, args.limit, session)
 
         for repo_meta in repo_iter:
             full_name = repo_meta["full_name"]
             if "/" not in full_name:
-                print(f"[pact] skipping malformed repo name: {full_name!r}", file=sys.stderr)
+                print(
+                    f"[pact] skipping malformed repo name: {full_name!r}",
+                    file=sys.stderr,
+                )
                 continue
             owner, repo_name = full_name.split("/", 1)
             stars = repo_meta.get("stargazers_count", 0)

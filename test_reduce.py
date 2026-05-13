@@ -21,6 +21,7 @@ from .encoder import Violation
 
 try:
     import networkx  # noqa: F401
+
     _HAS_NX = True
 except ImportError:
     _HAS_NX = False
@@ -31,6 +32,7 @@ pytestmark = pytest.mark.skipif(not _HAS_NX, reason="networkx not installed")
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _func(name: str, file: str = "mod.py", line: int = 1) -> FunctionManifest:
     return FunctionManifest(name=name, file=file, line=line, args=[], module_path="mod")
@@ -46,12 +48,19 @@ def _call(caller: str, callee: str, file: str = "mod.py", line: int = 1) -> Call
 
 
 def _viol(file: str = "mod.py") -> Violation:
-    return Violation(file=file, line=1, call="x()", missing=["something"], context="optional_dereference")
+    return Violation(
+        file=file,
+        line=1,
+        call="x()",
+        missing=["something"],
+        context="optional_dereference",
+    )
 
 
 # ---------------------------------------------------------------------------
 # SCC tangle tests
 # ---------------------------------------------------------------------------
+
 
 class TestSCCTangles:
     def test_simple_cycle_detected(self):
@@ -105,6 +114,7 @@ class TestSCCTangles:
 # Pass-through tests
 # ---------------------------------------------------------------------------
 
+
 class TestPassthroughs:
     def test_pure_passthrough_detected(self):
         """B has exactly 1 caller (A) and 1 callee (C): passthrough."""
@@ -138,6 +148,7 @@ class TestPassthroughs:
 # Hub tests
 # ---------------------------------------------------------------------------
 
+
 class TestHubs:
     def test_hub_above_threshold_detected(self):
         """A function calling 5 others with threshold=4 is a hub."""
@@ -169,13 +180,17 @@ class TestHubs:
 # Integration: analyze_graph_reduction
 # ---------------------------------------------------------------------------
 
+
 class TestAnalyzeGraphReduction:
     def test_combined_returns_all_types(self):
         """A graph with a cycle, a pass-through, and a hub returns all 3 kinds."""
         funcs = [
-            _func("cycle_a", "a.py"), _func("cycle_b", "a.py"),  # tangle
-            _func("pass_x", "b.py"), _func("pass_src", "b.py"), _func("pass_dst", "b.py"),  # passthrough
-            _func("hub", "c.py"),    # hub
+            _func("cycle_a", "a.py"),
+            _func("cycle_b", "a.py"),  # tangle
+            _func("pass_x", "b.py"),
+            _func("pass_src", "b.py"),
+            _func("pass_dst", "b.py"),  # passthrough
+            _func("hub", "c.py"),  # hub
         ] + [_func(f"spoke_{i}", "c.py") for i in range(9)]
 
         calls = [

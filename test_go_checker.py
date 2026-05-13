@@ -19,10 +19,10 @@ import pytest
 from .failure_mode import FailureEvidence
 from .go_checker import _can_go_run, run_go_checker
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _make_completed_process(violations: list[dict], returncode: int = 0) -> MagicMock:
     m = MagicMock(spec=subprocess.CompletedProcess)
@@ -36,13 +36,16 @@ def _make_completed_process(violations: list[dict], returncode: int = 0) -> Magi
 # Unit: JSON → FailureEvidence conversion
 # ---------------------------------------------------------------------------
 
+
 class TestRunGoCheckerConversion:
     """run_go_checker converts raw JSON into FailureEvidence objects."""
 
     def _run(self, records: list[dict]) -> list[FailureEvidence]:
         proc = _make_completed_process(records)
-        with patch("subprocess.run", return_value=proc), \
-             patch("pact.go_checker._find_binary", return_value="/fake/pact-go"):
+        with (
+            patch("subprocess.run", return_value=proc),
+            patch("pact.go_checker._find_binary", return_value="/fake/pact-go"),
+        ):
             return run_go_checker(["/fake/dir"])
 
     def test_empty_array_returns_no_evidence(self):
@@ -67,10 +70,20 @@ class TestRunGoCheckerConversion:
 
     def test_multiple_violations(self):
         records = [
-            {"mode": "go_bare_recover", "file": "a.go", "line": 10,
-             "call": "recover()", "message": "bare recover"},
-            {"mode": "go_unchecked_assertion", "file": "b.go", "line": 20,
-             "call": ".(string)", "message": "unchecked assertion"},
+            {
+                "mode": "go_bare_recover",
+                "file": "a.go",
+                "line": 10,
+                "call": "recover()",
+                "message": "bare recover",
+            },
+            {
+                "mode": "go_unchecked_assertion",
+                "file": "b.go",
+                "line": 20,
+                "call": ".(string)",
+                "message": "unchecked assertion",
+            },
         ]
         result = self._run(records)
         assert len(result) == 2
@@ -89,6 +102,7 @@ class TestRunGoCheckerConversion:
 # Unit: subprocess plumbing
 # ---------------------------------------------------------------------------
 
+
 class TestRunGoCheckerSubprocess:
 
     def test_empty_paths_returns_no_evidence(self):
@@ -101,8 +115,10 @@ class TestRunGoCheckerSubprocess:
         go_file = tmp_path / "main.go"
         go_file.write_text("package main\n")
         proc = _make_completed_process([])
-        with patch("subprocess.run", return_value=proc) as mock_run, \
-             patch("pact.go_checker._find_binary", return_value="/fake/pact-go"):
+        with (
+            patch("subprocess.run", return_value=proc) as mock_run,
+            patch("pact.go_checker._find_binary", return_value="/fake/pact-go"),
+        ):
             run_go_checker([go_file])
         args = mock_run.call_args[0][0]
         assert "--file" in args
@@ -111,22 +127,28 @@ class TestRunGoCheckerSubprocess:
 
     def test_directory_path_uses_dir_flag(self, tmp_path):
         proc = _make_completed_process([])
-        with patch("subprocess.run", return_value=proc) as mock_run, \
-             patch("pact.go_checker._find_binary", return_value="/fake/pact-go"):
+        with (
+            patch("subprocess.run", return_value=proc) as mock_run,
+            patch("pact.go_checker._find_binary", return_value="/fake/pact-go"),
+        ):
             run_go_checker([tmp_path])
         args = mock_run.call_args[0][0]
         assert "--dir" in args
         assert "--file" not in args
 
     def test_timeout_returns_empty(self):
-        with patch("subprocess.run", side_effect=subprocess.TimeoutExpired("x", 60)), \
-             patch("pact.go_checker._find_binary", return_value="/fake/pact-go"):
+        with (
+            patch("subprocess.run", side_effect=subprocess.TimeoutExpired("x", 60)),
+            patch("pact.go_checker._find_binary", return_value="/fake/pact-go"),
+        ):
             result = run_go_checker(["/some/dir"])
         assert result == []
 
     def test_oserror_returns_empty(self):
-        with patch("subprocess.run", side_effect=OSError("not found")), \
-             patch("pact.go_checker._find_binary", return_value="/fake/pact-go"):
+        with (
+            patch("subprocess.run", side_effect=OSError("not found")),
+            patch("pact.go_checker._find_binary", return_value="/fake/pact-go"),
+        ):
             result = run_go_checker(["/some/dir"])
         assert result == []
 
@@ -134,22 +156,28 @@ class TestRunGoCheckerSubprocess:
         proc = MagicMock(spec=subprocess.CompletedProcess)
         proc.returncode = 0
         proc.stdout = "not json {"
-        with patch("subprocess.run", return_value=proc), \
-             patch("pact.go_checker._find_binary", return_value="/fake/pact-go"):
+        with (
+            patch("subprocess.run", return_value=proc),
+            patch("pact.go_checker._find_binary", return_value="/fake/pact-go"),
+        ):
             result = run_go_checker(["/some/dir"])
         assert result == []
 
     def test_no_binary_no_go_returns_empty(self):
-        with patch("pact.go_checker._find_binary", return_value=None), \
-             patch("pact.go_checker._can_go_run", return_value=False):
+        with (
+            patch("pact.go_checker._find_binary", return_value=None),
+            patch("pact.go_checker._can_go_run", return_value=False),
+        ):
             result = run_go_checker(["/some/dir"])
         assert result == []
 
     def test_no_binary_falls_back_to_go_run(self, tmp_path):
         proc = _make_completed_process([])
-        with patch("subprocess.run", return_value=proc) as mock_run, \
-             patch("pact.go_checker._find_binary", return_value=None), \
-             patch("pact.go_checker._can_go_run", return_value=True):
+        with (
+            patch("subprocess.run", return_value=proc) as mock_run,
+            patch("pact.go_checker._find_binary", return_value=None),
+            patch("pact.go_checker._can_go_run", return_value=True),
+        ):
             run_go_checker([tmp_path])
         args = mock_run.call_args[0][0]
         assert args[0] == "go"
@@ -164,8 +192,10 @@ class TestRunGoCheckerSubprocess:
 
     def test_extra_args_forwarded(self, tmp_path):
         proc = _make_completed_process([])
-        with patch("subprocess.run", return_value=proc) as mock_run, \
-             patch("pact.go_checker._find_binary", return_value="/fake/pact-go"):
+        with (
+            patch("subprocess.run", return_value=proc) as mock_run,
+            patch("pact.go_checker._find_binary", return_value="/fake/pact-go"),
+        ):
             run_go_checker([tmp_path], extra_args=["--verbose"])
         args = mock_run.call_args[0][0]
         assert "--verbose" in args
@@ -174,6 +204,7 @@ class TestRunGoCheckerSubprocess:
 # ---------------------------------------------------------------------------
 # Integration: round-trip with real Go toolchain (skipped if go absent)
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.skipif(
     not _can_go_run(),
@@ -273,7 +304,7 @@ func main() {
 
     def test_directory_scan(self, tmp_path):
         (tmp_path / "a.go").write_text(
-            "package p\nimport \"os\"\nfunc f() { _, _ = os.Open(\"x\") }\n"
+            'package p\nimport "os"\nfunc f() { _, _ = os.Open("x") }\n'
         )
         # The above has 2-value open (safe), just checking dir mode doesn't crash
         evidence = run_go_checker([tmp_path])
