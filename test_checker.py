@@ -1066,6 +1066,67 @@ def test_bare_unawaited_coroutine_still_flagged(tmp_path):
     assert v, "unawaited bare coroutine call must still be flagged"
 
 
+def test_async_for_iter_not_flagged(tmp_path):
+    # Corpus: langchain — async for chunk in self._astream(...):
+    # When a coroutine/async-gen call is the iter of async for, it's consumed correctly.
+    _write_src(
+        tmp_path,
+        "stream.py",
+        """
+        async def _astream(messages):
+            yield messages
+
+        async def run(messages):
+            async for chunk in _astream(messages):
+                print(chunk)
+        """,
+    )
+    violations = check_codebase(tmp_path)
+    v = [v for v in violations if v.context == "missing_await"]
+    assert not v, "async for x in coro() must not be flagged as missing await"
+
+
+def test_async_comprehension_iter_not_flagged(tmp_path):
+    # Corpus: langchain — [doc async for doc in self.alazy_load()]
+    _write_src(
+        tmp_path,
+        "loader.py",
+        """
+        async def alazy_load():
+            yield 1
+
+        async def load_all(self):
+            return [doc async for doc in alazy_load()]
+        """,
+    )
+    violations = check_codebase(tmp_path)
+    v = [v for v in violations if v.context == "missing_await"]
+    assert not v, "[x async for x in coro()] must not be flagged as missing await"
+
+
+def test_await_protocol_not_flagged(tmp_path):
+    # Corpus: langchain — def __await__(self): return self._impl().__await__()
+    # __await__ implements the awaitable protocol; calling async methods for
+    # their generator via .__await__() is correct, not a missing await.
+    _write_src(
+        tmp_path,
+        "awaitable.py",
+        """
+        import asyncio
+
+        async def _impl():
+            return 42
+
+        class MyAwaitable:
+            def __await__(self):
+                return _impl().__await__()
+        """,
+    )
+    violations = check_codebase(tmp_path)
+    v = [v for v in violations if v.context == "missing_await"]
+    assert not v, "__await__ protocol impl (coro().__await__()) must not be flagged"
+
+
 # ---------------------------------------------------------------------------
 # format_arg_mismatch mode
 # ---------------------------------------------------------------------------

@@ -861,6 +861,18 @@ def _scan_file_missing_await(path: str) -> list[FailureEvidence]:
             return True
         if isinstance(parent, _ast.NamedExpr):
             return True
+        # async for x in coro() — correct async generator consumption
+        if isinstance(parent, _ast.AsyncFor):
+            return True
+        # [x async for x in coro()] — async comprehension
+        if isinstance(parent, _ast.comprehension) and parent.is_async:
+            return True
+        # coro().__await__() / .__aiter__() / .__anext__() — awaitable protocol
+        # implementation (e.g. def __await__(self): return self._impl().__await__())
+        if isinstance(parent, _ast.Attribute) and parent.attr in (
+            "__await__", "__aiter__", "__anext__"
+        ):
+            return True
         return False
 
     evidence = []
