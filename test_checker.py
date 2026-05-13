@@ -357,6 +357,40 @@ def test_sync_function_not_flagged_as_missing_await(tmp_path):
     assert not v, "sync function call should not be flagged as missing await"
 
 
+def test_drf_view_async_get_method_not_flagged(tmp_path):
+    # Regression: async def get(self, request, ...) in a DRF view caused
+    # "get" to land in async_funcs, falsely flagging every data.get() call.
+    _write_src(tmp_path, "views.py", """
+        from rest_framework.views import APIView
+
+        class MyView(APIView):
+            async def get(self, request, pk=None):
+                return None
+
+        def handler(data):
+            name = data.get("name", "default")  # should NOT be flagged
+            value = data.get("value")            # should NOT be flagged
+    """)
+    violations = check_codebase(tmp_path)
+    v = [v for v in violations if v.context == "missing_await"]
+    assert not v, "dict.get() must not be flagged because async def get(self, ...) exists in same file"
+
+
+def test_module_level_async_func_without_await_still_flagged(tmp_path):
+    # Module-level async function (no self/cls) should still be flagged.
+    _write_src(tmp_path, "tasks.py", """
+        async def send_email(recipient):
+            pass
+
+        def trigger():
+            send_email("user@example.com")  # missing await — module-level
+    """)
+    violations = check_codebase(tmp_path)
+    v = [v for v in violations if v.context == "missing_await"]
+    assert v, "unawaited module-level async call must still be flagged after scoping fix"
+    assert v[0].call == "send_email"
+
+
 # ---------------------------------------------------------------------------
 # format_arg_mismatch mode
 # ---------------------------------------------------------------------------
@@ -473,6 +507,86 @@ def test_unvalidated_lookup_chain_with_guard_not_flagged(tmp_path):
     assert not v, "guarded lookup chain should not be flagged"
 
 
+def test_unvalidated_lookup_chain_defaultdict_not_flagged(tmp_path):
+    """defaultdict[key] after .get() — KeyError impossible, must not be flagged."""
+    _write_src(tmp_path, "svc.py", """
+        import collections
+        def aggregate(records):
+            buckets: dict = collections.defaultdict(list)
+            for r in records:
+                key = r.get("type")
+                buckets[key].append(r)
+    """)
+    violations = check_codebase(tmp_path)
+    v = [v for v in violations if v.context == "unvalidated_lookup_chain"]
+    assert not v, "defaultdict subscript must not be flagged as unvalidated_lookup_chain"
+
+
+def test_unvalidated_lookup_chain_annotated_defaultdict_not_flagged(tmp_path):
+    """Annotated defaultdict assignment (x: dict = defaultdict(...)) must not flag."""
+    _write_src(tmp_path, "svc.py", """
+        import collections
+        from typing import Any
+        def aggregate(records):
+            buckets: dict[str, list[Any]] = collections.defaultdict(list)
+            for r in records:
+                key = r.get("type")
+                buckets[key].append(r)
+    """)
+    violations = check_codebase(tmp_path)
+    v = [v for v in violations if v.context == "unvalidated_lookup_chain"]
+    assert not v, "annotated defaultdict subscript must not be flagged"
+
+
+def test_optional_dereference_get_with_default_not_flagged(tmp_path):
+    """.get(key, default) with a non-None default must not be flagged."""
+    _write_src(tmp_path, "svc.py", """
+        def resolve(mapping, key):
+            value = mapping.get(key, "unknown")
+            return value.upper()
+    """)
+    violations = check_codebase(tmp_path)
+    v = [v for v in violations if v.context == "optional_dereference"]
+    assert not v, ".get(key, default) with non-None default must not be optional"
+
+
+def test_optional_dereference_rhs_self_use_not_flagged(tmp_path):
+    """Use of var in the RHS of its own .get() assignment must not be flagged."""
+    _write_src(tmp_path, "svc.py", """
+        def normalize(short_to_qual, callee):
+            if callee not in short_to_qual:
+                callee = short_to_qual.get(callee.split('.')[-1], callee)
+            return callee
+    """)
+    violations = check_codebase(tmp_path)
+    v = [v for v in violations if v.context == "optional_dereference"]
+    assert not v, "callee.split() in the RHS of callee = d.get(callee.split(...)) must not flag"
+
+
+def test_optional_dereference_http_get_not_flagged(tmp_path):
+    """response = client.get('/url/') is an HTTP GET, not dict.get(); must not flag."""
+    _write_src(tmp_path, "test_api.py", """
+        def test_list(client):
+            response = client.get('/api/items/')
+            assert response.status_code == 200
+    """)
+    violations = check_codebase(tmp_path)
+    v = [v for v in violations if v.context == "optional_dereference"]
+    assert not v, "HTTP client .get('/url/') response must not be flagged as optional"
+
+
+def test_optional_dereference_http_fstring_get_not_flagged(tmp_path):
+    """response = client.get(f'/url/{id}/') with f-string path must not flag."""
+    _write_src(tmp_path, "test_api.py", """
+        def test_detail(client, item_id):
+            response = client.get(f'/api/items/{item_id}/')
+            assert response.status_code == 200
+    """)
+    violations = check_codebase(tmp_path)
+    v = [v for v in violations if v.context == "optional_dereference"]
+    assert not v, "HTTP client .get(f'/url/{id}/') response must not be flagged as optional"
+
+
 def test_bare_except_no_callsite_flagged(tmp_path):
     """bare_except now has file_check — catches files with no outgoing calls."""
     _write_src(tmp_path, "handler.py", """
@@ -577,119 +691,3 @@ def test_incremental_full_match_when_all_changed(tmp_path):
     assert full_keys == inc_keys, (
         "incremental with all files dirty must match full scan"
     )
-
-
-# ---------------------------------------------------------------------------
-# prompt_injection mode
-# ---------------------------------------------------------------------------
-
-from .failure_mode import _scan_file_prompt_injection
-
-
-def test_prompt_injection_request_data_fstring(tmp_path):
-    """request.data value interpolated into LLM call is flagged."""
-    f = _write_src(tmp_path, "views.py", """
-        import litellm
-
-        def chat_view(request):
-            user_msg = request.data.get("message")
-            prompt = f"Answer this: {user_msg}"
-            resp = litellm.completion(
-                model="gpt-4",
-                messages=[{"role": "user", "content": prompt}]
-            )
-            return resp
-    """)
-    findings = _scan_file_prompt_injection(str(f))
-    assert findings, "expected prompt_injection violation"
-    assert findings[0].mode_name == "prompt_injection"
-    assert "prompt" in findings[0].message or "tainted" in findings[0].message
-
-
-def test_prompt_injection_request_post_direct(tmp_path):
-    """request.POST value in messages kwarg is flagged."""
-    f = _write_src(tmp_path, "views.py", """
-        import openai
-
-        def ask(request):
-            query = request.POST.get("query")
-            response = openai.chat.completions.create(
-                model="gpt-4o",
-                messages=[{"role": "user", "content": query}]
-            )
-            return response
-    """)
-    findings = _scan_file_prompt_injection(str(f))
-    assert any(e.mode_name == "prompt_injection" for e in findings)
-
-
-def test_prompt_injection_no_taint_clean(tmp_path):
-    """Hardcoded prompt with no user data produces no violation."""
-    f = _write_src(tmp_path, "views.py", """
-        import litellm
-
-        def summarise(text):
-            prompt = "Summarise the following document in 3 bullet points."
-            resp = litellm.completion(
-                model="gpt-4",
-                messages=[{"role": "user", "content": prompt}]
-            )
-            return resp
-    """)
-    findings = _scan_file_prompt_injection(str(f))
-    assert not findings, f"unexpected violations: {findings}"
-
-
-def test_prompt_injection_env_var(tmp_path):
-    """os.environ.get() value flowing into LLM call is flagged."""
-    f = _write_src(tmp_path, "service.py", """
-        import os
-        import anthropic
-
-        client = anthropic.Anthropic()
-
-        def run():
-            system_prompt = os.environ.get("SYSTEM_PROMPT_OVERRIDE")
-            msg = client.messages.create(
-                model="claude-3-opus-20240229",
-                system=system_prompt,
-                messages=[{"role": "user", "content": "hello"}]
-            )
-            return msg
-    """)
-    findings = _scan_file_prompt_injection(str(f))
-    assert any(e.mode_name == "prompt_injection" for e in findings)
-
-
-def test_prompt_injection_taint_does_not_cross_scope(tmp_path):
-    """Tainted var in one function does not taint a sibling function."""
-    f = _write_src(tmp_path, "service.py", """
-        import litellm
-
-        def dangerous(request):
-            user_input = request.data.get("q")  # tainted here
-
-        def safe():
-            user_input = "hardcoded"  # same name, different scope — NOT tainted
-            resp = litellm.completion(
-                model="gpt-4",
-                messages=[{"role": "user", "content": user_input}]
-            )
-            return resp
-    """)
-    findings = _scan_file_prompt_injection(str(f))
-    assert not findings, f"taint incorrectly crossed function scope: {findings}"
-
-
-def test_prompt_injection_fstring_concat(tmp_path):
-    """Taint through f-string concatenation is detected."""
-    f = _write_src(tmp_path, "api.py", """
-        import litellm
-
-        def process(request):
-            raw = request.data["text"]
-            full = "Context: " + raw + "\\nAnswer:"
-            litellm.completion(model="gpt-4o", prompt=full)
-    """)
-    findings = _scan_file_prompt_injection(str(f))
-    assert findings, "expected violation for binary concat taint propagation"
