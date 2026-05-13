@@ -282,13 +282,18 @@ def _scan_file_optional_deref(path: str) -> list[FailureEvidence]:
                             )
                         ):
                             return
-                    # Known HTTP client receiver names: requests.get(), session.get()
+                    # Known HTTP client receiver names: requests.get(), session.get(),
+                    # self.client.get() (Django test client), async_client.get(), etc.
                     _HTTP_CLIENTS = frozenset(
                         {"requests", "httpx", "session", "_session", "client",
-                         "http_client", "http_session", "req_session", "r", "s"}
+                         "http_client", "http_session", "req_session", "async_client",
+                         "r", "s"}
                     )
                     recv = node.value.func.value
                     if isinstance(recv, _ast.Name) and recv.id in _HTTP_CLIENTS:
+                        return
+                    # self.client.get(), self.async_client.get() — attribute chain
+                    if isinstance(recv, _ast.Attribute) and recv.attr in _HTTP_CLIENTS:
                         return
                     # Custom class .get(non_string_key) — not a dict lookup; skip.
                     # dict.get() keys are almost always string literals or string
@@ -329,6 +334,22 @@ def _scan_file_optional_deref(path: str) -> list[FailureEvidence]:
                 if var in src:
                     self.guarded.add(var)
             self.generic_visit(node)
+
+        def visit_IfExp(self, node):
+            # Ternary: body if test else orelse.
+            # Variables referenced in the test are guarded within the body branch.
+            # E.g. `request.user if request else None` — `request` is safe in body.
+            self.visit(node.test)
+            test_src = _ast.unparse(node.test) if hasattr(_ast, "unparse") else ""
+            newly_guarded: set[str] = set()
+            for var in list(self.optional_vars):
+                if var in test_src and var not in self.guarded:
+                    self.guarded.add(var)
+                    newly_guarded.add(var)
+            self.visit(node.body)
+            self.guarded -= newly_guarded
+            self.visit(node.orelse)
+            # Do NOT call generic_visit — all children handled above.
 
         def visit_Attribute(self, node):
             # var.something — flag if var is unguarded optional
@@ -529,6 +550,77 @@ def _file_imports_django(path: str) -> bool:
         return False
 
 
+@functools.lru_cache(maxsize=None)
+def _new_object_save_lines(path: str) -> frozenset:
+    """Return set of line numbers where .save() is on a freshly-constructed object.
+
+    A name is "freshly constructed" when it was last assigned via a constructor
+    call — `x = SomeModel(...)` — not fetched from the DB (.get, .first, etc).
+    These are INSERT operations; update_fields does not apply.
+    """
+    import ast as _ast
+    from pathlib import Path as _Path
+
+    try:
+        src = _Path(path).read_text(encoding="utf-8", errors="replace")
+        tree = _ast.parse(src, filename=path)
+    except (OSError, SyntaxError):
+        return frozenset()
+
+    # ORM fetch call names — result is an existing DB row, not a new object
+    _ORM_FETCH = frozenset({"get", "first", "last", "latest", "earliest", "create",
+                             "get_or_create", "update_or_create", "bulk_create",
+                             "all", "filter", "exclude", "select_related", "prefetch_related"})
+
+    def _is_constructor_call(node: _ast.expr) -> bool:
+        """True if node is a Call whose function looks like a class constructor."""
+        if not isinstance(node, _ast.Call):
+            return False
+        func = node.func
+        # SomeClass(...) — bare name starting with uppercase
+        if isinstance(func, _ast.Name):
+            return func.id[:1].isupper()
+        # module.SomeClass(...) or self.SomeClass(...)
+        if isinstance(func, _ast.Attribute):
+            # Exclude ORM chained calls: Model.objects.get(), qs.filter().first()
+            if func.attr in _ORM_FETCH:
+                return False
+            return func.attr[:1].isupper()
+        return False
+
+    new_obj_save_lines: set[int] = set()
+
+    for func_node in _ast.walk(tree):
+        if not isinstance(func_node, (_ast.FunctionDef, _ast.AsyncFunctionDef)):
+            continue
+        # Map name → True if last assignment was a constructor call
+        constructed: dict[str, bool] = {}
+        for stmt in _ast.walk(func_node):
+            # Track assignments: x = SomeModel(...)
+            if isinstance(stmt, _ast.Assign):
+                for target in stmt.targets:
+                    if isinstance(target, _ast.Name):
+                        constructed[target.id] = _is_constructor_call(stmt.value)
+            elif isinstance(stmt, (_ast.AnnAssign,)):
+                if isinstance(stmt.target, _ast.Name) and stmt.value is not None:
+                    constructed[stmt.target.id] = _is_constructor_call(stmt.value)
+            # Detect name.save() or self.name.save()
+            elif isinstance(stmt, _ast.Expr) and isinstance(stmt.value, _ast.Call):
+                call_node = stmt.value
+                if isinstance(call_node.func, _ast.Attribute) and call_node.func.attr == "save":
+                    recv = call_node.func.value
+                    recv_name: str | None = None
+                    if isinstance(recv, _ast.Name):
+                        recv_name = recv.id
+                    elif isinstance(recv, _ast.Attribute) and isinstance(recv.value, _ast.Name):
+                        # self.something.save() — track on "something"
+                        recv_name = recv.attr
+                    if recv_name and constructed.get(recv_name):
+                        new_obj_save_lines.add(call_node.lineno)
+
+    return frozenset(new_obj_save_lines)
+
+
 def _check_save_without_update_fields(
     call: CallSite,
     models: dict[str, ModelManifest],
@@ -550,6 +642,10 @@ def _check_save_without_update_fields(
     # (the old `.endswith("file")` check had `'profile'.endswith('file')` == True).
     receiver = call.callee_name.rsplit(".", 1)[0].split(".")[-1].lower()
     if receiver.rsplit("_", 1)[-1] in _SAFE_SAVE_RECEIVER_KINDS:
+        return []
+    # New-object INSERT: if the receiver was assigned from a constructor (Model(...)),
+    # this is an INSERT operation — update_fields is invalid here (raises ValueError).
+    if call.line in _new_object_save_lines(call.file):
         return []
     return [
         FailureEvidence(

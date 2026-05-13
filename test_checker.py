@@ -549,6 +549,65 @@ def test_django_save_without_update_fields_still_flagged(tmp_path):
     assert v, "Django .save() without update_fields must still be flagged in Django files"
 
 
+def test_new_object_save_not_flagged(tmp_path):
+    # Corpus: healthchecks — user = User(...); user.save() is an INSERT, not UPDATE.
+    # update_fields is invalid for new (unsaved) objects — Django raises ValueError.
+    _write_src(
+        tmp_path,
+        "views.py",
+        """
+        from django.db import models
+
+        def register(username, email):
+            user = User(username=username, email=email)
+            user.set_unusable_password()
+            user.save()
+        """,
+    )
+    violations = check_codebase(tmp_path)
+    v = [v for v in violations if v.context == "save_without_update_fields"]
+    assert not v, "Constructor-then-save (INSERT) must not be flagged — update_fields invalid for new objects"
+
+
+def test_new_object_save_via_class_attr_not_flagged(tmp_path):
+    # check = Check(project=project); check.save() — also an INSERT
+    _write_src(
+        tmp_path,
+        "views.py",
+        """
+        from django.db import models
+
+        def create_check(project):
+            check = Check(project=project)
+            check.created = now()
+            check.save()
+        """,
+    )
+    violations = check_codebase(tmp_path)
+    v = [v for v in violations if v.context == "save_without_update_fields"]
+    assert not v, "Check(...) constructor then .save() is an INSERT — must not be flagged"
+
+
+def test_fetched_object_save_still_flagged(tmp_path):
+    # profile = Profile.objects.get(user=user); profile.name = x; profile.save()
+    # This IS an UPDATE — should still be flagged.
+    _write_src(
+        tmp_path,
+        "views.py",
+        """
+        from django.db import models
+
+        def update_name(user_id, name):
+            profile = Profile.objects.get(user_id=user_id)
+            profile.name = name
+            profile.save()
+        """,
+    )
+    violations = check_codebase(tmp_path)
+    v = [v for v in violations if v.context == "save_without_update_fields"]
+    assert v, "Fetched object .save() (UPDATE) must still be flagged"
+
+
 def test_objects_get_not_flagged_as_optional(tmp_path):
     # Corpus: EvalAI — token = JwtToken.objects.get(user=user); token.refresh_token
     # Model.objects.get() raises DoesNotExist, never returns None.
@@ -589,6 +648,63 @@ def test_chained_queryset_get_not_flagged_as_optional(tmp_path):
     violations = check_codebase(tmp_path)
     v = [v for v in violations if v.context == "optional_dereference"]
     assert not v, "chained queryset .select_related().get() result must not be flagged as optional"
+
+
+def test_django_test_client_get_not_flagged(tmp_path):
+    # Corpus: paperless-ngx — response = self.client.get(self.ENDPOINT); response.status_code
+    # Django test Client.get() returns HttpResponse, never None.
+    _write_src(
+        tmp_path,
+        "test_api.py",
+        """
+        class MyTest:
+            def test_it(self):
+                response = self.client.get(self.ENDPOINT, format="json")
+                self.assertEqual(response.status_code, 200)
+                return response.data
+        """,
+    )
+    violations = check_codebase(tmp_path)
+    v = [v for v in violations if v.context == "optional_dereference"]
+    assert not v, "self.client.get() (Django test client) must not be flagged as optional"
+
+
+def test_ternary_guard_not_flagged(tmp_path):
+    # Corpus: paperless-ngx/suitenumerique — request.user if request else None
+    # When `request` is tested as the ternary condition, access in the body is safe.
+    _write_src(
+        tmp_path,
+        "serializers.py",
+        """
+        def get_user(self):
+            request = self.context.get("request")
+            user = request.user if request else None
+            return user
+
+        def get_version(self):
+            request = self.context.get("request")
+            return request.version if request else "1.0"
+        """,
+    )
+    violations = check_codebase(tmp_path)
+    v = [v for v in violations if v.context == "optional_dereference"]
+    assert not v, "x.attr if x else y ternary guard must not be flagged as optional dereference"
+
+
+def test_unguarded_optional_still_flagged(tmp_path):
+    # `dict.get()` without any guard — must still be flagged.
+    _write_src(
+        tmp_path,
+        "views.py",
+        """
+        def process(d):
+            item = d.get("key")
+            return item.value
+        """,
+    )
+    violations = check_codebase(tmp_path)
+    v = [v for v in violations if v.context == "optional_dereference"]
+    assert v, "Unguarded dict.get() result dereference must still be flagged"
 
 
 # ---------------------------------------------------------------------------
