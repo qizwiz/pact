@@ -806,6 +806,9 @@ def _scan_file_missing_await(path: str) -> list[FailureEvidence]:
             "run_coroutine_threadsafe",
             "StreamingResponse",
             "EventSourceResponse",
+            "run_worker",       # Textual UI framework: schedules coroutine as worker
+            "call_soon",        # asyncio loop scheduling
+            "call_soon_threadsafe",
         }
     )
 
@@ -880,6 +883,19 @@ def _scan_file_missing_await(path: str) -> list[FailureEvidence]:
     class _Visitor(_ast.NodeVisitor):
         def __init__(self):
             self._in_await = False
+            self._in_async_def = False  # True only inside async def bodies
+
+        def visit_AsyncFunctionDef(self, node):
+            old = self._in_async_def
+            self._in_async_def = True
+            self.generic_visit(node)
+            self._in_async_def = old
+
+        def visit_FunctionDef(self, node):
+            old = self._in_async_def
+            self._in_async_def = False
+            self.generic_visit(node)
+            self._in_async_def = old
 
         def visit_Await(self, node):
             old = self._in_await
@@ -913,9 +929,14 @@ def _scan_file_missing_await(path: str) -> list[FailureEvidence]:
                     recv = node.func.value
                     if isinstance(recv, _ast.Name) and recv.id in ("self", "cls"):
                         is_method_call = True
+                # module-level async calls (save_data()) are bugs in any context.
+                # method calls (self.method()) are only bugs inside async def — in sync
+                # methods a shared method name may deliberately call the sync version
+                # (dual sync/async client pattern: both SyncClient and AsyncClient
+                # define close(), request(), etc. in the same file).
                 should_flag = (
                     name in module_async and not isinstance(node.func, _ast.Attribute)
-                ) or (name in method_async and is_method_call)
+                ) or (name in method_async and is_method_call and self._in_async_def)
                 if name and should_flag and not _is_coro_consumer_arg(node):
                     evidence.append(
                         FailureEvidence(

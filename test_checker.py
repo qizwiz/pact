@@ -1127,6 +1127,72 @@ def test_await_protocol_not_flagged(tmp_path):
     assert not v, "__await__ protocol impl (coro().__await__()) must not be flagged"
 
 
+def test_run_worker_not_flagged(tmp_path):
+    # Corpus: openai-python — self.run_worker(self.handle_realtime_connection())
+    # Textual UI framework: run_worker() intentionally accepts coroutines (schedules them).
+    _write_src(
+        tmp_path,
+        "app.py",
+        """
+        async def handle_connection(self):
+            pass
+
+        class MyApp:
+            async def on_mount(self):
+                self.run_worker(handle_connection(self))
+        """,
+    )
+    violations = check_codebase(tmp_path)
+    v = [v for v in violations if v.context == "missing_await"]
+    assert not v, "run_worker(coro) must not be flagged as missing await"
+
+
+def test_sync_method_calling_shared_name_not_flagged(tmp_path):
+    # Corpus: openai-python — SyncClient.close() in def __exit__ while AsyncClient.close()
+    # exists in same file. Sync method calling sync method must not be flagged.
+    _write_src(
+        tmp_path,
+        "client.py",
+        """
+        class SyncClient:
+            def __exit__(self, *args):
+                self.close()
+
+            def close(self):
+                pass
+
+        class AsyncClient:
+            async def close(self):
+                pass
+
+            async def request(self):
+                pass
+        """,
+    )
+    violations = check_codebase(tmp_path)
+    v = [v for v in violations if v.context == "missing_await"]
+    assert not v, "sync def calling self.method() where async def exists in same file must not be flagged"
+
+
+def test_async_method_unawaited_still_flagged(tmp_path):
+    # Inside async def, self.async_method() without await IS a bug.
+    _write_src(
+        tmp_path,
+        "client.py",
+        """
+        class AsyncClient:
+            async def close(self):
+                pass
+
+            async def use(self):
+                self.close()  # bug: missing await
+        """,
+    )
+    violations = check_codebase(tmp_path)
+    v = [v for v in violations if v.context == "missing_await"]
+    assert v, "async def calling self.async_method() without await must still be flagged"
+
+
 # ---------------------------------------------------------------------------
 # format_arg_mismatch mode
 # ---------------------------------------------------------------------------
