@@ -87,6 +87,9 @@ pact path/to/project/ --incremental main --stats
 # Suggest safe refactor targets (high violation density, low coupling)
 pact path/to/project/ --suggest
 
+# Graph reduction: find call cycles, pass-through hops, fan-out hubs
+pact path/to/project/ --reduce
+
 # Full GitHub PR comment: call graph + reduction sequence + test coverage
 pact path/to/project/ --pr-comment
 
@@ -144,6 +147,40 @@ The formal spec for pact itself lives at [`docs/tla/Pact.tla`](docs/tla/Pact.tla
 | `mutable_default_arg` | `def f(x=[]):` — shared state across all calls |
 
 Go support via `pact-go`: `go_ignored_error`, `go_bare_recover`, `go_unchecked_assertion`, `go_goroutine_no_sync`.
+
+## Graph reduction
+
+Violations find bugs. `--reduce` finds **structural fragility** — the moving pieces whose
+existence makes bugs possible in the first place.
+
+```
+$ pact path/to/project/ --reduce
+
+⬡ pact --reduce: 42 simplification targets  (showing top 20)
+
+  TANGLE  payments.charge → payments.validate → payments.charge  [payments/core.py:45]
+    cycle: payments.charge → payments.validate → payments.charge (3 total)
+    3 functions in a mutual call cycle — break the cycle to make this subgraph a DAG
+    reduction_potential=2  violations=4  score=4.0
+
+  PASSTHROUGH  api.route_and_forward  [api/router.py:88]
+    in=1 caller  out=1 callee — pure hop; inline to collapse 1 node + 2 edges
+    reduction_potential=3  violations=1  score=3.5
+
+  HUB  ingestion.process  [ingestion/pipeline.py:201]
+    fan-out=12 (calls 12 functions) — split into 3 cohesive groups to reduce fan-out to ≤4
+    reduction_potential=4  violations=0  score=4.0
+```
+
+Three structural anti-patterns, each rooted in graph theory:
+
+| Anti-pattern | Graph-theory name | Fragility cost | Fix |
+|---|---|---|---|
+| Mutual call cycles | SCC (strongly connected component) | N functions coupled — change one, risk all | Extract shared state, flip one dependency |
+| Pure delegation hops | Degree-2 node (pass-through) | Adds a frame with no logic | Inline into caller |
+| Massive fan-out | High out-degree hub | Understanding requires knowing all N callees | Split by responsibility |
+
+Score = `reduction_potential + violations × 0.5` — highest-value structural simplifications first.
 
 ## CI integration
 

@@ -102,4 +102,41 @@ libs/core/langchain_core/tools/base.py:1502  [unvalidated_lookup_chain]
 This is in the production tool-binding code, not a test — `field_name` is fetched with
 `.get()` at line 1501 and then used as a subscript at line 1502 without a guard.
 
-Full findings: run `pact langchain-ai/langchain/libs/ --json` for machine-readable output.
+## Graph reduction (`--reduce`)
+
+Beyond violations, `--reduce` identifies structural moving pieces — nodes and edges you can
+eliminate to reduce fragility. Fewer moving pieces means fewer paths for bugs to propagate.
+
+```
+$ pact /tmp/langchain-core/libs/ --reduce
+
+⬡ pact --reduce: 1,378 simplification targets  (showing top 20)
+
+  PASSTHROUGH  Runnable.pick  [langchain_core/runnables/base.py:710]
+    in=1 caller  out=1 callee — pure hop; inline to collapse 1 node + 2 edges
+    reduction_potential=3  violations=0  score=3.0
+
+  HUB  Runnable._atransform_stream_with_config  [langchain_core/runnables/base.py:2537]
+    fan-out=24 (calls 24 functions) — split into 6 cohesive groups to reduce fan-out to ≤4
+    reduction_potential=4  violations=0  score=4.0
+
+  HUB  Runnable._abatch_with_config  [langchain_core/runnables/base.py:2364]
+    fan-out=19 (calls 19 functions) — split into 5 cohesive groups to reduce fan-out to ≤4
+    reduction_potential=3  violations=0  score=3.0
+```
+
+The `Runnable` base class in `langchain_core` concentrates structural complexity: pass-through
+delegation methods in the class hierarchy (each adds a hop with no logic) and fan-out hubs
+that call 10–24 functions (each additional edge is a potential failure path). `--reduce`
+scores these by `structural_savings + violation_urgency` so the highest-value targets appear
+first.
+
+The three structural anti-patterns `--reduce` finds, with their graph-theory names:
+
+| Anti-pattern | Graph-theory name | What it costs | How to fix |
+|--------------|-------------------|---------------|------------|
+| Mutual call cycles | Strongly connected component (SCC) | Can't change one function without potentially affecting all others | Break the cycle: extract shared state, flip a dependency direction |
+| Pure delegation hops | Degree-2 node (pass-through) | Adds a call frame and mental model hop with no logic | Inline into the caller |
+| Massive fan-out | High out-degree hub | Understanding the function requires understanding all N callees | Split by responsibility into K cohesive sub-functions |
+
+Full findings: run `pact /path/to/langchain/libs/ --reduce --reduce-limit 50` for more targets.

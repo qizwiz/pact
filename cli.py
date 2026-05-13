@@ -7,6 +7,7 @@ from pathlib import Path
 
 from .checker import check_codebase, check_codebase_incremental
 from .extractor import extract_from_codebase
+from .reduce import analyze_graph_reduction
 from .refactor import suggest_refactors
 from .specgen import spec_gen
 from .speccomplete import spec_complete
@@ -147,6 +148,21 @@ def main(argv=None) -> int:
         help="Minimum violations to include in refactor suggestions (default: 1)",
     )
     p.add_argument(
+        "--reduce", action="store_true",
+        help=(
+            "Graph reduction analysis: find call cycles (SCCs), pass-through nodes, "
+            "and fan-out hubs — the structural moving pieces that drive fragility"
+        ),
+    )
+    p.add_argument(
+        "--hub-threshold", type=int, default=8, metavar="N",
+        help="Fan-out threshold for hub detection in --reduce (default: 8)",
+    )
+    p.add_argument(
+        "--reduce-limit", type=int, default=20, metavar="N",
+        help="Max simplification targets to show in --reduce output (default: 20)",
+    )
+    p.add_argument(
         "--graph", action="store_true",
         help="Print the violation call graph as a Mermaid flowchart",
     )
@@ -227,6 +243,21 @@ def main(argv=None) -> int:
                     print()
             else:
                 print("\n✓  pact: no refactor targets above threshold")
+
+    if args.reduce and not args.json_mode:
+        reduction = analyze_graph_reduction(
+            functions, call_sites, violations,
+            hub_threshold=args.hub_threshold,
+        )
+        if reduction:
+            shown = reduction[:args.reduce_limit]
+            print(f"\n⬡ pact --reduce: {len(reduction)} simplification target(s)"
+                  f"  (showing top {len(shown)})\n")
+            for c in shown:
+                print(c.summary())
+                print()
+        else:
+            print("\n✓  pact --reduce: call graph has no detected tangles, pass-throughs, or hubs")
 
     if args.graph:
         # Use suggestion data for accurate attribution if available; else compute
