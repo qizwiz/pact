@@ -1,0 +1,96 @@
+name: Nightly corpus scan
+
+on:
+  schedule:
+    - cron: "17 3 * * *"   # 03:17 UTC daily — off-peak, avoids :00/:30 pile-ups
+  workflow_dispatch:
+    inputs:
+      query:
+        description: "GitHub search query"
+        default: "language:python stars:>500"
+      limit:
+        description: "Max repos to scan"
+        default: "30"
+
+jobs:
+  scan:
+    name: Corpus scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install z3-solver requests hypothesis pytest networkx
+
+      - name: Run corpus scan
+        env:
+          GITHUB_TOKEN: ${{ secrets.CORPUS_GITHUB_TOKEN }}
+        run: |
+          QUERY="${{ github.event.inputs.query || 'language:python topic:llm stars:>200' }}"
+          LIMIT="${{ github.event.inputs.limit || '30' }}"
+          python -c "
+          import sys
+          sys.path.insert(0, '.')
+          " 2>/dev/null || true
+          # Run from parent so pact is importable as a package
+          cd ..
+          python3 -m pact.scan_github \
+            --query "$QUERY" \
+            --limit "$LIMIT" \
+            --max-files 150 \
+            --token "$GITHUB_TOKEN" \
+            --out pact/corpus-nightly.jsonl
+          cd pact
+
+      - name: Summarize results
+        run: |
+          python3 - <<'EOF'
+          import json, collections, sys
+          lines = [json.loads(l) for l in open("corpus-nightly.jsonl") if l.strip()]
+          modes = collections.Counter(r["mode"] for r in lines)
+          repos = len(set(r["repo"] for r in lines))
+          print(f"## Nightly corpus summary")
+          print(f"- **{repos} repos** scanned")
+          print(f"- **{len(lines)} violations** found")
+          print()
+          print("| Mode | Count |")
+          print("|------|-------|")
+          for mode, count in modes.most_common(10):
+              print(f"| {mode} | {count} |")
+          # False-positive canary: any mode >70% of a single repo's violations
+          by_repo = collections.defaultdict(list)
+          for r in lines:
+              by_repo[r["repo"]].append(r["mode"])
+          suspects = []
+          for repo, ms in by_repo.items():
+              total = len(ms)
+              if total < 5: continue
+              top_mode, top_count = collections.Counter(ms).most_common(1)[0]
+              if top_count / total > 0.7:
+                  suspects.append((top_count/total, repo, top_mode, total))
+          if suspects:
+              print()
+              print("### ⚠️ False-positive canary (>70% single mode)")
+              for ratio, repo, mode, total in sorted(suspects, reverse=True)[:5]:
+                  print(f"- {repo}: {ratio:.0%} `{mode}` ({total} violations total)")
+          EOF
+          cat corpus-nightly.jsonl >> corpus-all.jsonl 2>/dev/null || mv corpus-nightly.jsonl corpus-all.jsonl
+
+      - name: Upload corpus artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: corpus-${{ github.run_id }}
+          path: corpus-nightly.jsonl
+          retention-days: 30
+
+      - name: Upload rolling corpus
+        uses: actions/upload-artifact@v4
+        with:
+          name: corpus-all
+          path: corpus-all.jsonl
+          retention-days: 90
+          overwrite: true
