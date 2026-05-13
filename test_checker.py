@@ -975,6 +975,59 @@ def test_optional_dereference_http_fstring_get_not_flagged(tmp_path):
     ), "HTTP client .get(f'/url/{id}/') response must not be flagged as optional"
 
 
+def test_optional_dereference_requests_get_url_var_not_flagged(tmp_path):
+    # Corpus: google/adk-python — response = requests.get(url, headers=h, timeout=60)
+    # The url variable and HTTP kwargs distinguish this from dict.get().
+    _write_src(
+        tmp_path,
+        "utils.py",
+        """
+        import requests
+
+        def fetch(url, headers):
+            response = requests.get(url, headers=headers, timeout=60)
+            response.raise_for_status()
+            return response.json()
+        """,
+    )
+    violations = check_codebase(tmp_path)
+    v = [v for v in violations if v.context == "optional_dereference"]
+    assert not v, "requests.get(url, timeout=60) response must not be flagged as optional"
+
+
+def test_optional_dereference_session_get_not_flagged(tmp_path):
+    # session.get(url) — HTTP session client, not dict.get()
+    _write_src(
+        tmp_path,
+        "client.py",
+        """
+        def fetch(session, url):
+            response = session.get(url)
+            response.raise_for_status()
+            return response.json()
+        """,
+    )
+    violations = check_codebase(tmp_path)
+    v = [v for v in violations if v.context == "optional_dereference"]
+    assert not v, "session.get(url) response must not be flagged as optional"
+
+
+def test_optional_dereference_dict_get_still_flagged(tmp_path):
+    # dict.get(key) returning None and then dereferenced must still be flagged.
+    _write_src(
+        tmp_path,
+        "lookup.py",
+        """
+        def process(data):
+            user = data.get("user")
+            return user.name
+        """,
+    )
+    violations = check_codebase(tmp_path)
+    v = [v for v in violations if v.context == "optional_dereference"]
+    assert v, "dict.get() result used without None check must still be flagged"
+
+
 def test_bare_except_no_callsite_flagged(tmp_path):
     """bare_except now has file_check — catches files with no outgoing calls."""
     _write_src(

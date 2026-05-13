@@ -226,26 +226,60 @@ def _scan_file_optional_deref(path: str) -> list[FailureEvidence]:
                         and call_args[1].value is None
                     ):
                         return
-                    # HTTP client .get("/url/...") — first arg is a URL path string
+                    # HTTP client .get(url, headers=..., timeout=...) — kwargs that
+                    # dict.get() never has are a definitive indicator of an HTTP call.
+                    _HTTP_KWARGS = frozenset(
+                        {"headers", "params", "timeout", "verify", "auth", "json",
+                         "data", "cookies", "stream", "proxies", "cert",
+                         "allow_redirects", "follow_redirects"}
+                    )
+                    kw_names = {kw.arg for kw in node.value.keywords}
+                    if kw_names & _HTTP_KWARGS:
+                        return
+                    # HTTP client .get(url_var) — first arg named like a URL
+                    _URL_VAR_NAMES = frozenset(
+                        {"url", "URL", "uri", "URI", "endpoint", "base_url",
+                         "href", "path", "route"}
+                    )
+                    if (
+                        len(call_args) >= 1
+                        and isinstance(call_args[0], _ast.Name)
+                        and call_args[0].id in _URL_VAR_NAMES
+                    ):
+                        return
+                    # HTTP client .get("http(s)://...") or .get("/url/...")
                     if (
                         len(call_args) >= 1
                         and isinstance(call_args[0], _ast.Constant)
                         and isinstance(call_args[0].value, str)
-                        and call_args[0].value.startswith("/")
+                        and (
+                            call_args[0].value.startswith("/")
+                            or "://" in call_args[0].value
+                        )
                     ):
                         return
-                    # HTTP client .get(f"/url/...") — first arg is an f-string URL
+                    # HTTP client .get(f"/{path}") or .get(f"https://...") — f-string URL
                     if len(call_args) >= 1 and isinstance(call_args[0], _ast.JoinedStr):
-                        # f-string; skip — likely an HTTP path
                         first_part = (
                             call_args[0].values[0] if call_args[0].values else None
                         )
                         if (
                             isinstance(first_part, _ast.Constant)
                             and isinstance(first_part.value, str)
-                            and first_part.value.startswith("/")
+                            and (
+                                first_part.value.startswith("/")
+                                or "://" in first_part.value
+                            )
                         ):
                             return
+                    # Known HTTP client receiver names: requests.get(), session.get()
+                    _HTTP_CLIENTS = frozenset(
+                        {"requests", "httpx", "session", "_session", "client",
+                         "http_client", "http_session", "req_session", "r", "s"}
+                    )
+                    recv = node.value.func.value
+                    if isinstance(recv, _ast.Name) and recv.id in _HTTP_CLIENTS:
+                        return
                     # Custom class .get(non_string_key) — not a dict lookup; skip.
                     # dict.get() keys are almost always string literals or string
                     # variables (name, key, attr_name, etc.). A non-string constant
