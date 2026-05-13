@@ -45,6 +45,22 @@ $ pact /tmp/ha-core/
 
 Full findings: [`examples/home-assistant/findings.md`](examples/home-assistant/findings.md)
 
+**[langchain-ai/langchain](https://github.com/langchain-ai/langchain)** — most widely used LLM framework, 136k stars, 2,478 files:
+
+```
+$ pact /tmp/langchain-core/libs/
+✗  pact: 438 violation(s) in 2,478 files
+
+  missing_await          256   _astream() called without await across every provider
+  required_arg_missing   121   integration call sites omit positional args
+  llm_response_unguarded   4   langchain_anthropic/llms.py reads response.content[0]
+                               without length guard — crashes on content-filtered responses
+```
+
+`--suggest` ranks refactoring targets by `violations ÷ call-graph coupling` — the minimum spanning tree of your remediation path.
+
+Full findings: [`examples/langchain/findings.md`](examples/langchain/findings.md)
+
 ## Install
 
 ```bash
