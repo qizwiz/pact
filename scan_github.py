@@ -61,6 +61,8 @@ _SKIP_PATHS = frozenset(
         "build",
         ".eggs",
         ".tox",
+        "vendor",
+        "_vendor",
     }
 )
 

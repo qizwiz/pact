@@ -1663,6 +1663,32 @@ def test_bare_except_no_callsite_flagged(tmp_path):
     assert v, "bare_except should fire even in file with no call sites"
 
 
+def test_vendor_dir_bare_except_not_flagged(tmp_path):
+    """Files under vendor/ are third-party code and must be skipped."""
+    vendor_dir = tmp_path / "vendor" / "click"
+    vendor_dir.mkdir(parents=True)
+    (vendor_dir / "_compat.py").write_text(
+        "def compat():\n    try:\n        risky()\n    except:\n        pass\n"
+    )
+    _write_src(tmp_path, "app.py", "def run(): pass\n")
+    violations = check_codebase(tmp_path)
+    vendor_v = [v for v in violations if "vendor" in v.file]
+    assert not vendor_v, f"vendor/ files must be skipped, got: {vendor_v}"
+
+
+def test_underscore_vendor_dir_not_flagged(tmp_path):
+    """Files under _vendor/ are also third-party and must be skipped."""
+    vendor_dir = tmp_path / "_vendor" / "requests"
+    vendor_dir.mkdir(parents=True)
+    (vendor_dir / "utils.py").write_text(
+        "def fetch():\n    try:\n        do_io()\n    except:\n        pass\n"
+    )
+    _write_src(tmp_path, "main.py", "def run(): pass\n")
+    violations = check_codebase(tmp_path)
+    vendor_v = [v for v in violations if "_vendor" in v.file]
+    assert not vendor_v, f"_vendor/ files must be skipped, got: {vendor_v}"
+
+
 # ---------------------------------------------------------------------------
 # check_codebase_incremental — dirty-set propagation
 # ---------------------------------------------------------------------------

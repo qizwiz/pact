@@ -502,6 +502,8 @@ _SKIP_DIRS = frozenset(
         ".mypy_cache",
         ".uv-cache",
         ".ruff_cache",
+        "vendor",
+        "_vendor",
     }
 )
 
