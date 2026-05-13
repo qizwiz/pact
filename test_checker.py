@@ -628,6 +628,28 @@ def test_loop_run_until_complete_not_flagged(tmp_path):
     assert not v, "loop.run_until_complete(coro()) must not be flagged"
 
 
+def test_async_with_context_manager_not_flagged(tmp_path):
+    # Regression: async with self._cursor() as cur — _cursor is an async
+    # context manager; the call is correct, not a missing await.
+    # 61/495 missing_await corpus violations were this pattern.
+    _write_src(
+        tmp_path,
+        "db.py",
+        """
+        class AsyncDB:
+            async def _cursor(self):
+                pass
+
+            async def query(self, sql):
+                async with self._cursor() as cur:
+                    await cur.execute(sql)
+        """,
+    )
+    violations = check_codebase(tmp_path)
+    v = [v for v in violations if v.context == "missing_await"]
+    assert not v, "async with self._cursor() must not be flagged as missing await"
+
+
 # ---------------------------------------------------------------------------
 # format_arg_mismatch mode
 # ---------------------------------------------------------------------------

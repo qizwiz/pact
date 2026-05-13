@@ -643,6 +643,18 @@ def _scan_file_missing_await(path: str) -> list[FailureEvidence]:
             self.generic_visit(node)
             self._in_await = old
 
+        def visit_AsyncWith(self, node):
+            # Context expressions (the part after 'async with') are async
+            # context managers — calling them is correct, not a missing await.
+            old = self._in_await
+            self._in_await = True
+            for item in node.items:
+                self.visit(item.context_expr)
+            self._in_await = old
+            # Body is checked normally — coroutine calls inside still need await.
+            for stmt in node.body:
+                self.visit(stmt)
+
         def visit_Call(self, node):
             if not self._in_await:
                 name = None
