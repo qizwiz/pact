@@ -1832,7 +1832,7 @@ def test_incremental_full_match_when_all_changed(tmp_path):
 
 def test_overload_stub_mutable_default_not_flagged(tmp_path):
     """@overload type stubs never execute at runtime — mutable defaults in them are FPs."""
-    p = _write_src(
+    _write_src(
         tmp_path,
         "client.py",
         """
@@ -2015,3 +2015,39 @@ def test_app_command_no_args_not_flagged(tmp_path):
     violations = check_codebase(tmp_path)
     ra = [v for v in violations if v.context == "required_arg_missing" and "typer_tool.py" in v.file]
     assert len(ra) == 0, f"Expected 0 required_arg_missing for @app.command(), got {len(ra)}: {[(v.line, v.call) for v in ra]}"
+
+
+def test_dual_sync_async_client_missing_await_not_flagged(tmp_path):
+    """Dual sync/async client in one file: self.close() in async method of AsyncClient
+    must not be flagged because the same name exists as sync def in SyncClient."""
+    _write_src(
+        tmp_path,
+        "clients.py",
+        """
+        import httpx
+
+        class SyncClient:
+            def close(self) -> None:
+                self._http.close()
+
+            def request(self, method: str, url: str) -> httpx.Response:
+                return self._http.request(method, url)
+
+            def _prepare_request(self, method: str) -> dict:
+                return {"method": method}
+
+        class AsyncClient:
+            async def close(self) -> None:
+                await self._http.aclose()
+
+            async def request(self, method: str, url: str) -> httpx.Response:
+                self._prepare_request(method)
+                return await self._http.request(method, url)
+
+            async def _prepare_request(self, method: str) -> dict:
+                return {"method": method}
+        """,
+    )
+    violations = check_codebase(tmp_path)
+    ma = [v for v in violations if v.context == "missing_await" and "clients.py" in v.file]
+    assert len(ma) == 0, f"Expected 0 missing_await for dual sync/async client, got {len(ma)}: {[(v.line, v.call) for v in ma]}"

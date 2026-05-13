@@ -19,7 +19,6 @@ from .reduce import (
     find_passthroughs,
     find_sccs,
     _build_digraph,
-    _live_roots,
 )
 from .extractor import FunctionManifest, CallSite
 from .encoder import Violation

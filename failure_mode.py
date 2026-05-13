@@ -859,6 +859,15 @@ def _scan_file_missing_await(path: str) -> list[FailureEvidence]:
         for node in _ast.walk(tree)
         if isinstance(node, _ast.FunctionDef)
     }
+    # Sync method names: same-named sync def with self/cls — dual sync/async
+    # client pattern (e.g. SyncClient.close + AsyncClient.close in one file).
+    sync_method_names: set[str] = {
+        node.name
+        for node in _ast.walk(tree)
+        if isinstance(node, _ast.FunctionDef)
+        and node.args.args
+        and node.args.args[0].arg in ("self", "cls")
+    }
     module_async: set[str] = set()
     method_async: set[str] = set()
     for node in _ast.walk(tree):
@@ -870,7 +879,11 @@ def _scan_file_missing_await(path: str) -> list[FailureEvidence]:
             # Heuristic: if the first argument is self/cls, it's a method
             args = node.args.args
             if args and args[0].arg in ("self", "cls"):
-                method_async.add(node.name)
+                # Skip if the same method name also exists as a sync def —
+                # dual sync/async client pattern; pact can't resolve which class
+                # self refers to and would cross-contaminate (e.g. openai-python).
+                if node.name not in sync_method_names:
+                    method_async.add(node.name)
             else:
                 # Skip names that also have a sync def — closure-level name
                 # collision; pact cannot resolve which definition is called.
