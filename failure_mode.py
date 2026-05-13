@@ -726,8 +726,18 @@ def _scan_file_mutable_defaults(path: str) -> list[FailureEvidence]:
     evidence = []
     _MUTABLE = (_ast.List, _ast.Dict, _ast.Set)
 
+    def _is_overload(func_node: _ast.FunctionDef | _ast.AsyncFunctionDef) -> bool:
+        for dec in func_node.decorator_list:
+            if isinstance(dec, _ast.Name) and dec.id == "overload":
+                return True
+            if isinstance(dec, _ast.Attribute) and dec.attr == "overload":
+                return True
+        return False
+
     for node in _ast.walk(tree):
         if not isinstance(node, (_ast.FunctionDef, _ast.AsyncFunctionDef)):
+            continue
+        if _is_overload(node):
             continue
         for default in node.args.defaults:
             if isinstance(default, _MUTABLE):

@@ -1782,3 +1782,56 @@ def test_incremental_full_match_when_all_changed(tmp_path):
     assert (
         full_keys == inc_keys
     ), "incremental with all files dirty must match full scan"
+
+
+def test_overload_stub_mutable_default_not_flagged(tmp_path):
+    """@overload type stubs never execute at runtime — mutable defaults in them are FPs."""
+    p = _write_src(
+        tmp_path,
+        "client.py",
+        """
+        from typing import overload, Literal
+
+        class SyncAPIClient:
+            @overload
+            def get(self, path: str, *, options: dict = {}, stream: Literal[False] = False) -> str: ...
+
+            @overload
+            def get(self, path: str, *, options: dict = {}, stream: Literal[True]) -> bytes: ...
+
+            def get(self, path, *, options: dict = {}, stream=False):
+                return path
+
+        def caller():
+            c = SyncAPIClient()
+            c.get("/users")
+        """,
+    )
+    violations = check_codebase(tmp_path)
+    mda = [v for v in violations if v.context == "mutable_default_arg" and "client.py" in v.file]
+    # Only the implementation (1 violation), not the 2 @overload stubs
+    assert len(mda) == 1, f"Expected 1 mutable_default_arg (impl only), got {len(mda)}: {[(v.line, v.call) for v in mda]}"
+
+
+def test_typing_overload_mutable_default_not_flagged(tmp_path):
+    """typing.overload (qualified) also suppresses the check."""
+    _write_src(
+        tmp_path,
+        "validators.py",
+        """
+        import typing
+
+        @typing.overload
+        def process(items: list = []) -> None: ...
+
+        def process(items: list = []) -> None:
+            for item in items:
+                print(item)
+
+        def caller():
+            process()
+        """,
+    )
+    violations = check_codebase(tmp_path)
+    mda = [v for v in violations if v.context == "mutable_default_arg" and "validators.py" in v.file]
+    assert len(mda) == 1, f"Expected 1 (impl only), got {len(mda)}"
