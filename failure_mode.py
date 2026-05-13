@@ -389,6 +389,11 @@ def _check_required_arg(
     func = functions.get(call.callee_name)
     if not func or not func.required_args:
         return []
+    # pytest fixtures are called by the framework with injected dependencies.
+    # Calling a fixture name in test code invokes the fixture's return value
+    # (often a factory), not the fixture function itself.
+    if func.is_pytest_fixture:
+        return []
     # Only non-kwonly required args can be covered by positional args.
     # Enumerate positional-only required args separately so a kwonly arg at
     # index i is never falsely marked covered because positional_count > i.

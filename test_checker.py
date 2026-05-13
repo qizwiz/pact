@@ -266,6 +266,64 @@ def test_missing_arg_still_flagged_without_spread(tmp_path):
     assert v, "missing required arg without any spread must still be flagged"
 
 
+def test_pytest_fixture_call_not_flagged(tmp_path):
+    # Corpus: fastapi-users — mock_session_factory(), get_backend_none().
+    # In pytest, calling a fixture name in test code invokes its return value
+    # (a factory), not the fixture function's full signature.
+    _write_src(
+        tmp_path,
+        "conftest.py",
+        """
+        import pytest
+
+        @pytest.fixture
+        def make_client(db_session, settings):
+            def factory(user=None):
+                return TestClient(user=user)
+            return factory
+        """,
+    )
+    _write_src(
+        tmp_path,
+        "test_api.py",
+        """
+        def test_endpoint(make_client):
+            client = make_client()
+            assert client is not None
+        """,
+    )
+    violations = check_codebase(tmp_path)
+    v = [v for v in violations if v.context == "required_arg_missing"]
+    assert not v, "@pytest.fixture functions must not be flagged for missing args at call site"
+
+
+def test_pytest_fixture_with_parens_not_flagged(tmp_path):
+    # @pytest.fixture() with explicit call parens is also a fixture.
+    _write_src(
+        tmp_path,
+        "conftest.py",
+        """
+        import pytest
+
+        @pytest.fixture()
+        def db(connection, config):
+            return connection.database(config.name)
+        """,
+    )
+    _write_src(
+        tmp_path,
+        "test_db.py",
+        """
+        def test_query(db):
+            result = db()
+            assert result is not None
+        """,
+    )
+    violations = check_codebase(tmp_path)
+    v = [v for v in violations if v.context == "required_arg_missing"]
+    assert not v, "@pytest.fixture() (with parens) must not be flagged for missing args"
+
+
 # ---------------------------------------------------------------------------
 # bare_except mode
 # ---------------------------------------------------------------------------
@@ -352,6 +410,8 @@ def test_save_without_update_fields_flagged(tmp_path):
         tmp_path,
         "views.py",
         """
+        from django.db import models
+
         def update(obj):
             obj.name = "new"
             obj.save()
@@ -359,7 +419,7 @@ def test_save_without_update_fields_flagged(tmp_path):
     )
     violations = check_codebase(tmp_path)
     save_v = [v for v in violations if v.context == "save_without_update_fields"]
-    assert save_v, "save() without update_fields should be flagged"
+    assert save_v, "save() without update_fields should be flagged in Django files"
 
 
 def test_save_with_update_fields_not_flagged(tmp_path):
@@ -367,6 +427,8 @@ def test_save_with_update_fields_not_flagged(tmp_path):
         tmp_path,
         "views.py",
         """
+        from django.db import models
+
         def update(obj):
             obj.name = "new"
             obj.save(update_fields=["name"])
@@ -382,6 +444,8 @@ def test_form_save_not_flagged(tmp_path):
         tmp_path,
         "views.py",
         """
+        from django.db import models
+
         def handle(request):
             form = MyForm(request.POST)
             if form.is_valid():
@@ -398,6 +462,8 @@ def test_compound_serializer_save_not_flagged(tmp_path):
         tmp_path,
         "views.py",
         """
+        from django.db import models
+
         def update(request, pk):
             user_serializer = UserSerializer(data=request.data)
             if user_serializer.is_valid():
@@ -415,6 +481,8 @@ def test_profile_save_is_flagged(tmp_path):
         tmp_path,
         "views.py",
         """
+        from django.db import models
+
         def update_profile(user, name):
             profile = user.profile
             profile.name = name

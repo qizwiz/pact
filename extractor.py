@@ -54,6 +54,7 @@ class FunctionManifest:
     line: int
     module_path: str
     args: list[ArgConstraint] = field(default_factory=list)
+    is_pytest_fixture: bool = False  # True when decorated with @pytest.fixture
 
     @property
     def required_args(self) -> list[ArgConstraint]:
@@ -363,6 +364,18 @@ class _FunctionVisitor(ast.NodeVisitor):
                 )
             )
 
+        # Detect @pytest.fixture / @fixture decorators.
+        def _is_fixture_dec(dec: ast.expr) -> bool:
+            if isinstance(dec, ast.Attribute):
+                return dec.attr == "fixture"
+            if isinstance(dec, ast.Name):
+                return dec.id == "fixture"
+            if isinstance(dec, ast.Call):
+                return _is_fixture_dec(dec.func)
+            return False
+
+        is_fixture = any(_is_fixture_dec(d) for d in node.decorator_list)
+
         qual = ".".join(self._class_stack + [node.name])
         self.functions.append(
             FunctionManifest(
@@ -371,6 +384,7 @@ class _FunctionVisitor(ast.NodeVisitor):
                 line=node.lineno,
                 module_path=self.module_path,
                 args=constraints,
+                is_pytest_fixture=is_fixture,
             )
         )
         self.generic_visit(node)
