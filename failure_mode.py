@@ -160,6 +160,25 @@ _OPTIONAL_RETURNING = frozenset({"first", "last", "get_or_none", "one_or_none", 
 _SAFE_CHECKS = frozenset({"is None", "is not None", "if not", "if "})
 
 
+def _chain_has_objects(node) -> bool:
+    """Return True if 'objects' appears anywhere in a method-call chain.
+
+    Django ORM querysets always flow through Model.objects; pandas groupby
+    chains and SQLAlchemy queries don't. Used to distinguish .first()/.last()
+    that may return None (Django ORM) from ones that can't (pandas, etc.).
+    """
+    import ast as _ast_inner
+    while True:
+        if isinstance(node, _ast_inner.Attribute):
+            if node.attr == "objects":
+                return True
+            node = node.value
+        elif isinstance(node, _ast_inner.Call):
+            node = node.func
+        else:
+            return False
+
+
 @functools.lru_cache(maxsize=None)
 def _scan_file_optional_deref(path: str) -> list[FailureEvidence]:
     """
@@ -219,6 +238,13 @@ def _scan_file_optional_deref(path: str) -> list[FailureEvidence]:
                 and node.value.func.attr in _OPTIONAL_RETURNING
             ):
                 call_args = node.value.args
+                if node.value.func.attr in ("first", "last", "get_or_none", "one_or_none"):
+                    recv = node.value.func.value
+                    # Django ORM .first()/.last() on plain queryset: Model.objects.first()
+                    # — the only case that legitimately returns None. Everything else
+                    # (pandas groupby.first(), SQLAlchemy .first(), etc.) does not.
+                    if not _chain_has_objects(recv):
+                        return
                 if node.value.func.attr == "get":
                     # Django ORM: raises DoesNotExist, never returns None.
                     recv = node.value.func.value

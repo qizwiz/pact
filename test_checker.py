@@ -1948,3 +1948,24 @@ def test_optional_dereference_zero_arg_get_not_flagged(tmp_path):
     violations = check_codebase(tmp_path)
     od = [v for v in violations if v.context == "optional_dereference" and "twisted_queue.py" in v.file]
     assert len(od) == 0, f"Expected 0 optional_dereference for zero-arg .get(), got {len(od)}: {[(v.line, v.call) for v in od]}"
+
+
+def test_optional_dereference_pandas_first_not_flagged(tmp_path):
+    """pandas groupby().first() returns a DataFrame, not Optional — not a violation."""
+    _write_src(
+        tmp_path,
+        "pandas_agg.py",
+        """
+        import pandas as pd
+
+        def aggregate(df, key_cols):
+            meta = df.set_index(key_cols)[key_cols]
+            if not meta.index.is_unique:
+                meta = meta.groupby(level=key_cols, dropna=False).first()
+            result = meta.index
+            return result
+        """,
+    )
+    violations = check_codebase(tmp_path)
+    od = [v for v in violations if v.context == "optional_dereference" and "pandas_agg.py" in v.file]
+    assert len(od) == 0, f"Expected 0 violations for pandas groupby.first(), got {len(od)}: {[(v.line, v.call) for v in od]}"
