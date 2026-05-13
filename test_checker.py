@@ -391,6 +391,56 @@ def test_module_level_async_func_without_await_still_flagged(tmp_path):
     assert v[0].call == "send_email"
 
 
+def test_create_task_not_flagged_as_missing_await(tmp_path):
+    # Regression: asyncio.create_task(coro()) intentionally does not await — it schedules.
+    _write_src(tmp_path, "conn.py", """
+        import asyncio
+
+        async def _pump(handler):
+            pass
+
+        class Manager:
+            async def start(self, handler):
+                self._task = asyncio.create_task(_pump(handler))
+    """)
+    violations = check_codebase(tmp_path)
+    v = [v for v in violations if v.context == "missing_await"]
+    assert not v, "coroutine passed to create_task must not be flagged"
+
+
+def test_gather_args_not_flagged_as_missing_await(tmp_path):
+    # tasks.append(coro()) + asyncio.gather(*tasks) is a standard pattern.
+    _write_src(tmp_path, "runner.py", """
+        import asyncio
+
+        async def handle_event(event):
+            pass
+
+        async def run_all(events):
+            tasks = []
+            for e in events:
+                tasks.append(handle_event(e))
+            await asyncio.gather(*tasks)
+    """)
+    violations = check_codebase(tmp_path)
+    v = [v for v in violations if v.context == "missing_await"]
+    assert not v, "coroutines appended to gather list must not be flagged"
+
+
+def test_streaming_response_not_flagged_as_missing_await(tmp_path):
+    # StreamingResponse(async_generator()) — framework consumes the coroutine/generator.
+    _write_src(tmp_path, "routes.py", """
+        async def event_generator():
+            yield "data: hello"
+
+        def get_stream():
+            return StreamingResponse(event_generator(), media_type="text/event-stream")
+    """)
+    violations = check_codebase(tmp_path)
+    v = [v for v in violations if v.context == "missing_await"]
+    assert not v, "async generator passed to StreamingResponse must not be flagged"
+
+
 # ---------------------------------------------------------------------------
 # format_arg_mismatch mode
 # ---------------------------------------------------------------------------

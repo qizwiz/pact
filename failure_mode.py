@@ -507,6 +507,52 @@ def _scan_file_missing_await(path: str) -> list[FailureEvidence]:
     if not module_async and not method_async:
         return []
 
+    # Build a child→parent map so we can check the calling context.
+    parent_map: dict[int, _ast.AST] = {}
+    for node in _ast.walk(tree):
+        for child in _ast.iter_child_nodes(node):
+            parent_map[id(child)] = node
+
+    # Names of functions/methods that intentionally accept a coroutine object
+    # without awaiting it (they schedule it themselves).
+    _CORO_CONSUMERS = frozenset({
+        "create_task", "ensure_future", "gather", "wait", "wait_for",
+        "shield", "run_coroutine_threadsafe",
+        "StreamingResponse", "EventSourceResponse",
+    })
+
+    def _is_coro_consumer_arg(call_node: _ast.Call) -> bool:
+        """Return True if call_node is passed directly to a coroutine consumer."""
+        parent = parent_map.get(id(call_node))
+        if parent is None:
+            return False
+        # Direct argument: create_task(coro()) or gather(a(), b())
+        if isinstance(parent, _ast.Call):
+            func = parent.func
+            fname = None
+            if isinstance(func, _ast.Attribute):
+                fname = func.attr
+            elif isinstance(func, _ast.Name):
+                fname = func.id
+            if fname in _CORO_CONSUMERS:
+                return True
+        # Collected into a list/tuple that will be passed to gather et al:
+        # tasks.append(coro()) or tasks = [coro(), ...]
+        if isinstance(parent, (_ast.List, _ast.Tuple, _ast.Set)):
+            gp = parent_map.get(id(parent))
+            if isinstance(gp, _ast.Call):
+                func = gp.func
+                fname = (func.attr if isinstance(func, _ast.Attribute)
+                         else func.id if isinstance(func, _ast.Name) else None)
+                if fname in _CORO_CONSUMERS:
+                    return True
+        # .append(coro()) — common pattern before asyncio.gather(*tasks)
+        if isinstance(parent, _ast.Call):
+            if (isinstance(parent.func, _ast.Attribute) and
+                    parent.func.attr == "append"):
+                return True
+        return False
+
     evidence = []
 
     class _Visitor(_ast.NodeVisitor):
@@ -537,7 +583,7 @@ def _scan_file_missing_await(path: str) -> list[FailureEvidence]:
                     (name in module_async and not isinstance(node.func, _ast.Attribute)) or
                     (name in method_async and is_method_call)
                 )
-                if name and should_flag:
+                if name and should_flag and not _is_coro_consumer_arg(node):
                     evidence.append(FailureEvidence(
                         mode_name="missing_await",
                         file=path,
