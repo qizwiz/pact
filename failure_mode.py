@@ -521,6 +521,12 @@ def _scan_file_missing_await(path: str) -> list[FailureEvidence]:
         "StreamingResponse", "EventSourceResponse",
     })
 
+    # asyncio.run(coro()) — qualified only; bare run() is too common
+    _CORO_CONSUMERS_QUALIFIED = frozenset({
+        ("asyncio", "run"),
+        ("loop", "run_until_complete"),
+    })
+
     def _is_coro_consumer_arg(call_node: _ast.Call) -> bool:
         """Return True if call_node is passed directly to a coroutine consumer."""
         parent = parent_map.get(id(call_node))
@@ -530,11 +536,17 @@ def _scan_file_missing_await(path: str) -> list[FailureEvidence]:
         if isinstance(parent, _ast.Call):
             func = parent.func
             fname = None
+            receiver = None
             if isinstance(func, _ast.Attribute):
                 fname = func.attr
+                if isinstance(func.value, _ast.Name):
+                    receiver = func.value.id
             elif isinstance(func, _ast.Name):
                 fname = func.id
             if fname in _CORO_CONSUMERS:
+                return True
+            # Qualified consumers: asyncio.run(), loop.run_until_complete()
+            if receiver is not None and (receiver, fname) in _CORO_CONSUMERS_QUALIFIED:
                 return True
         # Collected into a list/tuple that will be passed to gather et al:
         # tasks.append(coro()) or tasks = [coro(), ...]

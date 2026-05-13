@@ -440,6 +440,38 @@ def test_streaming_response_not_flagged_as_missing_await(tmp_path):
     assert not v, "async generator passed to StreamingResponse must not be flagged"
 
 
+def test_asyncio_run_not_flagged_as_missing_await(tmp_path):
+    # Regression: asyncio.run(main()) is the canonical entrypoint — not a missing await.
+    # 90 of 179 unique missing_await violations in LLM-topic corpus were this pattern.
+    _write_src(tmp_path, "app.py", """
+        import asyncio
+
+        async def main():
+            pass
+
+        if __name__ == '__main__':
+            asyncio.run(main())
+    """)
+    violations = check_codebase(tmp_path)
+    v = [v for v in violations if v.context == "missing_await"]
+    assert not v, "asyncio.run(coro()) must not be flagged as missing await"
+
+
+def test_loop_run_until_complete_not_flagged(tmp_path):
+    _write_src(tmp_path, "runner.py", """
+        import asyncio
+
+        async def setup():
+            pass
+
+        loop = asyncio.get_event_loop()
+        loop.run_until_complete(setup())
+    """)
+    violations = check_codebase(tmp_path)
+    v = [v for v in violations if v.context == "missing_await"]
+    assert not v, "loop.run_until_complete(coro()) must not be flagged"
+
+
 # ---------------------------------------------------------------------------
 # format_arg_mismatch mode
 # ---------------------------------------------------------------------------
