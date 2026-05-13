@@ -468,6 +468,10 @@ def _check_required_arg(
     # (often a factory), not the fixture function itself.
     if func.is_pytest_fixture:
         return []
+    # Click/Typer CLI commands: the decorator replaces the function so that
+    # calling main() with no args reads from sys.argv. Not a missing-arg bug.
+    if func.is_click_command:
+        return []
     # Only non-kwonly required args can be covered by positional args.
     # Enumerate positional-only required args separately so a kwonly arg at
     # index i is never falsely marked covered because positional_count > i.

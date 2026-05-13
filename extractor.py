@@ -55,6 +55,7 @@ class FunctionManifest:
     module_path: str
     args: list[ArgConstraint] = field(default_factory=list)
     is_pytest_fixture: bool = False  # True when decorated with @pytest.fixture
+    is_click_command: bool = False   # True when decorated with @click.command/group or @app.command
 
     @property
     def required_args(self) -> list[ArgConstraint]:
@@ -374,7 +375,20 @@ class _FunctionVisitor(ast.NodeVisitor):
                 return _is_fixture_dec(dec.func)
             return False
 
+        # Detect Click/Typer CLI decorators: @click.command(), @click.group(),
+        # @app.command(), @typer.command() — the framework injects CLI args,
+        # so calling these functions with no args is correct.
+        def _is_click_dec(dec: ast.expr) -> bool:
+            if isinstance(dec, ast.Call):
+                return _is_click_dec(dec.func)
+            if isinstance(dec, ast.Attribute):
+                return dec.attr in ("command", "group")
+            if isinstance(dec, ast.Name):
+                return dec.id in ("command", "group")
+            return False
+
         is_fixture = any(_is_fixture_dec(d) for d in node.decorator_list)
+        is_click = any(_is_click_dec(d) for d in node.decorator_list)
 
         qual = ".".join(self._class_stack + [node.name])
         self.functions.append(
@@ -385,6 +399,7 @@ class _FunctionVisitor(ast.NodeVisitor):
                 module_path=self.module_path,
                 args=constraints,
                 is_pytest_fixture=is_fixture,
+                is_click_command=is_click,
             )
         )
         self.generic_visit(node)
