@@ -1,65 +1,77 @@
 # pact
 
-**Python AST Constraint Tool** — Z3 + TLA+ formal verification for every Python codebase.
+[![CI](https://github.com/qizwiz/pact/actions/workflows/ci.yml/badge.svg)](https://github.com/qizwiz/pact/actions/workflows/ci.yml)
+[![PyPI](https://img.shields.io/pypi/v/pact-tool)](https://pypi.org/project/pact-tool/)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://pypi.org/project/pact-tool/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-I built pact because AI systems need formal guarantees, not just tests. Tests verify specific paths; formal methods verify all paths. pact makes that accessible: point it at any Python codebase and it finds structural bugs that type checkers, linters, and test suites miss — then generates a TLA+ spec you can model-check.
+**Formal bug detection for Python.** Finds the class of bugs that linters miss: race conditions in ORM writes, unawaited coroutines, silent exception suppression, unguarded LLM response reads, and more — then generates a TLA+ spec you can model-check.
 
-## What it finds
-
-Two real-world benchmarks:
-
-**[future-agi/future-agi](https://github.com/future-agi/future-agi)** — production AI observability platform, ~120k lines:
-
-```
-$ pact futureagi/
-✗  pact: 9,280 violation(s)
-
-  tracer/socket.py:55  [optional_dereference]
-    'filter_config' assigned from .get() at line 54 but used without None check
-
-  accounts/utils.py:220  [save_without_update_fields]
-    .save() without update_fields re-writes every column;
-    use save(update_fields=[...]) to prevent clobbering concurrent writes
-
-  sockets/simulation_consumer.py:58  [missing_await]
-    coroutine '_subscribe_redis' called without await —
-    body never runs
-
-  accounts/user_onboard.py:156  [unvalidated_lookup_chain]
-    'original_metric_source_id' came from .get() but used as dict key
-    without guard — KeyError if absent
+```bash
+pip install pact-tool
+pact .
 ```
 
-Full findings: [`examples/future-agi/findings.md`](examples/future-agi/findings.md)
+```
+✗  pact: 14 violation(s)
 
-**[home-assistant/core](https://github.com/home-assistant/core)** — largest pure-Python open-source project, 87k stars, 14,096 files:
+  tasks/auto_eval.py:89  [missing_await]
+    coroutine 'trigger_evaluation' called without await —
+    the evaluation never runs; this is a silent no-op
 
+  model_hub/views.py:203  [optional_dereference]
+    'api_key' assigned from .get() at line 201 but passed to
+    LLM client without None check — AttributeError in production
+
+  evaluations/tasks.py:156  [save_without_update_fields]
+    .save() re-writes every column; concurrent request at line 201
+    overwrites the status you just set
+
+  utils/cache.py:44  [bare_except]
+    except Exception: pass — the Redis timeout that caused
+    your 3am incident is silently swallowed here
+```
+
+---
+
+## What makes pact different
+
+Most linters catch style. Most type checkers catch types. pact catches **structural bugs** — the ones that only appear under concurrency, at scale, or when an LLM response is shorter than you expected.
+
+Each failure mode is encoded as a Z3 constraint over your call graph, not a regex. That means:
+- **Cross-file reasoning**: the bug in `tasks.py` that was introduced by a change in `models.py`
+- **Context-aware**: `.get("key", default)` is safe; `.get("key")` is not — pact knows the difference
+- **Formally grounded**: violations are Z3-satisfiable, not heuristic guesses
+
+## Real-world findings
+
+**[home-assistant/core](https://github.com/home-assistant/core)** — 87k stars, 14,096 files:
 ```
 $ pact /tmp/ha-core/
 ✗  pact: 34,701 violation(s) in 14,096 files  (2m 43s)
 
-  optional_dereference  22,458   StateType is pervasively nullable across 3,000+ integrations
-  required_arg_missing  11,148   integration plugin pattern omits positional args at call sites
-  missing_await          1,068   async device polling called without await — body never runs
+  optional_dereference  22,458   nullable state pervasive across 3,000+ integrations
+  required_arg_missing  11,148   plugin pattern omits positional args at call sites
+  missing_await          1,068   async polling called without await — body never runs
 ```
 
-Full findings: [`examples/home-assistant/findings.md`](examples/home-assistant/findings.md)
-
-**[langchain-ai/langchain](https://github.com/langchain-ai/langchain)** — most widely used LLM framework, 136k stars, 2,478 files:
-
+**[langchain-ai/langchain](https://github.com/langchain-ai/langchain)** — 136k stars:
 ```
-$ pact /tmp/langchain-core/libs/
-✗  pact: 438 violation(s) in 2,478 files
+$ pact /tmp/langchain/libs/
+✗  pact: 438 violation(s)
 
-  missing_await          256   _astream() called without await across every provider
-  required_arg_missing   121   integration call sites omit positional args
-  llm_response_unguarded   4   langchain_anthropic/llms.py reads response.content[0]
-                               without length guard — crashes on content-filtered responses
+  missing_await    256   _astream() unawaited across every provider
+  llm_response_unguarded   4   response.content[0] without length guard — crashes on content-filtered responses
 ```
 
-`--suggest` ranks refactoring targets by `violations ÷ call-graph coupling` — the minimum spanning tree of your remediation path.
+**[future-agi/future-agi](https://github.com/future-agi/future-agi)** — production AI platform:
+```
+$ pact futureagi/
+✗  pact: 6,931 violation(s)
+```
+See [`examples/future-agi/findings.md`](examples/future-agi/findings.md).
 
-Full findings: [`examples/langchain/findings.md`](examples/langchain/findings.md)
+---
 
 ## Install
 
@@ -75,162 +87,107 @@ pip install "pact-tool[llm]"
 ## Usage
 
 ```bash
-# Full scan
+# Scan your project
 pact path/to/project/
 
-# Only violations in files changed since main (fast CI mode)
-pact path/to/project/ --diff main
+# CI mode — only files changed since main
+pact . --incremental main --strict
 
-# Graph-aware incremental analysis — callee changes propagate to callers
-pact path/to/project/ --incremental main --stats
+# Ranked refactoring targets (highest violation density × lowest coupling)
+pact . --suggest
 
-# Suggest safe refactor targets (high violation density, low coupling)
-pact path/to/project/ --suggest
+# Structural analysis: cycles, pass-through hops, fan-out hubs
+pact . --reduce
 
-# Graph reduction: find call cycles, pass-through hops, fan-out hubs
-pact path/to/project/ --reduce
-
-# Full GitHub PR comment: call graph + reduction sequence + test coverage
-pact path/to/project/ --pr-comment
-
-# JSON output for downstream tooling
-pact path/to/project/ --json
+# JSON for downstream tooling
+pact . --json
 ```
-
-## TLA+ spec synthesis
-
-pact synthesizes a TLA+ spec from your Python source — mechanically extracting 70% from the AST, then using an LLM to fill in the remaining 30% (liveness, domain invariants).
-
-```bash
-# Generate skeleton from Django models + Celery tasks
-pact spec gen futureagi/model_hub/models/dataset_eval_config.py
-```
-
-```tla
----------------------------- MODULE DatasetEvalConfig ----------------------------
-VARIABLES
-  datasetevalconfigs
-
-TypeInvariant ==
-  /\ \A r \in datasetevalconfigs :
-       /\ r.enabled \in BOOLEAN
-       /\ r.debounce_seconds \in Nat
-
-DatasetEvalTemplateUnique ==
-  \A r1, r2 \in datasetevalconfigs :
-    r1 # r2 => <<r1.dataset, r1.eval_template>> # <<r2.dataset, r2.eval_template>>
-```
-
-```bash
-# Fill in liveness + domain invariants via LLM
-export ANTHROPIC_API_KEY=sk-...
-pact spec complete futureagi/model_hub/tasks/auto_eval.py -o AutoEval.tla
-
-# Model-check with TLC
-java -jar tla2tools.jar -config AutoEval.cfg AutoEval.tla
-```
-
-The formal spec for pact itself lives at [`docs/tla/Pact.tla`](docs/tla/Pact.tla), verified under TLC in CI.
 
 ## Failure modes
 
 | Mode | What it catches |
 |------|-----------------|
 | `optional_dereference` | `.first()` / `.get()` result used without `None` check |
-| `save_without_update_fields` | `.save()` overwrites all columns, races concurrent writes |
-| `bare_except` | `except Exception: pass` — silent error suppression |
 | `missing_await` | Async function called without `await` — body never runs |
-| `required_arg_missing` | Call omits a required argument |
+| `bare_except` | `except Exception: pass` — silent error suppression |
+| `save_without_update_fields` | `.save()` overwrites all columns, races concurrent writes |
 | `unvalidated_lookup_chain` | `d.get(k)` result used as dict key without guard |
-| `model_constraint` | Django model instantiation missing required field |
+| `required_arg_missing` | Call omits a required argument |
+| `mutable_default_arg` | `def f(x=[]):` — shared state across calls |
 | `llm_response_unguarded` | `response.choices[0]` without length check |
-| `mutable_default_arg` | `def f(x=[]):` — shared state across all calls |
+| `model_constraint` | Django model created missing a required field |
 
 Go support via `pact-go`: `go_ignored_error`, `go_bare_recover`, `go_unchecked_assertion`, `go_goroutine_no_sync`.
-
-## Graph reduction
-
-Violations find bugs. `--reduce` finds **structural fragility** — the moving pieces whose
-existence makes bugs possible in the first place.
-
-```
-$ pact path/to/project/ --reduce
-
-⬡ pact --reduce: 42 simplification targets  (showing top 20)
-
-  TANGLE  payments.charge → payments.validate → payments.charge  [payments/core.py:45]
-    cycle: payments.charge → payments.validate → payments.charge (3 total)
-    3 functions in a mutual call cycle — break the cycle to make this subgraph a DAG
-    reduction_potential=2  violations=4  score=4.0
-
-  PASSTHROUGH  api.route_and_forward  [api/router.py:88]
-    in=1 caller  out=1 callee — pure hop; inline to collapse 1 node + 2 edges
-    reduction_potential=3  violations=1  score=3.5
-
-  HUB  ingestion.process  [ingestion/pipeline.py:201]
-    fan-out=12 (calls 12 functions) — split into 3 cohesive groups to reduce fan-out to ≤4
-    reduction_potential=4  violations=0  score=4.0
-```
-
-Three structural anti-patterns, each rooted in graph theory:
-
-| Anti-pattern | Graph-theory name | Fragility cost | Fix |
-|---|---|---|---|
-| Mutual call cycles | SCC (strongly connected component) | N functions coupled — change one, risk all | Extract shared state, flip one dependency |
-| Pure delegation hops | Degree-2 node (pass-through) | Adds a frame with no logic | Inline into caller |
-| Massive fan-out | High out-degree hub | Understanding requires knowing all N callees | Split by responsibility |
-
-Score = `reduction_potential + violations × 0.5` — highest-value structural simplifications first.
 
 ## CI integration
 
 ```yaml
-- name: pact static analysis
-  run: |
-    pip install pact-tool z3-solver
-    pact . --incremental --stats --strict
+- name: pact
+  uses: qizwiz/pact/.github/actions/pact@main
+  with:
+    path: .
+    incremental: "true"
+    strict: "true"
 ```
 
-pact also runs against future-agi on every push (see [dogfood.yml](.github/workflows/dogfood.yml)).
+Or directly:
+```yaml
+- run: pip install pact-tool z3-solver && pact . --incremental main --strict
+```
+
+## TLA+ spec synthesis
+
+pact extracts a TLA+ spec from your Python source — 70% mechanical from the AST, 30% filled in by an LLM (liveness properties, domain invariants).
+
+```bash
+# Generate skeleton
+pact spec gen path/to/models.py
+
+# Fill in liveness + domain invariants
+export ANTHROPIC_API_KEY=sk-...
+pact spec complete path/to/tasks.py -o MySpec.tla
+
+# Model-check with TLC
+java -jar tla2tools.jar -config MySpec.cfg MySpec.tla
+```
+
+The formal spec for pact itself is at [`docs/tla/Pact.tla`](docs/tla/Pact.tla), verified under TLC in CI.
+
+## Graph reduction
+
+`--reduce` finds **structural fragility** — call cycles, pass-through hops, and fan-out hubs — ranked by `reduction_potential + violations × 0.5`:
+
+```
+$ pact . --reduce
+
+⬡  TANGLE  payments.charge → payments.validate → payments.charge
+     cycle of 3 — break to make this subgraph a DAG
+     score=4.0  violations=4
+
+⬡  PASSTHROUGH  api.route_and_forward
+     1 caller → 1 callee — pure hop; inline to collapse 1 node + 2 edges
+     score=3.5  violations=1
+```
 
 ## How it works
 
 ```
-extractor.py    AST visitor → ModelManifest, FunctionManifest, CallSite
-failure_mode.py FailureMode plugin layer (per-call-site + file-level checks)
-z3_engine.py    Z3 Fixedpoint Datalog engine for whole-program queries
-checker.py      Orchestration: extraction → Z3 → deduplication → Violation list
+extractor.py    AST → ModelManifest, FunctionManifest, CallSite
+failure_mode.py FailureMode plugin layer (per-call + file-level checks)
+z3_engine.py    Z3 Fixedpoint Datalog — whole-program queries
+checker.py      Orchestration: extraction → Z3 → dedup → Violation list
 refactor.py     Suggestion engine: violation density ÷ caller coupling
 specgen.py      AST → TLA+ skeleton (70% mechanical)
 speccomplete.py Anthropic API → fills TODO stubs (30%)
-visualize.py    Mermaid call graph + reduction sequence
 go/checker/     Go AST checker (Go codebase support)
 cli.py          Entry point
 ```
 
-pact encodes each failure mode as a Z3 constraint over the call graph. The incremental engine performs BFS from changed files through the call graph, so only the dirty subgraph is re-analyzed — unchanged subtrees are cached.
-
-## Formal verification layers
-
-pact uses three verification layers on itself:
-
-1. **Z3** — constraint satisfiability for per-call-site checks
-2. **Hypothesis** — property-based tests for the extraction and analysis pipeline
-3. **TLA+** — model-checked spec for the checker's termination, coverage, and monotonicity properties
-
-```bash
-# Run all three layers
-pytest . -q                    # Z3 + Hypothesis
-java -jar tla2tools.jar \
-  -config docs/tla/Pact.cfg \
-  -deadlock docs/tla/Pact.tla  # TLC
-```
+pact encodes each failure mode as a Z3 constraint over the call graph. The incremental engine BFS-propagates changes through the call graph, so only the dirty subgraph is re-analyzed.
 
 ## Architecture decisions
 
-Design rationale is in [`docs/adr/`](docs/adr/). Start with
-[ADR-036](docs/adr/ADR-036-pact-formal-analysis-toolkit.md) — why Z3 Fixedpoint
-over traditional dataflow analysis, and why TLA+ over property testing alone.
+Design rationale is in [`docs/adr/`](docs/adr/). Start with [ADR-036](docs/adr/ADR-036-pact-formal-analysis-toolkit.md) — why Z3 Fixedpoint over traditional dataflow, and why TLA+ over property testing alone.
 
 ## License
 
