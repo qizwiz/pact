@@ -677,6 +677,31 @@ def test_chained_queryset_get_not_flagged_as_optional(tmp_path):
     assert not v, "chained queryset .select_related().get() result must not be flagged as optional"
 
 
+def test_queryset_variable_get_kwargs_only_not_flagged(tmp_path):
+    # Corpus: suitenumerique/docs — existing_access = existing_accesses.get(document=entry.document)
+    # A queryset stored in a variable then .get(**kwargs) called on it.
+    # dict.get() ALWAYS takes a positional key; kwargs-only is always ORM.
+    _write_src(
+        tmp_path,
+        "models.py",
+        """
+        from django.db import models
+
+        def update_role(existing_accesses, entry, max_role):
+            existing_access = existing_accesses.get(document=entry.document)
+            existing_access.role = max_role
+            existing_access.save(update_fields=['role'])
+
+        def get_by_pk(qs, pk):
+            obj = qs.get(pk=pk)
+            return obj.name
+        """,
+    )
+    violations = check_codebase(tmp_path)
+    v = [v for v in violations if v.context == "optional_dereference"]
+    assert not v, f"queryset.get(field=val) must not be flagged as optional: {v}"
+
+
 def test_django_test_client_get_not_flagged(tmp_path):
     # Corpus: paperless-ngx — response = self.client.get(self.ENDPOINT); response.status_code
     # Django test Client.get() returns HttpResponse, never None.
