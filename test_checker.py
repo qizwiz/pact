@@ -1193,6 +1193,35 @@ def test_async_method_unawaited_still_flagged(tmp_path):
     assert v, "async def calling self.async_method() without await must still be flagged"
 
 
+def test_closure_name_collision_not_flagged(tmp_path):
+    # Two closures named the same in different outer methods (sync + async).
+    # The sync call site must not be flagged (pact can't resolve which is called).
+    # Pattern: langchain's ensure_started() — sync def in one method body, async
+    # def in another; pact used to flag the sync call because it saw async def.
+    _write_src(
+        tmp_path,
+        "model.py",
+        """
+        class ChatModel:
+            def _stream(self):
+                def ensure_started():
+                    pass  # sync closure
+
+                def pump():
+                    ensure_started()  # calls sync version — must NOT flag
+
+            async def _astream(self):
+                async def ensure_started():
+                    pass  # async closure in different method
+
+                await ensure_started()
+        """,
+    )
+    violations = check_codebase(tmp_path)
+    v = [v for v in violations if v.context == "missing_await"]
+    assert not v, f"closure name collision must not be flagged: {v}"
+
+
 # ---------------------------------------------------------------------------
 # format_arg_mismatch mode
 # ---------------------------------------------------------------------------

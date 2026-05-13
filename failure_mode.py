@@ -769,6 +769,15 @@ def _scan_file_missing_await(path: str) -> list[FailureEvidence]:
     # Collect async function names, partitioned by scope:
     # - module_async: bare-name calls must be awaited
     # - method_async: self.name() / cls.name() calls must be awaited
+    #
+    # Names that appear as BOTH sync def and async def in the same file are
+    # ambiguous (e.g. two closures with the same name inside different outer
+    # functions). Skip them to avoid flagging calls to the sync version.
+    sync_defined: set[str] = {
+        node.name
+        for node in _ast.walk(tree)
+        if isinstance(node, _ast.FunctionDef)
+    }
     module_async: set[str] = set()
     method_async: set[str] = set()
     for node in _ast.walk(tree):
@@ -782,7 +791,10 @@ def _scan_file_missing_await(path: str) -> list[FailureEvidence]:
             if args and args[0].arg in ("self", "cls"):
                 method_async.add(node.name)
             else:
-                module_async.add(node.name)
+                # Skip names that also have a sync def — closure-level name
+                # collision; pact cannot resolve which definition is called.
+                if node.name not in sync_defined:
+                    module_async.add(node.name)
 
     if not module_async and not method_async:
         return []
