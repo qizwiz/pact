@@ -232,7 +232,9 @@ def scan_repo(
             from .failure_mode import FailureEvidence
 
             def _add_ev(ev: FailureEvidence) -> Optional[dict]:
-                key = (ev.file, ev.line, ev.mode_name, ev.call)
+                # Omit ev.file from key: temp path differs from real path,
+                # causing call-site + file_check to both emit for same violation.
+                key = (ev.line, ev.mode_name, ev.call)
                 if key in seen:
                     return None
                 seen.add(key)
