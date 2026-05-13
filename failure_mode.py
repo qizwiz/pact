@@ -375,6 +375,9 @@ def _check_required_arg(
 ) -> list[FailureEvidence]:
     if call.is_create_call:
         return []
+    # *args or **kwargs spreads mean we cannot statically determine coverage.
+    if call.has_var_args or call.has_var_kwargs:
+        return []
     func = functions.get(call.callee_name)
     if not func or not func.required_args:
         return []

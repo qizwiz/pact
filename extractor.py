@@ -72,6 +72,8 @@ class CallSite:
     positional_count: int = 0
     is_create_call: bool = False
     is_method_call: bool = False  # True when call is obj.method(...) — receiver is implicit
+    has_var_args: bool = False   # True when call uses *args spread — positional coverage unknown
+    has_var_kwargs: bool = False  # True when call uses **kwargs spread — kwarg coverage unknown
     model_name: Optional[str] = None
     caller_name: Optional[str] = (
         None  # qualified name of the enclosing function, if any
@@ -412,7 +414,9 @@ class _CallVisitor(ast.NodeVisitor):
             for kw in node.keywords
             if kw.arg is not None and _literal_value(kw.value) is not None
         }
-        positional = len(node.args)
+        has_var_kwargs = any(kw.arg is None for kw in node.keywords)
+        has_var_args = any(isinstance(a, ast.Starred) for a in node.args)
+        positional = sum(1 for a in node.args if not isinstance(a, ast.Starred))
         func = node.func
 
         caller = self._func_stack[-1] if self._func_stack else None
@@ -439,6 +443,8 @@ class _CallVisitor(ast.NodeVisitor):
                 is_create_call=True,
                 model_name=model_name,
                 caller_name=caller,
+                has_var_args=has_var_args,
+                has_var_kwargs=has_var_kwargs,
             )
 
         # Regular call
@@ -453,6 +459,8 @@ class _CallVisitor(ast.NodeVisitor):
                 positional_count=positional,
                 is_method_call=isinstance(func, ast.Attribute),
                 caller_name=caller,
+                has_var_args=has_var_args,
+                has_var_kwargs=has_var_kwargs,
             )
         return None
 

@@ -191,6 +191,81 @@ def test_kwonly_required_arg_flagged(tmp_path):
     assert "role" in kwonly_v[0].missing
 
 
+def test_star_kwargs_not_flagged_as_missing_arg(tmp_path):
+    # Corpus: open-webui — func(**{'key': val, ...}) passes all args via spread.
+    # Corpus: vllm — func(**kwargs_var) where kwargs covers required args.
+    _write_src(
+        tmp_path,
+        "lib.py",
+        """
+        def process(model, texts, url):
+            pass
+        """,
+    )
+    _write_src(
+        tmp_path,
+        "usage.py",
+        """
+        from lib import process
+        def run(model, texts, url):
+            process(**{'model': model, 'texts': texts, 'url': url})
+            kwargs = {'model': model, 'texts': texts, 'url': url}
+            process(**kwargs)
+        """,
+    )
+    violations = check_codebase(tmp_path)
+    v = [v for v in violations if v.context == "required_arg_missing"]
+    assert not v, "**spread calls must not be flagged as missing required args"
+
+
+def test_star_args_not_flagged_as_missing_arg(tmp_path):
+    # Corpus: vllm — to_bytes(*mm_audio["audio"]) where * unpacks positional args.
+    _write_src(
+        tmp_path,
+        "lib.py",
+        """
+        def to_bytes(data, sr):
+            pass
+        """,
+    )
+    _write_src(
+        tmp_path,
+        "usage.py",
+        """
+        from lib import to_bytes
+        def run(audio_pair):
+            to_bytes(*audio_pair)
+        """,
+    )
+    violations = check_codebase(tmp_path)
+    v = [v for v in violations if v.context == "required_arg_missing"]
+    assert not v, "*spread positional calls must not be flagged as missing required args"
+
+
+def test_missing_arg_still_flagged_without_spread(tmp_path):
+    # Ensure the true-positive path still fires when no spread is used.
+    _write_src(
+        tmp_path,
+        "lib.py",
+        """
+        def notify(to, subject, body):
+            pass
+        """,
+    )
+    _write_src(
+        tmp_path,
+        "usage.py",
+        """
+        from lib import notify
+        def run():
+            notify("a@b.com", "hi")
+        """,
+    )
+    violations = check_codebase(tmp_path)
+    v = [v for v in violations if v.context == "required_arg_missing"]
+    assert v, "missing required arg without any spread must still be flagged"
+
+
 # ---------------------------------------------------------------------------
 # bare_except mode
 # ---------------------------------------------------------------------------
