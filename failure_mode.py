@@ -180,6 +180,50 @@ def _chain_has_objects(node) -> bool:
             return False
 
 
+def _body_has_early_exit(body: list) -> bool:
+    """Return True if body's last statement (or any top-level statement) is an early exit."""
+    import ast as _ast
+    _exits = (_ast.Return, _ast.Raise, _ast.Continue, _ast.Break)
+    return any(isinstance(stmt, _exits) for stmt in body)
+
+
+def _vars_none_tested(test, optional_vars: dict) -> list:
+    """Extract variable names from an if-test that are checked for None-ness.
+
+    Handles: `x is None`, `not x`, and Or chains like `x is None or y is None`.
+    Returns names that are in optional_vars.
+    """
+    import ast as _ast
+
+    found = []
+
+    def _check_node(node):
+        if (
+            isinstance(node, _ast.Compare)
+            and isinstance(node.left, _ast.Name)
+            and node.left.id in optional_vars
+            and len(node.ops) == 1
+            and isinstance(node.ops[0], (_ast.Is, _ast.IsNot))
+            and len(node.comparators) == 1
+            and isinstance(node.comparators[0], _ast.Constant)
+            and node.comparators[0].value is None
+        ):
+            found.append(node.left.id)
+        elif (
+            isinstance(node, _ast.UnaryOp)
+            and isinstance(node.op, _ast.Not)
+            and isinstance(node.operand, _ast.Name)
+            and node.operand.id in optional_vars
+        ):
+            found.append(node.operand.id)
+        elif isinstance(node, _ast.BoolOp) and isinstance(node.op, (_ast.Or, _ast.And)):
+            for value in node.values:
+                _check_node(value)
+
+    _check_node(test)
+    return found
+
+
 @functools.lru_cache(maxsize=None)
 def _scan_file_optional_deref(path: str) -> list[FailureEvidence]:
     """
@@ -465,6 +509,12 @@ def _scan_file_optional_deref(path: str) -> list[FailureEvidence]:
                 if var in src:
                     self.guarded.add(var)
             self.generic_visit(node)
+            # Early-exit guard: if the if body always exits (return/raise/continue/break),
+            # variables checked for None in the condition are permanently non-None afterward.
+            # e.g. `if x is None or x.get(...) is None: continue` — x is guarded after.
+            if _body_has_early_exit(node.body):
+                for var in _vars_none_tested(node.test, self.optional_vars):
+                    self.guarded.add(var)
 
         def visit_Assert(self, node):
             # `assert x is not None` — permanently guards x in this scope.

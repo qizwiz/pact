@@ -1943,6 +1943,52 @@ def test_optional_dereference_assert_not_none_guard(tmp_path):
     assert not v, "assert x is not None must suppress optional_dereference for x"
 
 
+def test_optional_dereference_early_exit_or_guard_not_flagged(tmp_path):
+    # `if x is None or x.get(...) is None: continue` is an early-exit guard.
+    # After the if block x is guaranteed non-None; subsequent uses must not be flagged.
+    # Regression for unslothai/unsloth trainer.py pattern.
+    _write_src(
+        tmp_path,
+        "trainer.py",
+        """
+        def process(examples, col):
+            for example in examples:
+                audio_data = example.get(col)
+                if audio_data is None or audio_data.get("array") is None:
+                    skipped = True
+                    continue
+                array = audio_data["array"]
+                rate = audio_data.get("sampling_rate", 16000)
+                yield array, rate
+        """,
+    )
+    violations = check_codebase(tmp_path)
+    v = [v for v in violations if v.context == "optional_dereference"]
+    assert not v, (
+        "if x is None or ...: continue should permanently guard x after the block "
+        "(regression: unslothai/unsloth trainer.py)"
+    )
+
+
+def test_optional_dereference_early_exit_simple_not_flagged(tmp_path):
+    # `if x is None: return` — x is guarded for the rest of the function.
+    _write_src(
+        tmp_path,
+        "utils.py",
+        """
+        def compute(data):
+            result = data.get("value")
+            if result is None:
+                return None
+            length = result.get("length", 0)
+            return length
+        """,
+    )
+    violations = check_codebase(tmp_path)
+    v = [v for v in violations if v.context == "optional_dereference"]
+    assert not v, "if x is None: return should permanently guard x after the block"
+
+
 def test_optional_dereference_dunder_session_not_flagged(tmp_path):
     # self.__session.get(url) — private HTTP client; response is not Optional.
     _write_src(
