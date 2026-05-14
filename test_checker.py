@@ -2880,6 +2880,42 @@ def test_or_null_guard_not_flagged(tmp_path):
     )
 
 
+def test_run_until_complete_any_loop_var_not_flagged(tmp_path):
+    """new_loop.run_until_complete(coro()) must not flag missing_await.
+
+    Corpus evidence: AstrBotDevs/AstrBot tests/unit/test_session_lock.py:
+      async def get_manager():
+          return manager._get_loop_manager()
+      return new_loop.run_until_complete(get_manager())
+    The checker only whitelisted ('loop', 'run_until_complete') — a receiver
+    named 'new_loop', 'event_loop', etc. was incorrectly flagged.
+    """
+    _write_src(
+        tmp_path,
+        "thread_runner.py",
+        """\
+        import asyncio
+
+        async def fetch():
+            pass
+
+        def run_in_thread():
+            new_loop = asyncio.new_event_loop()
+            try:
+                return new_loop.run_until_complete(fetch())
+            finally:
+                new_loop.close()
+        """,
+    )
+    violations = check_codebase(tmp_path)
+    ma = [v for v in violations if v.context == "missing_await"]
+    assert len(ma) == 0, (
+        "new_loop.run_until_complete(coro()) must not be flagged — "
+        "run_until_complete accepts a coroutine object, not an awaited value. "
+        f"got: {[(v.line, v.call) for v in ma]}"
+    )
+
+
 def test_ts_return_async_call_not_flagged(tmp_path):
     """return asyncFn() in an async TS method must not be flagged as missing_await.
 
