@@ -1079,9 +1079,23 @@ def _scan_file_missing_await(path: str) -> list[FailureEvidence]:
                 return True
         return False
 
-    # First pass: collect async generator names (contain yield/yield from).
-    # A name used for both an async generator and a coroutine in the same file
-    # (e.g. closure reuse pattern) cannot be safely flagged — exclude it.
+    # First pass: collect ids of AsyncFunctionDef nodes that are nested inside
+    # another function or method body.  Nested async closures are not callable
+    # by bare name from outside their enclosing scope, so adding them to
+    # module_async causes FPs when the same name is used as a loop variable,
+    # import alias, or is intentionally returned as an awaitable.
+    nested_async_ids: set[int] = set()
+    for outer in _ast.walk(tree):
+        if isinstance(outer, (_ast.FunctionDef, _ast.AsyncFunctionDef)):
+            for inner in _ast.walk(outer):
+                if inner is not outer and isinstance(
+                    inner, (_ast.FunctionDef, _ast.AsyncFunctionDef)
+                ):
+                    nested_async_ids.add(id(inner))
+
+    # Second pass: collect async generator names (contain yield/yield from) at
+    # any scope — used to exclude names that are reused as both generator and
+    # coroutine from module_async.
     async_generator_names: set[str] = {
         node.name
         for node in _ast.walk(tree)
@@ -1092,6 +1106,9 @@ def _scan_file_missing_await(path: str) -> list[FailureEvidence]:
     method_async: set[str] = set()
     for node in _ast.walk(tree):
         if isinstance(node, _ast.AsyncFunctionDef):
+            # Skip closures — their names are only valid in the enclosing scope.
+            if id(node) in nested_async_ids:
+                continue
             # Async generators (contain yield) return AsyncGenerator, not a coroutine.
             # Calling them without await is correct; they're consumed via `async for`.
             if any(isinstance(n, (_ast.Yield, _ast.YieldFrom)) for n in _ast.walk(node)):

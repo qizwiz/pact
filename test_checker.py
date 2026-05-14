@@ -3150,6 +3150,63 @@ def test_async_name_reused_generator_and_coroutine_not_flagged(tmp_path):
     )
 
 
+def test_nested_async_closure_return_not_flagged(tmp_path):
+    """Inner async def returned as awaitable from sync outer function must not be flagged.
+    Pattern: py_anext-style factory — sync fn returns coroutine for caller to await."""
+    from .failure_mode import MISSING_AWAIT
+
+    _write_src(
+        tmp_path,
+        "aiter.py",
+        """\
+        def py_anext(iterator, default=None):
+            async def anext_impl():
+                try:
+                    return await iterator.__anext__()
+                except StopAsyncIteration:
+                    return default
+            return anext_impl()  # returns coroutine as Awaitable — not a bug
+
+        def make_task(coro_factory, arg):
+            async def task():
+                return await coro_factory(arg)
+            return task()  # intentional awaitable return
+        """,
+    )
+    results = check_codebase(tmp_path, modes=[MISSING_AWAIT])
+    assert len(results) == 0, (
+        "inner async closures returned as awaitables must not be flagged. "
+        f"got: {[(r.line, r.call) for r in results]}"
+    )
+
+
+def test_nested_closure_name_shadows_outer_async_not_flagged(tmp_path):
+    """Loop variable name matching inner async def elsewhere must not be flagged.
+    Pattern: f(config) for f in factories where async def f exists in another scope."""
+    from .failure_mode import MISSING_AWAIT
+
+    _write_src(
+        tmp_path,
+        "runnables.py",
+        """\
+        class Runnable:
+            def _setup(self, func):
+                async def f(*args):
+                    return await func(*args)
+                self._f = f
+
+            def _merge(self, factories):
+                # f here is a loop variable — different from async def f above
+                return [f(x) for f in factories for x in [1, 2]]
+        """,
+    )
+    results = check_codebase(tmp_path, modes=[MISSING_AWAIT])
+    assert len(results) == 0, (
+        "loop variable 'f' must not be flagged when async def f is an inner closure. "
+        f"got: {[(r.line, r.call) for r in results]}"
+    )
+
+
 def test_textual_work_decorator_not_flagged(tmp_path):
     """Textual @work-decorated async methods are worker dispatch, not coroutines.
     Calling self.method() without await is correct."""
