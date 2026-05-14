@@ -1265,6 +1265,9 @@ def _scan_file_missing_await(path: str) -> list[FailureEvidence]:
                     return True
                 if _recv is not None and (_recv, _fname) in _CORO_CONSUMERS_QUALIFIED:
                     return True
+                # list.extend(coro() for ...) — collecting coroutines for later gather
+                if isinstance(_func, _ast.Attribute) and _func.attr == "extend":
+                    return True
             # asyncio.gather(*[coro(item) for item in items])
             if isinstance(gp, _ast.Starred):
                 ggp = parent_map.get(id(gp))
@@ -1294,6 +1297,10 @@ def _scan_file_missing_await(path: str) -> list[FailureEvidence]:
         if isinstance(parent, _ast.Attribute) and parent.attr in (
             "__await__", "__aiter__", "__anext__"
         ):
+            return True
+        # lambda ...: coro() — sync lambda returning coroutine for caller to await.
+        # e.g. embedding_fn = lambda query: generate_embeddings(query)
+        if isinstance(parent, _ast.Lambda):
             return True
         return False
 

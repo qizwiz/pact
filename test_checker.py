@@ -3258,6 +3258,69 @@ def test_run_sync_coro_consumer_not_flagged(tmp_path):
     )
 
 
+def test_list_extend_genexpr_coro_not_flagged(tmp_path):
+    """tasks.extend(coro() for ...) + gather(*tasks) — extend collects coroutines for gather."""
+    from .failure_mode import MISSING_AWAIT
+
+    _write_src(
+        tmp_path,
+        "router.py",
+        """\
+        import asyncio
+
+        async def _execute_webhook_node_trigger(node, webhook):
+            pass
+
+        async def _execute_webhook_preset_trigger(preset, webhook):
+            pass
+
+        async def handle_webhook(webhook):
+            tasks = []
+            tasks.extend(
+                _execute_webhook_node_trigger(node, webhook)
+                for node in webhook.triggered_nodes
+            )
+            tasks.extend(
+                _execute_webhook_preset_trigger(preset, webhook)
+                for preset in webhook.triggered_presets
+            )
+            if tasks:
+                await asyncio.gather(*tasks, return_exceptions=True)
+        """,
+    )
+    results = check_codebase(tmp_path, modes=[MISSING_AWAIT])
+    assert len(results) == 0, (
+        "tasks.extend(coro() for ...) must not flag coro() — coroutines collected for gather. "
+        f"got: {[(r.line, r.call) for r in results]}"
+    )
+
+
+def test_lambda_returning_coro_not_flagged(tmp_path):
+    """lambda ...: async_fn(...) — sync lambda factory returning coroutine for caller to await."""
+    from .failure_mode import MISSING_AWAIT
+
+    _write_src(
+        tmp_path,
+        "utils.py",
+        """\
+        async def generate_embeddings(engine, model, text):
+            return [0.1, 0.2, 0.3]
+
+        def make_embedding_function(engine, model):
+            return lambda query, user=None: generate_embeddings(
+                engine=engine,
+                model=model,
+                text=query,
+            )
+        """,
+    )
+    results = check_codebase(tmp_path, modes=[MISSING_AWAIT])
+    assert len(results) == 0, (
+        "lambda ...: coro() must not be flagged — lambda returns coroutine for caller to await. "
+        f"got: {[(r.line, r.call) for r in results]}"
+    )
+
+
 def test_custom_start_task_wrapper_not_flagged(tmp_path):
     """self.start_task(coro()) — custom wrapper around loop.create_task — must not be flagged."""
     from .failure_mode import MISSING_AWAIT
