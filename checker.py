@@ -92,7 +92,15 @@ def check_codebase(
         models, functions, call_sites = extract_from_codebase(root)
 
     model_index: dict[str, ModelManifest] = {m.name: m for m in models}
-    func_index: dict[str, FunctionManifest] = {f.name: f for f in functions}
+    # Exclude names defined more than once — multiple same-named closures in
+    # different scopes are indistinguishable without full scope analysis; using
+    # the wrong definition produces false positives (e.g. required_arg_missing).
+    _func_name_counts: dict[str, int] = {}
+    for _f in functions:
+        _func_name_counts[_f.name] = _func_name_counts.get(_f.name, 0) + 1
+    func_index: dict[str, FunctionManifest] = {
+        f.name: f for f in functions if _func_name_counts[f.name] == 1
+    }
 
     seen: set[tuple] = set()
     violations: list[Violation] = []
@@ -171,7 +179,13 @@ def check_codebase_incremental(
     dirty_call_sites = [cs for cs in call_sites if cs.file in dirty_files]
 
     model_index: dict[str, ModelManifest] = {m.name: m for m in models}
-    func_index: dict[str, FunctionManifest] = {f.name: f for f in functions}
+    # Exclude names defined more than once (see check_codebase for rationale).
+    _func_name_counts: dict[str, int] = {}
+    for _f in functions:
+        _func_name_counts[_f.name] = _func_name_counts.get(_f.name, 0) + 1
+    func_index: dict[str, FunctionManifest] = {
+        f.name: f for f in functions if _func_name_counts[f.name] == 1
+    }
 
     seen: set[tuple] = set()
     violations: list[Violation] = []

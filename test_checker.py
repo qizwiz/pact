@@ -2621,3 +2621,34 @@ def test_bodo_ctx_param_not_flagged(tmp_path):
         "Bodo intrinsic calls with 'ctx' as first param must not be flagged, "
         f"got: {[(v.line, v.call, v.message) for v in ra]}"
     )
+
+
+def test_same_name_closures_different_signatures_not_flagged(tmp_path):
+    """Same-named closures in different outer scopes must not produce FPs.
+
+    Corpus evidence: safishamsi/graphify — many `walk` closures defined in
+    separate outer functions, each with different signatures.  The checker
+    used to pick the wrong `walk` definition and flag calls that were in
+    the scope of a *different* walk with an optional (not required) param.
+    """
+    _write_src(
+        tmp_path,
+        "graphify.py",
+        """
+        def extract_classes(root):
+            def walk(node, parent_class_nid=None):
+                for child in node.children:
+                    walk(child, parent_class_nid)  # parent_class_nid optional — NOT a violation
+
+        def extract_imports(root):
+            def walk(node, parent_nid: str):       # required param — different signature
+                for child in node.children:
+                    walk(child, parent_nid)
+        """,
+    )
+    violations = check_codebase(tmp_path)
+    ra = [v for v in violations if v.context == "required_arg_missing"]
+    assert len(ra) == 0, (
+        "Same-named closures with different scopes must not produce required_arg_missing FPs, "
+        f"got: {[(v.line, v.call, v.missing) for v in ra]}"
+    )
