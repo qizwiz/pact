@@ -385,6 +385,9 @@ def check_ts_file(path: str) -> list:
     except ImportError:
         from encoder import Violation  # type: ignore[no-redef]
 
+    if not _HAS_TS:
+        return []
+
     p = Path(path)
     try:
         src = p.read_bytes()
