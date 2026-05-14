@@ -4021,3 +4021,57 @@ def test_run_long_running_task_coro_consumer_not_flagged(tmp_path):
         "run_long_running_task(coro()) is a coroutine consumer and must not be flagged. "
         f"got: {[(r.line, r.call) for r in results]}"
     )
+
+
+def test_run_async_in_thread_coro_consumer_not_flagged(tmp_path):
+    """run_async_in_thread(coro()) and _run_async(coro()) must not be flagged.
+
+    Corpus evidence:
+    - Shubhamsaboo/awesome-llm-apps: run_async_in_thread(poll_for_completion(...))
+    - HKUDS/LightRAG / Cinnamon/kotaemon: _run_async(setup_lightrag()) / _run_async(async_func(x))
+    Both are sync-to-async bridges that accept a coroutine and run it synchronously.
+    """
+    from .failure_mode import MISSING_AWAIT
+
+    _write_src(
+        tmp_path,
+        "bridge.py",
+        """\
+        import asyncio
+
+        def run_async_in_thread(coro):
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor() as pool:
+                loop = asyncio.new_event_loop()
+                return pool.submit(loop.run_until_complete, coro).result()
+
+        def _run_async(coro):
+            return asyncio.get_event_loop().run_until_complete(coro)
+        """,
+    )
+    _write_src(
+        tmp_path,
+        "caller.py",
+        """\
+        from .bridge import run_async_in_thread, _run_async
+
+        async def poll_for_completion(session_id, thread_key, task_id):
+            return session_id
+
+        async def setup_lightrag():
+            return True
+
+        def start_poll(session_id, thread_key, task_id):
+            future = run_async_in_thread(poll_for_completion(session_id, thread_key, task_id))
+            return future
+
+        def init():
+            result = _run_async(setup_lightrag())
+            return result
+        """,
+    )
+    results = check_codebase(tmp_path, modes=[MISSING_AWAIT])
+    assert len(results) == 0, (
+        "run_async_in_thread / _run_async are coroutine consumers and must not be flagged. "
+        f"got: {[(r.line, r.call) for r in results]}"
+    )

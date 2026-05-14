@@ -1416,6 +1416,8 @@ def _scan_file_missing_await(path: str) -> list[FailureEvidence]:
             "run_long_running_task",  # user-defined: wraps Awaitable in asyncio.create_task (e.g. gpt-researcher)
             "submit_async_task",  # common user-defined task submission pattern
             "schedule_task",  # user-defined task scheduler wrapper
+            "run_async_in_thread",  # sync-to-async bridge via thread event loop (e.g. slack integrations)
+            "_run_async",  # internal sync-to-async bridge: _run_async(coro()) (LightRAG, kotaemon)
         }
     )
 
