@@ -206,3 +206,49 @@ def test_unknown_model_not_flagged():
         ExternalModel.objects.create()
     """)
     assert viols == []
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# prover.py — proof certificates
+# ──────────────────────────────────────────────────────────────────────────────
+
+import pytest
+
+try:
+    import z3 as _z3
+    _HAS_Z3 = True
+except ImportError:
+    _HAS_Z3 = False
+
+pytestmark_z3 = pytest.mark.skipif(not _HAS_Z3, reason="z3-solver not installed")
+
+
+@pytestmark_z3
+def test_llm_response_unguarded_proof():
+    """Z3 must confirm: bug SAT (IndexError reachable), fix UNSAT (guard seals it)."""
+    from .prover import prove_llm_response_unguarded
+    cert = prove_llm_response_unguarded()
+    assert cert.bug_sat,   "Bug scenario must be SAT — IndexError must be reachable"
+    assert cert.fix_unsat, "Fix scenario must be UNSAT — guard must seal all paths"
+    assert cert.witness,   "Must have a concrete witness (trigger + choices_len=0)"
+
+
+@pytestmark_z3
+def test_save_without_update_fields_proof():
+    from .prover import prove_save_without_update_fields
+    cert = prove_save_without_update_fields()
+    assert cert.bug_sat and cert.fix_unsat
+
+
+@pytestmark_z3
+def test_missing_await_proof():
+    from .prover import prove_missing_await
+    cert = prove_missing_await()
+    assert cert.bug_sat and cert.fix_unsat
+
+
+@pytestmark_z3
+def test_optional_dereference_proof():
+    from .prover import prove_optional_dereference
+    cert = prove_optional_dereference()
+    assert cert.bug_sat and cert.fix_unsat

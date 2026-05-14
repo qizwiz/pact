@@ -293,10 +293,124 @@ def prove_optional_dereference() -> ProofCertificate:
     )
 
 
+def prove_llm_response_unguarded() -> ProofCertificate:
+    """
+    LLM API response: choices/content is a list that CAN be empty.
+    Unguarded [0] raises IndexError when the API returns 0 items.
+
+    Bug model:  choices_len ∈ ℤ≥0; choices_len=0 is satisfiable (content
+                filter, error, streaming edge). Index 0 is always attempted.
+                IndexError ↔ (0 ≥ choices_len) — SAT.
+
+    Fix model:  access is gated on choices_len > 0 (the guard).
+                IndexError requires access_attempted ∧ choices_len=0,
+                but the guard makes that conjunction UNSAT.
+    """
+    choices_len = Int("choices_len")
+
+    # ── Trigger conditions that produce empty choices ─────────────────────
+    content_filtered = Bool("content_filtered")   # policy violation
+    api_error        = Bool("api_error")          # timeout / 5xx
+    stream_truncated = Bool("stream_truncated")   # SSE stream closed early
+
+    s = Solver()
+    s.add(choices_len >= 0)                        # list length ≥ 0
+
+    # Each trigger drives choices_len to zero
+    s.add(Implies(content_filtered, choices_len == 0))
+    s.add(Implies(api_error,        choices_len == 0))
+    s.add(Implies(stream_truncated, choices_len == 0))
+
+    # Any trigger is reachable (they are not mutually impossible)
+    s.add(Or(content_filtered, api_error, stream_truncated))
+
+    # Unguarded: access index 0 unconditionally
+    access_index = Int("access_index")
+    s.add(access_index == 0)                       # always choices[0]
+
+    # IndexError ↔ index ≥ length
+    index_error = Bool("index_error")
+    s.add(index_error == (access_index >= choices_len))
+
+    # Ask: can IndexError occur?
+    s.add(index_error == True)
+    bug_result = s.check()
+
+    witness = {}
+    if bug_result == sat:
+        m = s.model()
+        trigger = (
+            "content_filtered" if m[content_filtered] else
+            "api_error"        if m[api_error]        else
+            "stream_truncated"
+        )
+        witness = {
+            "trigger":          trigger,
+            "choices_len":      m[choices_len],
+            "access_index":     m[access_index],
+            "index_error":      True,
+            "exception":        "IndexError: list index out of range",
+            "seen in prod?":    "Yes — content filters return empty choices on policy violations",
+        }
+
+    # ── Fix: guard access on choices_len > 0 ─────────────────────────────
+    s2 = Solver()
+    choices_len2    = Int("choices_len2")
+    content_filtered2 = Bool("content_filtered2")
+    api_error2        = Bool("api_error2")
+    stream_truncated2 = Bool("stream_truncated2")
+    access_index2   = Int("access_index2")
+    index_error2    = Bool("index_error2")
+    access_attempted2 = Bool("access_attempted2")
+
+    s2.add(choices_len2 >= 0)
+    s2.add(Implies(content_filtered2, choices_len2 == 0))
+    s2.add(Implies(api_error2,        choices_len2 == 0))
+    s2.add(Implies(stream_truncated2, choices_len2 == 0))
+    s2.add(Or(content_filtered2, api_error2, stream_truncated2))
+    s2.add(access_index2 == 0)
+
+    # Guard: only attempt access when list is non-empty
+    s2.add(access_attempted2 == (choices_len2 > 0))
+
+    # IndexError only possible when access attempted AND index out of bounds
+    s2.add(Implies(access_attempted2,
+                   index_error2 == (access_index2 >= choices_len2)))
+    s2.add(Implies(Not(access_attempted2),
+                   index_error2 == False))   # guard prevented access
+
+    # Try to find any scenario where IndexError still occurs
+    s2.add(index_error2 == True)
+    fix_result = s2.check()   # expected: UNSAT
+
+    return ProofCertificate(
+        mode="llm_response_unguarded",
+        bug_sat=(bug_result == sat),
+        fix_unsat=(fix_result == unsat),
+        witness=witness,
+        axioms=[
+            "LLM API responses contain a list field (choices/content/outputs).",
+            "The list CAN be empty: content filter, API error, or stream truncation all produce len=0.",
+            "Unguarded choices[0] accesses index 0 unconditionally.",
+            "IndexError is raised when access_index (0) ≥ list length (0).",
+            "All three trigger conditions are independently satisfiable.",
+        ],
+        conclusion=(
+            "IndexError is formally satisfiable: Z3 finds a concrete trigger "
+            "(content_filtered=True → choices_len=0, access_index=0 → 0≥0) that "
+            "raises IndexError. With the guard 'if response.choices', access is "
+            "only attempted when choices_len > 0 — the conjunction "
+            "(access_attempted ∧ choices_len=0) is UNSAT. The guard is "
+            "provably sufficient to eliminate the IndexError on all trigger paths."
+        ),
+    )
+
+
 _PROVERS = {
     "save_without_update_fields": prove_save_without_update_fields,
     "missing_await": prove_missing_await,
     "optional_dereference": prove_optional_dereference,
+    "llm_response_unguarded": prove_llm_response_unguarded,
 }
 
 
