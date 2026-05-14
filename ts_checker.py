@@ -159,10 +159,13 @@ def _callee_root_name(call_node) -> str | None:
 
 
 def _is_awaited(node) -> bool:
-    """Walk up the parent chain to check if node is inside an await_expression."""
+    """Walk up the parent chain to check if node is inside an await_expression or return statement."""
     p = node.parent
     while p is not None:
         if p.type == "await_expression":
+            return True
+        # `return asyncFn()` — propagates the Promise to the caller; not a bug
+        if p.type == "return_statement":
             return True
         # Stop at function/arrow/method boundaries
         if p.type in (

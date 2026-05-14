@@ -2878,3 +2878,42 @@ def test_or_null_guard_not_flagged(tmp_path):
         "the Or short-circuit guards the right-side dereference. "
         f"got: {[(v.line, v.call) for v in od]}"
     )
+
+
+def test_ts_return_async_call_not_flagged(tmp_path):
+    """return asyncFn() in an async TS method must not be flagged as missing_await.
+
+    Corpus evidence: safishamsi/graphify tests/fixtures/sample.ts:
+      async get(path: string): Promise<Response> {
+          return fetch(this.baseUrl + path);  // valid — propagates Promise
+      }
+      async post(path: string, body: unknown): Promise<Response> {
+          return this.get(path);  // valid — propagates Promise
+      }
+    Returning a Promise from an async function is intentional; the caller
+    is responsible for awaiting. Flagging this produces FPs in any wrapper
+    that returns a typed Promise<T>.
+    """
+    from .ts_checker import check_ts_file
+
+    ts_file = tmp_path / "client.ts"
+    ts_file.write_text(
+        """\
+class HttpClient {
+    private baseUrl: string;
+    constructor(baseUrl: string) { this.baseUrl = baseUrl; }
+    async get(path: string): Promise<Response> {
+        return fetch(this.baseUrl + path);
+    }
+    async post(path: string, body: unknown): Promise<Response> {
+        return this.get(path);
+    }
+}
+"""
+    )
+    violations = check_ts_file(str(ts_file))
+    ma = [v for v in violations if v.context == "missing_await"]
+    assert len(ma) == 0, (
+        "return asyncFn() must not be flagged — it propagates the Promise. "
+        f"got: {[(v.line, v.call) for v in ma]}"
+    )
