@@ -2813,3 +2813,39 @@ def test_form_input_save_not_flagged(tmp_path):
         "self.input.save() must not be flagged — 'input' is a form alias, "
         f"not an ORM model. got: {[(v.line, v.call) for v in sw]}"
     )
+
+
+def test_conftest_and_test_base_not_flagged(tmp_path):
+    """conftest.py and test.py must be treated as test files.
+
+    Corpus evidence: healthchecks/hc/test.py (base test class with setUp
+    fixtures) produced 10 save_without_update_fields FPs. conftest.py
+    (pytest fixture files) similarly contain fixture setup saves.
+
+    Both are test infrastructure, not production code.
+    """
+    import os
+    # conftest.py
+    conftest = tmp_path / "conftest.py"
+    conftest.write_text(
+        "import django\n"
+        "class Fixtures:\n"
+        "    def setup(self):\n"
+        "        self.user.email = 'a@b.com'\n"
+        "        self.user.save()\n"
+    )
+    # test.py (Django base test helper)
+    test_base = tmp_path / "test.py"
+    test_base.write_text(
+        "import django\n"
+        "class BaseTest:\n"
+        "    def setUp(self):\n"
+        "        self.profile.plan = 'free'\n"
+        "        self.profile.save()\n"
+    )
+    violations = check_codebase(tmp_path)
+    sw = [v for v in violations if v.context == "save_without_update_fields"]
+    assert len(sw) == 0, (
+        "conftest.py and test.py must not produce save_without_update_fields — "
+        f"they are test infrastructure. got: {[(v.file.split('/')[-1], v.line, v.call) for v in sw]}"
+    )

@@ -774,6 +774,8 @@ def _is_test_file(path: str) -> bool:
     return (
         basename.startswith("test_")
         or basename.endswith("_test.py")
+        or basename == "test.py"       # base test-helper class (e.g. healthchecks/hc/test.py)
+        or basename == "conftest.py"   # pytest fixture file — fixture setup, not production
         or "/test/" in path
         or "/tests/" in path
         or "/testing/" in path
