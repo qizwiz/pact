@@ -1058,6 +1058,27 @@ def _scan_file_missing_await(path: str) -> list[FailureEvidence]:
         and node.args.args
         and node.args.args[0].arg in ("self", "cls")
     }
+    def _has_work_decorator(func_node: _ast.AsyncFunctionDef) -> bool:
+        """Return True if func_node is decorated with @work or @work(...).
+
+        Textual's @work decorator wraps async methods into synchronous worker
+        dispatch — callers call them without await.
+        """
+        for dec in func_node.decorator_list:
+            name = None
+            if isinstance(dec, _ast.Name):
+                name = dec.id
+            elif isinstance(dec, _ast.Attribute):
+                name = dec.attr
+            elif isinstance(dec, _ast.Call):
+                if isinstance(dec.func, _ast.Name):
+                    name = dec.func.id
+                elif isinstance(dec, _ast.Call) and isinstance(dec.func, _ast.Attribute):
+                    name = dec.func.attr
+            if name == "work":
+                return True
+        return False
+
     # First pass: collect async generator names (contain yield/yield from).
     # A name used for both an async generator and a coroutine in the same file
     # (e.g. closure reuse pattern) cannot be safely flagged — exclude it.
@@ -1081,7 +1102,10 @@ def _scan_file_missing_await(path: str) -> list[FailureEvidence]:
                 # Skip if the same method name also exists as a sync def —
                 # dual sync/async client pattern; pact can't resolve which class
                 # self refers to and would cross-contaminate (e.g. openai-python).
-                if node.name not in sync_method_names:
+                # Also skip methods decorated with @work / @work(...) —
+                # Textual's @work wraps async methods into synchronous worker
+                # dispatch; callers invoke them without await intentionally.
+                if node.name not in sync_method_names and not _has_work_decorator(node):
                     method_async.add(node.name)
             else:
                 # Skip names that also have a sync def — closure-level name
