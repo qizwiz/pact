@@ -245,9 +245,12 @@ def main(argv=None) -> int:
     extracted = extract_from_codebase(root)
     models, functions, call_sites = extracted
 
+    # When --json is active, stats must go to stderr so stdout stays pure JSON.
+    stats_file = sys.stderr if args.json_mode else sys.stdout
     if args.stats:
         print(
-            f"models: {len(models)}  functions: {len(functions)}  call sites: {len(call_sites)}"
+            f"models: {len(models)}  functions: {len(functions)}  call sites: {len(call_sites)}",
+            file=stats_file,
         )
 
     incremental_stats: dict = {}
@@ -265,7 +268,8 @@ def main(argv=None) -> int:
                 f"incremental vs {args.incremental}: "
                 f"{s['dirty_files']}/{s['total_files']} files dirty, "
                 f"{s['dirty_call_sites']}/{s['total_call_sites']} call sites analyzed "
-                f"({skipped_pct}% skipped)"
+                f"({skipped_pct}% skipped)",
+                file=stats_file,
             )
     else:
         violations = check_codebase(root, _extracted=extracted)
@@ -274,7 +278,7 @@ def main(argv=None) -> int:
         changed = _changed_files_on_branch(args.diff, cwd=root)
         violations = [v for v in violations if v.file in changed]
         if args.stats:
-            print(f"files changed vs {args.diff}: {len(changed)}")
+            print(f"files changed vs {args.diff}: {len(changed)}", file=stats_file)
 
     if args.json_mode:
         print(
