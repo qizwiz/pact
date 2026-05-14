@@ -2440,6 +2440,40 @@ def test_string_literal_join_not_flagged_as_missing_separator(tmp_path):
     assert len(ra) == 0, f"str.join falsely flagged as missing-arg: {ra}"
 
 
+def test_fstring_join_not_flagged_as_missing_separator(tmp_path):
+    """f"...".join(items) must not be matched against a user-defined join(*pairs, separator).
+
+    An f-string receiver is an ast.JoinedStr, not ast.Constant.  The existing
+    constant-receiver guard must also cover JoinedStr.
+
+    Corpus evidence: alexpovel/ancv — f" {self.theme.sep} ".join(contact_items)
+    was flagged as missing the 'separator' kwarg of the local join() function.
+    """
+    _write_src(
+        tmp_path,
+        "templates.py",
+        """
+        from typing import Optional
+
+        def join(*pairs, separator: str) -> Optional[str]:
+            return separator.join(str(p) for p in pairs if p)
+
+        class Theme:
+            sep = ' | '
+
+        class Widget:
+            def __init__(self):
+                self.theme = Theme()
+
+            def render(self, items):
+                return f" {self.theme.sep} ".join(items)   # f-string str.join — NOT local join()
+        """,
+    )
+    violations = check_codebase(tmp_path)
+    ra = [v for v in violations if v.context == "required_arg_missing" and "templates.py" in v.file]
+    assert len(ra) == 0, f"f-string str.join falsely flagged as missing-arg: {ra}"
+
+
 def test_isinstance_and_attr_not_flagged_as_optional_dereference(tmp_path):
     """isinstance(x, T) and x.attr is safe via short-circuit — must not flag.
 
