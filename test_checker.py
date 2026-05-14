@@ -2050,6 +2050,56 @@ def test_generator_return_gather_pattern_not_flagged(tmp_path):
     assert len(ma) == 0, f"Generator return of coroutines must not be flagged: {[(v.line, v.call) for v in ma]}"
 
 
+def test_user_defined_asyncio_run_wrapper_not_flagged(tmp_path):
+    """asyncio_run(coro()) — user-defined wrapper around loop.run_until_complete should not be flagged."""
+    _write_src(
+        tmp_path,
+        "main.py",
+        """
+        import asyncio
+
+        loop = asyncio.get_event_loop()
+
+        def asyncio_run(func):
+            loop.run_until_complete(func)
+
+        async def save_data(): pass
+        async def load_data(): pass
+
+        def sync_save():
+            asyncio_run(save_data())
+
+        def sync_load():
+            asyncio_run(load_data())
+        """,
+    )
+    violations = check_codebase(tmp_path)
+    ma = [v for v in violations if v.context == "missing_await"]
+    assert len(ma) == 0, f"asyncio_run wrapper must not be flagged: {[(v.line, v.call) for v in ma]}"
+
+
+def test_run_async_wrapper_not_flagged(tmp_path):
+    """run_async(coro()) — alternative user-defined wrapper name should not be flagged."""
+    _write_src(
+        tmp_path,
+        "utils.py",
+        """
+        import asyncio
+
+        def run_async(coro):
+            return asyncio.run(coro)
+
+        async def fetch(): pass
+
+        def sync_fetch():
+            run_async(fetch())
+        """,
+    )
+    violations = check_codebase(tmp_path)
+    ma = [v for v in violations if v.context == "missing_await"]
+    assert len(ma) == 0, f"run_async wrapper must not be flagged: {[(v.line, v.call) for v in ma]}"
+
+
 def test_optional_dereference_zero_arg_get_not_flagged(tmp_path):
     """obj.get() with no args is a custom method (e.g. Twisted DeferredQueue), not dict.get().
     dict.get() always requires at least one positional key argument."""
