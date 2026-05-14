@@ -1173,6 +1173,7 @@ def _scan_file_missing_await(path: str) -> list[FailureEvidence]:
             "schedule",             # custom task schedulers (e.g. StreamTransformer.schedule(coro))
             "run_until_complete",   # event_loop.run_until_complete(coro()) — any receiver name
             "run_sync",             # Chainlit sync wrapper: run_sync(coro()) blocks until done
+            "as_completed",         # asyncio.as_completed([coro() for ...]) — iterates awaitables
         }
     )
 
@@ -1237,6 +1238,26 @@ def _scan_file_missing_await(path: str) -> list[FailureEvidence]:
             # caller for gather; same intent as list comprehension assigned to var.
             if isinstance(gp, _ast.Return):
                 return True
+            # asyncio.as_completed([coro() for ...]) — list-comp directly as arg
+            if isinstance(gp, _ast.Call):
+                _func = gp.func
+                _fname = (
+                    _func.attr if isinstance(_func, _ast.Attribute)
+                    else _func.id if isinstance(_func, _ast.Name) else None
+                )
+                _recv = (
+                    _func.value.id
+                    if isinstance(_func, _ast.Attribute) and isinstance(_func.value, _ast.Name)
+                    else None
+                )
+                if (
+                    _fname in _CORO_CONSUMERS
+                    or _fname in file_imported_consumers
+                    or (_fname is not None and _fname.startswith("create_task"))
+                ):
+                    return True
+                if _recv is not None and (_recv, _fname) in _CORO_CONSUMERS_QUALIFIED:
+                    return True
             # asyncio.gather(*[coro(item) for item in items])
             if isinstance(gp, _ast.Starred):
                 ggp = parent_map.get(id(gp))

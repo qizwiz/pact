@@ -3150,6 +3150,33 @@ def test_async_name_reused_generator_and_coroutine_not_flagged(tmp_path):
     )
 
 
+def test_as_completed_listcomp_not_flagged(tmp_path):
+    """asyncio.as_completed([coro() for ...]) must not be flagged — as_completed consumes them."""
+    from .failure_mode import MISSING_AWAIT
+
+    _write_src(
+        tmp_path,
+        "benchmark.py",
+        """\
+        import asyncio
+
+        async def _send(session, url, sem):
+            async with sem:
+                return await session.get(url)
+
+        async def run_batch(session, urls, n):
+            sem = asyncio.Semaphore(n)
+            for coro in asyncio.as_completed([_send(session, url, sem) for url in urls]):
+                result = await coro
+        """,
+    )
+    results = check_codebase(tmp_path, modes=[MISSING_AWAIT])
+    assert len(results) == 0, (
+        "asyncio.as_completed([coro() for ...]) must not be flagged. "
+        f"got: {[(r.line, r.call) for r in results]}"
+    )
+
+
 def test_run_sync_coro_consumer_not_flagged(tmp_path):
     """run_sync(coro()) — Chainlit's sync-context coroutine runner — must not be flagged."""
     from .failure_mode import MISSING_AWAIT
