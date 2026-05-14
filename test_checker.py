@@ -3018,3 +3018,50 @@ class HttpClient {
         "return asyncFn() must not be flagged — it propagates the Promise. "
         f"got: {[(v.line, v.call) for v in ma]}"
     )
+
+
+def test_lookup_chain_const_set_guard_not_flagged(tmp_path):
+    """if var in [c1, c2, c3] — membership in a constant list guards var as non-None."""
+    from .failure_mode import UNVALIDATED_LOOKUP_CHAIN
+
+    _write_src(
+        tmp_path,
+        "app.py",
+        """\
+        def process(data, config):
+            metric = config.get("metric")
+            if metric in ["perplexity", "accuracy", "f1"]:
+                return data[metric]
+            else:
+                return data[metric]
+        """,
+    )
+    results = check_codebase(tmp_path, modes=[UNVALIDATED_LOOKUP_CHAIN])
+    assert len(results) == 0, (
+        "if var in [const_list] must suppress lookup-chain flag. "
+        f"got: {[(r.line, r.call) for r in results]}"
+    )
+
+
+def test_lookup_chain_isinstance_guard_not_flagged(tmp_path):
+    """isinstance(var, T) — type check guards var as non-None."""
+    from .failure_mode import UNVALIDATED_LOOKUP_CHAIN
+
+    _write_src(
+        tmp_path,
+        "app.py",
+        """\
+        OPTIONS = ["A", "B", "C", "D"]
+
+        def get_option(doc):
+            answer_id = doc.get("answer_id")
+            if isinstance(answer_id, int) and 0 <= answer_id < len(OPTIONS):
+                return OPTIONS[answer_id]
+            return ""
+        """,
+    )
+    results = check_codebase(tmp_path, modes=[UNVALIDATED_LOOKUP_CHAIN])
+    assert len(results) == 0, (
+        "isinstance(var, T) must suppress lookup-chain flag. "
+        f"got: {[(r.line, r.call) for r in results]}"
+    )

@@ -1657,9 +1657,30 @@ def _scan_file_unvalidated_lookup_chain(path: str) -> list[FailureEvidence]:
                 and isinstance(node.left, pyast.Name)
                 and node.left.id in self._get_vars
             ):
+                var = node.left.id
                 for comparator in node.comparators:
                     if isinstance(comparator, pyast.Name):
-                        self._guarded.setdefault(node.left.id, set()).add(comparator.id)
+                        self._guarded.setdefault(var, set()).add(comparator.id)
+                    elif isinstance(comparator, (pyast.List, pyast.Tuple, pyast.Set)):
+                        # if var in [c1, c2, ...] — membership in a non-None constant
+                        # collection guarantees var is a specific non-None value.
+                        if all(
+                            isinstance(elt, pyast.Constant) and elt.value is not None
+                            for elt in comparator.elts
+                        ):
+                            self._guarded.setdefault(var, set()).add("__any__")
+            self.generic_visit(node)
+
+        def visit_Call(self, node: pyast.Call) -> None:
+            # isinstance(var, T) — var is guaranteed non-None in this branch
+            if (
+                isinstance(node.func, pyast.Name)
+                and node.func.id == "isinstance"
+                and node.args
+                and isinstance(node.args[0], pyast.Name)
+                and node.args[0].id in self._get_vars
+            ):
+                self._guarded.setdefault(node.args[0].id, set()).add("__any__")
             self.generic_visit(node)
 
         def visit_Subscript(self, node: pyast.Subscript) -> None:
@@ -1688,7 +1709,7 @@ def _scan_file_unvalidated_lookup_chain(path: str) -> list[FailureEvidence]:
                 self.generic_visit(node)
                 return
             guarded_against = self._guarded.get(var, set())
-            if collection not in guarded_against:
+            if collection not in guarded_against and "__any__" not in guarded_against:
                 results.append(
                     FailureEvidence(
                         mode_name="unvalidated_lookup_chain",
