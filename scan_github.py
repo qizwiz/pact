@@ -57,6 +57,8 @@ _SKIP_PATHS = frozenset(
         "node_modules",
         "__pycache__",
         ".git",
+        ".claude",   # Claude Code hooks/config — not library code
+        ".cursor",   # Cursor IDE config
         "dist",
         "build",
         ".eggs",
