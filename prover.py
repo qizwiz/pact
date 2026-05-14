@@ -17,7 +17,6 @@ import argparse
 import sys
 import textwrap
 from dataclasses import dataclass
-from typing import Optional
 
 try:
     from z3 import (
@@ -187,8 +186,8 @@ def prove_missing_await() -> ProofCertificate:
     # Distinct: Coroutine ≠ Expected (they are different types)
     s.add(Coroutine != Expected)
     # Observation: async function called without await
-    s.add(is_async == True)
-    s.add(is_awaited == False)
+    s.add(is_async)
+    s.add(Not(is_awaited))
     # Query: does a type mismatch exist? (SAT = yes, bug is real)
     s.add(actual_type(is_async, is_awaited) != Expected)
     bug_result = s.check()  # SAT — Coroutine != Expected
@@ -212,8 +211,8 @@ def prove_missing_await() -> ProofCertificate:
     s2.add(Implies(And(is_async2, is_awaited2), actual_type2(is_async2, is_awaited2) == Expected))
     s2.add(Implies(And(is_async2, Not(is_awaited2)), actual_type2(is_async2, is_awaited2) == Coroutine))
     s2.add(Coroutine != Expected)
-    s2.add(is_async2 == True)
-    s2.add(is_awaited2 == True)   # fix: await present
+    s2.add(is_async2)
+    s2.add(is_awaited2)   # fix: await present
     s2.add(actual_type2(is_async2, is_awaited2) != Expected)
     fix_result = s2.check()  # UNSAT — with await, type is always Expected
 
@@ -252,12 +251,11 @@ def prove_optional_dereference() -> ProofCertificate:
     # Observation: no guard — variable may be None
     s.add(Or(is_none, Not(is_none)))   # unconstrained
     # Find a model where is_none=True (access fails)
-    s.add(is_none == True)
+    s.add(is_none)
     bug_result = s.check()
 
     witness = {}
     if bug_result == sat:
-        m = s.model()
         witness = {
             "variable is None": True,
             "attribute access succeeds": False,
@@ -270,7 +268,7 @@ def prove_optional_dereference() -> ProofCertificate:
     access_succeeds2 = Bool("access_succeeds2")
     s2.add(Implies(is_none2, Not(access_succeeds2)))         # None → fails
     s2.add(Implies(Not(is_none2), access_succeeds2))         # not-None → succeeds
-    s2.add(is_none2 == False)                                # guard: confirmed not-None
+    s2.add(Not(is_none2))                                    # guard: confirmed not-None
     s2.add(Not(access_succeeds2))                            # try to find a failure
     fix_result = s2.check()   # UNSAT — with guard, access cannot fail
 
@@ -333,7 +331,7 @@ def prove_llm_response_unguarded() -> ProofCertificate:
     s.add(index_error == (access_index >= choices_len))
 
     # Ask: can IndexError occur?
-    s.add(index_error == True)
+    s.add(index_error)
     bug_result = s.check()
 
     witness = {}
@@ -377,10 +375,10 @@ def prove_llm_response_unguarded() -> ProofCertificate:
     s2.add(Implies(access_attempted2,
                    index_error2 == (access_index2 >= choices_len2)))
     s2.add(Implies(Not(access_attempted2),
-                   index_error2 == False))   # guard prevented access
+                   Not(index_error2)))        # guard prevented access
 
     # Try to find any scenario where IndexError still occurs
-    s2.add(index_error2 == True)
+    s2.add(index_error2)
     fix_result = s2.check()   # expected: UNSAT
 
     return ProofCertificate(
@@ -432,7 +430,7 @@ def prove_bare_except() -> ProofCertificate:
             conclusion="Install z3-solver to compute the formal certificate.",
         )
 
-    from z3 import And, Bool, Implies, Not, Or, Solver, sat, unsat
+    from z3 import Bool, Implies, Not, Or, Solver, sat, unsat
 
     s = Solver()
 
@@ -536,7 +534,7 @@ def prove_mutable_default_arg() -> ProofCertificate:
             conclusion="Install z3-solver to compute the formal certificate.",
         )
 
-    from z3 import And, Bool, Implies, Int, Not, Solver, sat, unsat
+    from z3 import And, Bool, Implies, Int, Solver, sat, unsat
 
     s = Solver()
 
@@ -625,7 +623,7 @@ def prove_required_arg_missing() -> ProofCertificate:
             conclusion="Install z3-solver to compute the formal certificate.",
         )
 
-    from z3 import And, Bool, Implies, Int, Not, Solver, sat, unsat
+    from z3 import Bool, Int, Solver, sat, unsat
 
     s = Solver()
 
@@ -705,7 +703,7 @@ def prove_format_arg_mismatch() -> ProofCertificate:
             conclusion="Install z3-solver to compute the formal certificate.",
         )
 
-    from z3 import Bool, Implies, Int, Not, Solver, sat, unsat
+    from z3 import Bool, Int, Solver, sat, unsat
 
     s = Solver()
 
@@ -825,7 +823,6 @@ def prove_unvalidated_lookup_chain() -> ProofCertificate:
 
     # Fix: .get() with default at each level — missing key returns {} not KeyError
     s2 = Solver()
-    k0p = Bool("k0p"); k1p = Bool("k1p"); k2p = Bool("k2p")
     uses_get = Bool("uses_get_with_default")
     error2   = Bool("error_raised2")
 
@@ -890,13 +887,13 @@ class InstanceCertificate:
             "OBSERVED CODE",
             "-------------",
         ]
-        for l in self.code.strip().splitlines():
-            lines.append(f"  {l}")
+        for line_text in self.code.strip().splitlines():
+            lines.append(f"  {line_text}")
         lines += [
             "",
-            f"PATTERN MATCH: save_without_update_fields",
+            "PATTERN MATCH: save_without_update_fields",
             f"  Field modified:  {self.modified_field!r}",
-            f"  Save scope:      ALL fields (no update_fields)",
+            "  Save scope:      ALL fields (no update_fields)",
             "",
             "INHERITED CLASS PROOF",
             "---------------------",
@@ -907,8 +904,8 @@ class InstanceCertificate:
             "INSTANTIATED WITNESS",
             "--------------------",
             f"  Writer A: sets project.{self.modified_field} = <new value>, calls project.save()",
-            f"  Writer B: concurrently modifies any OTHER project field, calls project.save()",
-            f"  Interleaving: B reads → A reads → A saves → B saves",
+            "  Writer B: concurrently modifies any OTHER project field, calls project.save()",
+            "  Interleaving: B reads → A reads → A saves → B saves",
             f"  Result: B's full save restores the old {self.modified_field!r}, silently losing A's change",
             "",
             "FIX",
@@ -917,7 +914,7 @@ class InstanceCertificate:
             "",
             "RUNTIME ENFORCEMENT",
             "-------------------",
-            f"  from pact.django_guard import save_scoped",
+            "  from pact.django_guard import save_scoped",
             f"  @save_scoped({self.modified_field!r})   # raises PactViolation if violated",
             "",
         ]
