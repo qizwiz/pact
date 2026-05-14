@@ -1272,6 +1272,22 @@ def _scan_file_llm_response_unguarded(path: str) -> list[FailureEvidence]:
                     guarded.add(var)
             self.generic_visit(node)
 
+        def visit_IfExp(self, node):
+            # Ternary: body if test else orelse.
+            # If the test mentions an llm_var, the body branch is guarded.
+            # E.g. `response.choices[0] if response.choices else None` is safe.
+            self.visit(node.test)
+            src = _ast.unparse(node.test) if hasattr(_ast, "unparse") else ""
+            newly_guarded: set[str] = set()
+            for var in list(llm_vars):
+                if var in src and var not in guarded:
+                    guarded.add(var)
+                    newly_guarded.add(var)
+            self.visit(node.body)
+            for var in newly_guarded:
+                guarded.discard(var)
+            self.visit(node.orelse)
+
         def visit_Subscript(self, node):
             # Detect: llm_var.choices[0] or llm_var.content[0] etc.
             if not isinstance(node.slice, _ast.Constant) or node.slice.value != 0:

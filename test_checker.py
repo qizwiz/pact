@@ -1431,6 +1431,28 @@ def test_llm_choices_guarded_not_flagged(tmp_path):
     assert not v, "guarded choices access should not be flagged"
 
 
+def test_llm_choices_ternary_guard_not_flagged(tmp_path):
+    # `choices[0] if response.choices else None` is a guarded ternary — not a bug.
+    _write_src(
+        tmp_path,
+        "handler.py",
+        """
+        import openai
+
+        def get_reply(prompt):
+            response = openai.chat.completions.create(
+                model="gpt-4",
+                messages=[{"role": "user", "content": prompt}],
+            )
+            choice = response.choices[0] if response.choices else None
+            return choice.message.content if choice else ""
+    """,
+    )
+    violations = check_codebase(tmp_path)
+    v = [v for v in violations if v.context == "llm_response_unguarded"]
+    assert not v, "ternary-guarded choices[0] should not be flagged"
+
+
 # ---------------------------------------------------------------------------
 # unvalidated_lookup_chain
 # ---------------------------------------------------------------------------
