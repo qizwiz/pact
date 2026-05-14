@@ -2372,3 +2372,38 @@ def test_get_with_keyword_default_not_flagged_as_optional_dereference(tmp_path):
     violations = check_codebase(tmp_path)
     od = [v for v in violations if v.context == "optional_dereference" and "xml_parse.py" in v.file]
     assert len(od) == 0, f"get(default=non_None) falsely flagged: {od}"
+
+
+def test_format_dotted_attr_covered_by_root_kwarg_not_flagged(tmp_path):
+    """'{self.tx_ac}'.format(self=obj) must not be flagged as format_arg_mismatch.
+
+    Python's .format() resolves dotted names like {self.tx_ac} by first looking
+    up 'self' in kwargs, then accessing .tx_ac on the result.  Pact's regex
+    extracts 'self.tx_ac' as the required name, but the actual keyword arg is
+    'self'.  The fix: a name 'a.b.c' is considered covered if its root 'a'
+    appears in the keyword args.
+
+    Corpus evidence: biocommons/hgvs — 25 violations in alignmentmapper.py where
+    '{self.tx_ac}...'.format(self=self, strand_pm=strand_pm) was incorrectly
+    flagged as missing self.tx_ac, self.alt_ac, etc.
+    """
+    _write_src(
+        tmp_path,
+        "mapper.py",
+        """
+        class AlignmentMapper:
+            def __init__(self, tx_ac, alt_ac):
+                self.tx_ac = tx_ac
+                self.alt_ac = alt_ac
+
+            def __str__(self):
+                strand_pm = '+'
+                return (
+                    "{self.__class__.__name__}: {self.tx_ac} ~ {self.alt_ac}; "
+                    "{strand_pm} strand"
+                ).format(self=self, strand_pm=strand_pm)
+        """,
+    )
+    violations = check_codebase(tmp_path)
+    fa = [v for v in violations if v.context == "format_arg_mismatch" and "mapper.py" in v.file]
+    assert len(fa) == 0, f"dotted attr covered by root kwarg falsely flagged: {fa}"

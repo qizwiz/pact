@@ -1240,7 +1240,12 @@ def _scan_file_format_mismatch(path: str) -> list[FailureEvidence]:
                         ),
                     )
                 )
-        missing_names = named - kw_keys
+        # A name like "self.tx_ac" is covered if its root "self" is in kw_keys,
+        # because .format(self=obj) resolves {self.tx_ac} by attribute lookup.
+        missing_names = {
+            n for n in named
+            if n not in kw_keys and n.split(".")[0] not in kw_keys
+        }
         if missing_names:
             evidence.append(
                 FailureEvidence(
