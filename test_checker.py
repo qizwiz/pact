@@ -3093,3 +3093,24 @@ def test_asyncio_run_direct_import_not_flagged(tmp_path):
         "from asyncio import run; run(coro()) must not be flagged. "
         f"got: {[(r.line, r.call) for r in results]}"
     )
+
+
+def test_format_escaped_braces_not_flagged(tmp_path):
+    """{{identifier}} in a format string is a literal brace pair, not a placeholder."""
+    from .failure_mode import FORMAT_ARG_MISMATCH
+
+    _write_src(
+        tmp_path,
+        "app.py",
+        """\
+        def make_template(lw, body_sep):
+            # {{body}} produces literal {body} — not a format field
+            line_fmt = "{{l:>{lw}s}}{body_sep}{{body}}".format(lw=lw, body_sep=body_sep)
+            return line_fmt
+        """,
+    )
+    results = check_codebase(tmp_path, modes=[FORMAT_ARG_MISMATCH])
+    assert len(results) == 0, (
+        "{{identifier}} escaped braces must not be flagged as missing format args. "
+        f"got: {[(r.line, r.call) for r in results]}"
+    )

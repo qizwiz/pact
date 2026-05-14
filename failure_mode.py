@@ -1352,10 +1352,13 @@ def _scan_file_format_mismatch(path: str) -> list[FailureEvidence]:
             continue
 
         fmt_str = fmt_node.value
-        auto_count = len(_re.findall(r"\{\}", fmt_str))
-        indexed = {int(m) for m in _re.findall(r"\{(\d+)\}", fmt_str)}
+        # Strip escaped-brace sequences {{...}} before parsing placeholders —
+        # {{body}} is a literal "{body}" in the output, not a format field.
+        _scrubbed = fmt_str.replace("{{", "\x00").replace("}}", "\x00")
+        auto_count = len(_re.findall(r"\{\}", _scrubbed))
+        indexed = {int(m) for m in _re.findall(r"\{(\d+)\}", _scrubbed)}
         named = set(
-            _re.findall(r"\{([a-zA-Z_][a-zA-Z0-9_]*(?:\.[a-zA-Z_]\w*)*)\}", fmt_str)
+            _re.findall(r"\{([a-zA-Z_][a-zA-Z0-9_]*(?:\.[a-zA-Z_]\w*)*)\}", _scrubbed)
         )
 
         positional = len(node.args)
