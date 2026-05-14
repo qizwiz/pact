@@ -2880,6 +2880,71 @@ def test_or_null_guard_not_flagged(tmp_path):
     )
 
 
+def test_bare_defaultdict_not_flagged_as_lookup_chain(tmp_path):
+    """defaultdict(list) via direct import must not trigger unvalidated_lookup_chain.
+
+    Corpus evidence: volcengine/OpenViking benchmark/RAG/scripts/sample_dataset.py:
+      from collections import defaultdict
+      doc_groups = defaultdict(list)
+      ...
+      doc_groups[syllabus_name].append(item)
+    The checker only recognized 'collections.defaultdict' (Attribute call), not
+    bare 'defaultdict(list)' (Name call from direct import).
+    """
+    _write_src(
+        tmp_path,
+        "grouper.py",
+        """\
+        from collections import defaultdict
+
+        def group_items(items):
+            groups = defaultdict(list)
+            for item in items:
+                key = item.get("category")
+                groups[key].append(item)
+            return groups
+        """,
+    )
+    violations = check_codebase(tmp_path)
+    ulc = [v for v in violations if v.context == "unvalidated_lookup_chain"]
+    assert len(ulc) == 0, (
+        "defaultdict(list) via direct import must be recognized as safe — "
+        "defaultdict never raises KeyError on missing keys. "
+        f"got: {[(v.line, v.call) for v in ulc]}"
+    )
+
+
+def test_for_loop_rebind_clears_get_tracking(tmp_path):
+    """for x in iterable must clear x from .get() tracking in lookup-chain checker.
+
+    Corpus evidence: volcengine/OpenViking sample_dataset.py:
+      doc_name = item.get("syllabus_name", "unknown")  # marks doc_name as .get()
+      ...
+      for doc_name in selected_docs:    # rebinds doc_name — NOT from .get()
+          items = doc_groups[doc_name]  # incorrectly flagged
+    """
+    _write_src(
+        tmp_path,
+        "processor.py",
+        """\
+        def process(d, groups):
+            doc_name = d.get("category")  # doc_name marked as from .get()
+
+            # for-loop rebinds doc_name — no longer from .get()
+            selected = ["a", "b", "c"]
+            for doc_name in selected:
+                items = groups[doc_name]   # safe — doc_name from for-loop, not .get()
+        """,
+    )
+    violations = check_codebase(tmp_path)
+    ulc = [v for v in violations if v.context == "unvalidated_lookup_chain"]
+    assert len(ulc) == 0, (
+        "for x in iterable must clear x from .get() tracking — "
+        "the for-loop rebinds x so it no longer comes from .get(). "
+        f"got: {[(v.line, v.call) for v in ulc]}"
+    )
+
+
 def test_run_until_complete_any_loop_var_not_flagged(tmp_path):
     """new_loop.run_until_complete(coro()) must not flag missing_await.
 

@@ -1613,12 +1613,25 @@ def _scan_file_unvalidated_lookup_chain(path: str) -> list[FailureEvidence]:
         ) -> None:
             if not isinstance(value, pyast.Call):
                 return
+            # from collections import defaultdict → defaultdict(list) — bare Name
+            if isinstance(value.func, pyast.Name) and value.func.id == "defaultdict":
+                self._defaultdicts.add(target_id)
+                return
             if not isinstance(value.func, pyast.Attribute):
                 return
             if value.func.attr == "defaultdict":
                 self._defaultdicts.add(target_id)
             elif value.func.attr == "get":
                 self._get_vars[target_id] = line
+
+        def _clear_for_target(self, target: pyast.expr) -> None:
+            """Untrack a variable when it's rebound by a for-loop target."""
+            if isinstance(target, pyast.Name):
+                self._get_vars.pop(target.id, None)
+                self._guarded.pop(target.id, None)
+            elif isinstance(target, (pyast.Tuple, pyast.List)):
+                for elt in target.elts:
+                    self._clear_for_target(elt)
 
         def visit_Assign(self, node: pyast.Assign) -> None:
             if len(node.targets) == 1 and isinstance(node.targets[0], pyast.Name):
@@ -1629,6 +1642,11 @@ def _scan_file_unvalidated_lookup_chain(path: str) -> list[FailureEvidence]:
             # x: SomeType = collections.defaultdict(...) — annotated assignment
             if isinstance(node.target, pyast.Name) and node.value is not None:
                 self._classify_assign(node.target.id, node.value, node.lineno)
+            self.generic_visit(node)
+
+        def visit_For(self, node: pyast.For) -> None:
+            # for x in iterable: — x is now from iteration, not from .get()
+            self._clear_for_target(node.target)
             self.generic_visit(node)
 
         def visit_Compare(self, node: pyast.Compare) -> None:
