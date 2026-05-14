@@ -3416,6 +3416,38 @@ def test_nested_closure_name_shadows_outer_async_not_flagged(tmp_path):
     )
 
 
+def test_client_namespace_get_not_flagged(tmp_path):
+    """client.collections.get() (Weaviate / API namespace managers) must not be
+    flagged as optional_dereference — the grandparent receiver is a known HTTP
+    client, so this is not a dict.get() returning None."""
+    from .failure_mode import OPTIONAL_DEREF as OPTIONAL_DEREFERENCE
+
+    _write_src(
+        tmp_path,
+        "weaviate_db.py",
+        """\
+        class VectorDB:
+            def __init__(self, client):
+                self.client = client
+
+            def insert(self, items):
+                collection = self.client.collections.get("MyCollection")
+                with collection.batch.fixed_size(batch_size=100) as batch:
+                    for item in items:
+                        batch.add_object(item)
+
+            def query(self, text):
+                col = self.client.collections.get("MyCollection")
+                return col.query.near_text(query=text)
+        """,
+    )
+    results = check_codebase(tmp_path, modes=[OPTIONAL_DEREFERENCE])
+    assert len(results) == 0, (
+        "client.collections.get() must not be flagged as optional_dereference. "
+        f"got: {[(r.line, r.call) for r in results]}"
+    )
+
+
 def test_textual_work_decorator_not_flagged(tmp_path):
     """Textual @work-decorated async methods are worker dispatch, not coroutines.
     Calling self.method() without await is correct."""

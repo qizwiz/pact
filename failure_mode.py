@@ -367,6 +367,16 @@ def _scan_file_optional_deref(path: str) -> list[FailureEvidence]:
                     # — attribute chain; strip leading underscores for private attrs.
                     if isinstance(recv, _ast.Attribute) and recv.attr.lstrip("_") in _HTTP_CLIENTS:
                         return
+                    # self.client.collections.get() — grandparent is a known HTTP/API
+                    # client (e.g. Weaviate client.collections.get(), FastAPI test
+                    # client.app.get()).  Two-level chains on a client namespace are
+                    # never plain dict lookups.
+                    if (
+                        isinstance(recv, _ast.Attribute)
+                        and isinstance(recv.value, _ast.Attribute)
+                        and recv.value.attr.lstrip("_") in _HTTP_CLIENTS
+                    ):
+                        return
                     # Custom class .get(non_string_key) — not a dict lookup; skip.
                     # dict.get() keys are almost always string literals or string
                     # variables (name, key, attr_name, etc.). A non-string constant
