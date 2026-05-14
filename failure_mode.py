@@ -1222,6 +1222,9 @@ def _scan_file_missing_await(path: str) -> list[FailureEvidence]:
                 )
                 if fname in _CORO_CONSUMERS or fname in file_imported_consumers or (fname is not None and fname.startswith("create_task")):
                     return True
+                # list.append((coro(), metadata)) — tuple wrapping coroutine before gather
+                if isinstance(func, _ast.Attribute) and func.attr == "append":
+                    return True
             # tasks = [coro1(), coro2(), coro3()] — list literal assigned to a
             # variable for later gather(*tasks). Same intent as list comprehension.
             if isinstance(gp, (_ast.Assign, _ast.AnnAssign, _ast.AugAssign)):

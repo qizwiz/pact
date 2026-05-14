@@ -3150,6 +3150,35 @@ def test_async_name_reused_generator_and_coroutine_not_flagged(tmp_path):
     )
 
 
+def test_coro_in_tuple_appended_to_list_not_flagged(tmp_path):
+    """list.append((coro(), metadata)) — coro stored with metadata for later gather."""
+    from .failure_mode import MISSING_AWAIT
+
+    _write_src(
+        tmp_path,
+        "rag.py",
+        """\
+        import asyncio
+
+        class Retriever:
+            async def ainvoke(self, query, filter_id):
+                return []
+
+            async def batch_invoke(self, queries):
+                async_jobs = []
+                for q in queries:
+                    async_jobs.append((self.ainvoke(q, q), q))
+                results = await asyncio.gather(*(j[0] for j in async_jobs))
+                return results
+        """,
+    )
+    results = check_codebase(tmp_path, modes=[MISSING_AWAIT])
+    assert len(results) == 0, (
+        "coro inside tuple appended to list for later gather must not be flagged. "
+        f"got: {[(r.line, r.call) for r in results]}"
+    )
+
+
 def test_anyio_start_soon_coro_arg_not_flagged(tmp_path):
     """tg.start_soon(func, coro_arg) passes coro as arg to func which runs it — not a bug."""
     from .failure_mode import MISSING_AWAIT
