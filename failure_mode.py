@@ -1413,6 +1413,9 @@ def _scan_file_missing_await(path: str) -> list[FailureEvidence]:
             "spawn",  # Trio nursery.spawn() — legacy name for start_soon
             "start_background_task",  # some async frameworks
             "start_task",  # custom task manager wrappers: self.start_task(coro()) → loop.create_task(coro)
+            "run_long_running_task",  # user-defined: wraps Awaitable in asyncio.create_task (e.g. gpt-researcher)
+            "submit_async_task",  # common user-defined task submission pattern
+            "schedule_task",  # user-defined task scheduler wrapper
         }
     )
 

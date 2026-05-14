@@ -3976,3 +3976,48 @@ def test_required_arg_missing_shadowed_closure_not_flagged(tmp_path):
         "Shadowed closure run() must not be flagged as required_arg_missing "
         f"(regression of vllm FP), got: {[(v.line, v.call, v.missing) for v in ra]}"
     )
+
+
+def test_run_long_running_task_coro_consumer_not_flagged(tmp_path):
+    """run_long_running_task(coro()) must not be flagged as missing_await.
+
+    Corpus evidence: assafelovic/gpt-researcher — run_long_running_task accepts
+    an Awaitable and wraps it in asyncio.create_task; callers correctly pass a
+    coroutine without awaiting it.
+    """
+    from .failure_mode import MISSING_AWAIT
+
+    _write_src(
+        tmp_path,
+        "server_utils.py",
+        """\
+        import asyncio
+        from typing import Awaitable
+
+        def run_long_running_task(awaitable: Awaitable) -> asyncio.Task:
+            async def safe_run():
+                try:
+                    await awaitable
+                except Exception as e:
+                    print(e)
+            return asyncio.create_task(safe_run())
+        """,
+    )
+    _write_src(
+        tmp_path,
+        "server.py",
+        """\
+        from .server_utils import run_long_running_task
+
+        async def handle_start_command(websocket, data, manager):
+            return data
+
+        async def handle_websocket(websocket, data, manager):
+            run_long_running_task(handle_start_command(websocket, data, manager))
+        """,
+    )
+    results = check_codebase(tmp_path, modes=[MISSING_AWAIT])
+    assert len(results) == 0, (
+        "run_long_running_task(coro()) is a coroutine consumer and must not be flagged. "
+        f"got: {[(r.line, r.call) for r in results]}"
+    )
