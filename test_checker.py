@@ -1604,6 +1604,53 @@ def test_llm_choices_ternary_guard_not_flagged(tmp_path):
     assert not v, "ternary-guarded choices[0] should not be flagged"
 
 
+def test_llm_response_repeated_access_flagged_once(tmp_path):
+    """Multiple response.choices[0] accesses in same function → only one flag."""
+    from .failure_mode import LLM_RESPONSE_UNGUARDED
+
+    _write_src(
+        tmp_path,
+        "router.py",
+        """\
+        def handle(client):
+            response = client.chat.completions.create(model="gpt-4", messages=[])
+            msg = response.choices[0].message
+            tool_calls = response.choices[0].message.tool_calls
+            content = response.choices[0].message.content
+            return msg, tool_calls, content
+        """,
+    )
+    results = check_codebase(tmp_path, modes=[LLM_RESPONSE_UNGUARDED])
+    assert len(results) == 1, (
+        "Repeated response.choices[0] in same function must produce exactly one flag. "
+        f"got {len(results)}: {[(r.line, r.call) for r in results]}"
+    )
+
+
+def test_llm_response_separate_functions_each_flagged(tmp_path):
+    """Same var name in two separate functions → two flags (one per scope)."""
+    from .failure_mode import LLM_RESPONSE_UNGUARDED
+
+    _write_src(
+        tmp_path,
+        "svc.py",
+        """\
+        def func_a(client):
+            response = client.chat.completions.create(model="gpt-4", messages=[])
+            return response.choices[0].message.content
+
+        def func_b(client):
+            response = client.chat.completions.create(model="gpt-4", messages=[])
+            return response.choices[0].message.content
+        """,
+    )
+    results = check_codebase(tmp_path, modes=[LLM_RESPONSE_UNGUARDED])
+    assert len(results) == 2, (
+        "One unguarded access per function scope must each be flagged. "
+        f"got {len(results)}: {[(r.line, r.call) for r in results]}"
+    )
+
+
 # ---------------------------------------------------------------------------
 # unvalidated_lookup_chain
 # ---------------------------------------------------------------------------

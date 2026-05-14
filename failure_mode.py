@@ -1683,11 +1683,37 @@ def _scan_file_llm_response_unguarded(path: str) -> list[FailureEvidence]:
     except (SyntaxError, OSError):
         return []
 
-    # Collect variables assigned from LLM-style calls
-    llm_vars: dict[str, int] = {}  # var_name → line
-    guarded: set[str] = set()
-
     class _Visitor(_ast.NodeVisitor):
+        def __init__(self):
+            # All state is per-function-scope; module level is a scope too.
+            self._llm_vars: dict[str, int] = {}  # var_name → assign line
+            self._guarded: set[str] = set()
+            # (var_name, attr) pairs already flagged in this scope — one flag
+            # per pair is enough; subsequent identical accesses would be fixed
+            # by the same guard the developer adds for the first.
+            self._flagged: set[tuple[str, str]] = set()
+
+        def _enter_scope(self):
+            saved = (
+                dict(self._llm_vars),
+                set(self._guarded),
+                set(self._flagged),
+            )
+            self._llm_vars = {}
+            self._guarded = set()
+            self._flagged = set()
+            return saved
+
+        def _exit_scope(self, saved):
+            self._llm_vars, self._guarded, self._flagged = saved
+
+        def visit_FunctionDef(self, node):
+            saved = self._enter_scope()
+            self.generic_visit(node)
+            self._exit_scope(saved)
+
+        visit_AsyncFunctionDef = visit_FunctionDef  # type: ignore[assignment]
+
         def visit_Assign(self, node):
             if len(node.targets) == 1 and isinstance(node.targets[0], _ast.Name):
                 val = node.value
@@ -1699,30 +1725,29 @@ def _scan_file_llm_response_unguarded(path: str) -> list[FailureEvidence]:
                         else (func.id if isinstance(func, _ast.Name) else None)
                     )
                     if attr and attr in _LLM_RESPONSE_SOURCES:
-                        llm_vars[node.targets[0].id] = node.lineno
+                        self._llm_vars[node.targets[0].id] = node.lineno
             self.generic_visit(node)
 
         def visit_If(self, node):
             src = _ast.unparse(node.test) if hasattr(_ast, "unparse") else ""
-            for var in list(llm_vars):
+            for var in list(self._llm_vars):
                 if var in src:
-                    guarded.add(var)
+                    self._guarded.add(var)
             self.generic_visit(node)
 
         def visit_IfExp(self, node):
             # Ternary: body if test else orelse.
-            # If the test mentions an llm_var, the body branch is guarded.
             # E.g. `response.choices[0] if response.choices else None` is safe.
             self.visit(node.test)
             src = _ast.unparse(node.test) if hasattr(_ast, "unparse") else ""
             newly_guarded: set[str] = set()
-            for var in list(llm_vars):
-                if var in src and var not in guarded:
-                    guarded.add(var)
+            for var in list(self._llm_vars):
+                if var in src and var not in self._guarded:
+                    self._guarded.add(var)
                     newly_guarded.add(var)
             self.visit(node.body)
             for var in newly_guarded:
-                guarded.discard(var)
+                self._guarded.discard(var)
             self.visit(node.orelse)
 
         def visit_Subscript(self, node):
@@ -1738,7 +1763,14 @@ def _scan_file_llm_response_unguarded(path: str) -> list[FailureEvidence]:
                 return
             root = obj.value
             var_name = root.id if isinstance(root, _ast.Name) else None
-            if var_name and var_name in llm_vars and var_name not in guarded:
+            pair = (var_name, obj.attr) if var_name else None
+            if (
+                var_name
+                and var_name in self._llm_vars
+                and var_name not in self._guarded
+                and pair not in self._flagged
+            ):
+                self._flagged.add(pair)
                 evidence.append(
                     FailureEvidence(
                         mode_name="llm_response_unguarded",
