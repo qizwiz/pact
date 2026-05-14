@@ -1989,6 +1989,32 @@ def test_optional_dereference_early_exit_simple_not_flagged(tmp_path):
     assert not v, "if x is None: return should permanently guard x after the block"
 
 
+def test_optional_dereference_reassignment_clears_optional(tmp_path):
+    # `data = data.get("key")` then `data = non_optional_call()` — the second
+    # assignment should clear `data` from optional_vars so subsequent uses
+    # of `data` are not falsely flagged.
+    _write_src(
+        tmp_path,
+        "hybrid_crawler.py",
+        """
+        async def fetch_one(client, aweme_id, kind):
+            if kind == "tiktok":
+                data = response.get("aweme_detail")
+                aweme_type = data.get("aweme_type")  # here data is optional
+            else:
+                data = await client.fetch_one_video(aweme_id)  # non-optional reassignment
+                aweme_type = data.get("aweme_type")  # should NOT be flagged
+            return aweme_type
+        """,
+    )
+    violations = check_codebase(tmp_path)
+    v = [v for v in violations if v.context == "optional_dereference" and v.lineno > 6]
+    assert not v, (
+        "Reassignment from non-optional source should clear the variable from optional_vars "
+        "(regression of Evil0ctal/Douyin_TikTok_Download_API FP)"
+    )
+
+
 def test_optional_dereference_membership_guard_not_flagged(tmp_path):
     # `if key in container: val = container.get(key)` — the membership check
     # guarantees .get() won't return None; should not be flagged.

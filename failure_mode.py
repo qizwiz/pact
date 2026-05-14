@@ -279,6 +279,17 @@ def _scan_file_optional_deref(path: str) -> list[FailureEvidence]:
             # the variable inside its own assignment expression (e.g.
             # `x = d.get(x.split(".")[-1], x)`) are not mis-flagged.
             self.generic_visit(node)
+            # A reassignment to ANY source clears the optional tracking for
+            # this variable. If the new source turns out to be optional, the
+            # checks below will re-add it. This prevents stale optional_vars
+            # entries after patterns like `data = await fetch_one_video(...)`.
+            if (
+                len(node.targets) == 1
+                and isinstance(node.targets[0], _ast.Name)
+                and node.targets[0].id in self.optional_vars
+            ):
+                del self.optional_vars[node.targets[0].id]
+                self.guarded.discard(node.targets[0].id)
             if (
                 len(node.targets) == 1
                 and isinstance(node.targets[0], _ast.Name)
