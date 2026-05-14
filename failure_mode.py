@@ -673,7 +673,15 @@ BARE_EXCEPT = FailureMode(
 # Django model .save() without update_fields re-writes every column,
 # clobbering concurrent partial updates.
 
-_SAFE_SAVE_RECEIVER_KINDS = frozenset({"form", "serializer", "fs", "storage", "file"})
+_SAFE_SAVE_RECEIVER_KINDS = frozenset({
+    "form",         # Django ModelForm.save() — intentional full save
+    "serializer",   # DRF serializer.save()
+    "fs",           # FileSystemStorage
+    "storage",      # Django storage backend
+    "file",         # file-like object
+    "input",        # allauth pattern: self.input is always a form
+    "store",        # Django session/cache store (SessionBase subclass) — not an ORM model
+})
 
 
 @functools.lru_cache(maxsize=None)
@@ -789,6 +797,10 @@ def _check_save_without_update_fields(
         return []
     # Positional args mean this is PIL/file/custom .save(path, format, ...) not Django.
     if call.positional_count >= 1 or call.has_var_args:
+        return []
+    # Django session backend: request.session is never an ORM model.
+    # SessionBase.save() does not accept update_fields.
+    if call.callee_name == "request.session.save":
         return []
     # Split on `_` and check the last component: `user_form` → `form`, `serializer` → `serializer`.
     # This correctly skips form/serializer/storage saves (intentional full saves)

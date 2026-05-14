@@ -2761,3 +2761,55 @@ def test_optional_deref_suppressed_in_test_files(tmp_path):
         "optional_dereference must not fire in test files — "
         f"got: {[(v.file, v.line, v.call) for v in od]}"
     )
+
+
+def test_request_session_save_not_flagged(tmp_path):
+    """request.session.save() must not produce save_without_update_fields FP.
+
+    Corpus evidence: allauth/django-celery-results/django-cms (7 entries) —
+    request.session.save() is Django's session backend save (SessionBase).
+    It does not accept update_fields; flagging it is always a FP.
+    """
+    _write_src(
+        tmp_path,
+        "views.py",
+        """\
+        import django.shortcuts
+
+        def my_view(request):
+            request.session['key'] = 'value'
+            request.session.save()
+        """,
+    )
+    violations = check_codebase(tmp_path)
+    sw = [v for v in violations if v.context == "save_without_update_fields"]
+    assert len(sw) == 0, (
+        "request.session.save() must not be flagged — it's a session backend save, "
+        f"not an ORM model save. got: {[(v.line, v.call) for v in sw]}"
+    )
+
+
+def test_form_input_save_not_flagged(tmp_path):
+    """self.input.save() where input is a form must not be flagged.
+
+    Corpus evidence: pennersr/django-allauth headless views (6 entries) —
+    self.input is always a Django ModelForm; form.save() is an intentional
+    full-model save pattern that does not need update_fields.
+    """
+    _write_src(
+        tmp_path,
+        "views.py",
+        """\
+        import django.shortcuts
+
+        class MyView:
+            def post(self, request):
+                self.input.save()
+        """,
+    )
+    violations = check_codebase(tmp_path)
+    sw = [v for v in violations if v.context == "save_without_update_fields"]
+    assert len(sw) == 0, (
+        "self.input.save() must not be flagged — 'input' is a form alias, "
+        f"not an ORM model. got: {[(v.line, v.call) for v in sw]}"
+    )
