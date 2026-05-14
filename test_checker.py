@@ -667,6 +667,22 @@ def test_save_in_subdir_test_file_not_flagged(tmp_path):
     assert not v, f"save() in t/unit/test_*.py must not be flagged: {v}"
 
 
+def test_optional_deref_skipped_in_unittest_dir(tmp_path):
+    """Files under /unittest/ directories must be treated as test files and skipped."""
+    unit_dir = tmp_path / "etc" / "unittest"
+    unit_dir.mkdir(parents=True)
+    (unit_dir / "config_provider.py").write_text(
+        "class TestRouterConfig:\n"
+        "    def test_get_route(self):\n"
+        "        route = RouterConfig.get('test-model')\n"
+        "        self.assertIsNotNone(route)\n"
+        "        self.assertEqual(route.name, 'test-model')\n"
+    )
+    violations = check_codebase(tmp_path)
+    v = [v for v in violations if v.context == "optional_dereference"]
+    assert not v, f"optional_dereference must be skipped in /unittest/ dirs: {v}"
+
+
 def test_objects_get_not_flagged_as_optional(tmp_path):
     # Corpus: EvalAI — token = JwtToken.objects.get(user=user); token.refresh_token
     # Model.objects.get() raises DoesNotExist, never returns None.

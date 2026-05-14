@@ -894,6 +894,7 @@ def _is_test_file(path: str) -> bool:
         or "/test/" in path
         or "/tests/" in path
         or "/testing/" in path
+        or "/unittest/" in path
     )
 
 
