@@ -2006,6 +2006,28 @@ def test_gather_star_comprehension_not_flagged(tmp_path):
     assert len(ma) == 0, f"Expected 0 missing_await for starred comprehension, got {len(ma)}: {[(v.line, v.call) for v in ma]}"
 
 
+def test_list_literal_gather_pattern_not_flagged(tmp_path):
+    """tasks = [coro1(), coro2(), coro3()]; await gather(*tasks) — list literal collected for gather."""
+    _write_src(
+        tmp_path,
+        "parallel.py",
+        """
+        import asyncio
+
+        async def microphone(): pass
+        async def emitter(ws): pass
+        async def receiver(ws): pass
+
+        async def main(ws):
+            tasks = [microphone(), emitter(ws), receiver(ws)]
+            await asyncio.gather(*tasks)
+        """,
+    )
+    violations = check_codebase(tmp_path)
+    ma = [v for v in violations if v.context == "missing_await"]
+    assert len(ma) == 0, f"List literal for gather must not be flagged: {[(v.line, v.call) for v in ma]}"
+
+
 def test_optional_dereference_zero_arg_get_not_flagged(tmp_path):
     """obj.get() with no args is a custom method (e.g. Twisted DeferredQueue), not dict.get().
     dict.get() always requires at least one positional key argument."""

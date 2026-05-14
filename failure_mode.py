@@ -980,7 +980,7 @@ def _scan_file_missing_await(path: str) -> list[FailureEvidence]:
             if receiver is not None and (receiver, fname) in _CORO_CONSUMERS_QUALIFIED:
                 return True
         # Collected into a list/tuple that will be passed to gather et al:
-        # tasks.append(coro()) or tasks = [coro(), ...]
+        # tasks = [coro1(), coro2()] or gather([coro1(), coro2()])
         if isinstance(parent, (_ast.List, _ast.Tuple, _ast.Set)):
             gp = parent_map.get(id(parent))
             if isinstance(gp, _ast.Call):
@@ -992,6 +992,10 @@ def _scan_file_missing_await(path: str) -> list[FailureEvidence]:
                 )
                 if fname in _CORO_CONSUMERS:
                     return True
+            # tasks = [coro1(), coro2(), coro3()] — list literal assigned to a
+            # variable for later gather(*tasks). Same intent as list comprehension.
+            if isinstance(gp, (_ast.Assign, _ast.AnnAssign, _ast.AugAssign)):
+                return True
         # .append(coro()) — common pattern before asyncio.gather(*tasks)
         if isinstance(parent, _ast.Call):
             if isinstance(parent.func, _ast.Attribute) and parent.func.attr == "append":
