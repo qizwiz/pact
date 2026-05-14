@@ -765,6 +765,45 @@ def test_tornado_test_client_get_string_concat_not_flagged(tmp_path):
     assert not v, "self.get('/path?' + params) Tornado test client must not be flagged as optional"
 
 
+def test_tornado_url_prefix_concat_not_flagged(tmp_path):
+    """mher/flower: self.get(self.url_prefix + '/workers') — rightmost is '/' URL segment.
+
+    27 FPs from flower where leftmost of the BinOp is self.url_prefix (Attribute),
+    not a string literal. The rightmost component '/workers' unambiguously identifies
+    this as a URL path join, not a dict.get() style optional lookup.
+    """
+    _write_src(
+        tmp_path,
+        "test_url_handlers.py",
+        """
+        import unittest
+
+        class WorkerTest(unittest.TestCase):
+            url_prefix = ''
+
+            def test_workers_page(self):
+                r = self.get(self.url_prefix + '/workers')
+                self.assertEqual(200, r.code)
+
+            def test_root_url(self):
+                r = self.get(self.url_prefix + '/')
+                self.assertEqual(200, r.code)
+
+            def test_tasks_api(self):
+                r = self.get(self.url_prefix + '/api/tasks')
+                self.assertEqual(200, r.code)
+                import json
+                data = json.loads(r.body.decode('utf-8'))
+        """,
+    )
+    violations = check_codebase(tmp_path)
+    v = [v for v in violations if v.context == "optional_dereference"]
+    assert not v, (
+        "self.get(prefix + '/path') Tornado pattern must not be flagged, "
+        f"got: {[(x.line, x.call) for x in v]}"
+    )
+
+
 def test_ternary_guard_not_flagged(tmp_path):
     # Corpus: paperless-ngx/suitenumerique — request.user if request else None
     # When `request` is tested as the ternary condition, access in the body is safe.

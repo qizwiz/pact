@@ -341,6 +341,18 @@ def _scan_file_optional_deref(path: str) -> list[FailureEvidence]:
                             )
                         ):
                             return
+                        # self.url_prefix + '/workers' — rightmost component is a
+                        # URL path segment even when leftmost is a variable (e.g.
+                        # Tornado AsyncHTTPTestCase.get(self.url_prefix + '/path')).
+                        right = call_args[0].right
+                        while isinstance(right, _ast.BinOp):
+                            right = right.right
+                        if (
+                            isinstance(right, _ast.Constant)
+                            and isinstance(right.value, str)
+                            and right.value.startswith("/")
+                        ):
+                            return
                     # Known HTTP client receiver names: requests.get(), session.get(),
                     # self.client.get() (Django test client), async_client.get(), etc.
                     _HTTP_CLIENTS = frozenset(
