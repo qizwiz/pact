@@ -1903,6 +1903,48 @@ def _scan_file_unvalidated_lookup_chain(path: str) -> list[FailureEvidence]:
                             for elt in comparator.elts
                         ):
                             self._guarded.setdefault(var, set()).add("__any__")
+
+            # var < len(collection) — list index bounds check
+            #   if var < len(lst): lst[var] is safe
+            if (
+                len(node.ops) == 1
+                and isinstance(node.ops[0], (pyast.Lt, pyast.LtE))
+                and isinstance(node.left, pyast.Name)
+                and node.left.id in self._get_vars
+                and len(node.comparators) == 1
+            ):
+                rhs = node.comparators[0]
+                if (
+                    isinstance(rhs, pyast.Call)
+                    and isinstance(rhs.func, pyast.Name)
+                    and rhs.func.id == "len"
+                    and len(rhs.args) == 1
+                    and isinstance(rhs.args[0], pyast.Name)
+                ):
+                    self._guarded.setdefault(node.left.id, set()).add(rhs.args[0].id)
+
+            # 0 <= var < len(collection) — chained bounds check
+            #   if 0 <= var < len(lst): lst[var] is safe
+            if (
+                len(node.ops) == 2
+                and isinstance(node.ops[0], (pyast.Lt, pyast.LtE))
+                and isinstance(node.ops[1], (pyast.Lt, pyast.LtE))
+                and len(node.comparators) == 2
+                and isinstance(node.comparators[0], pyast.Name)
+                and node.comparators[0].id in self._get_vars
+            ):
+                rhs = node.comparators[1]
+                if (
+                    isinstance(rhs, pyast.Call)
+                    and isinstance(rhs.func, pyast.Name)
+                    and rhs.func.id == "len"
+                    and len(rhs.args) == 1
+                    and isinstance(rhs.args[0], pyast.Name)
+                ):
+                    self._guarded.setdefault(node.comparators[0].id, set()).add(
+                        rhs.args[0].id
+                    )
+
             self.generic_visit(node)
 
         def visit_Call(self, node: pyast.Call) -> None:

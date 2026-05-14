@@ -3184,6 +3184,54 @@ def test_lookup_chain_isinstance_guard_not_flagged(tmp_path):
     )
 
 
+def test_lookup_chain_list_bounds_check_not_flagged(tmp_path):
+    """var < len(lst) guard must suppress lookup-chain flag on lst[var]."""
+    from .failure_mode import UNVALIDATED_LOOKUP_CHAIN
+
+    _write_src(
+        tmp_path,
+        "app.py",
+        """\
+        CHOICES = ["a", "b", "c"]
+
+        def pick(state):
+            selected = state.get("selected", 0)
+            if selected < len(CHOICES):
+                return CHOICES[selected]
+            return ""
+        """,
+    )
+    results = check_codebase(tmp_path, modes=[UNVALIDATED_LOOKUP_CHAIN])
+    assert len(results) == 0, (
+        "var < len(lst) bounds check must suppress unvalidated_lookup_chain. "
+        f"got: {[(r.line, r.call) for r in results]}"
+    )
+
+
+def test_lookup_chain_chained_bounds_check_not_flagged(tmp_path):
+    """0 <= var < len(lst) chained guard must suppress lookup-chain flag on lst[var]."""
+    from .failure_mode import UNVALIDATED_LOOKUP_CHAIN
+
+    _write_src(
+        tmp_path,
+        "app.py",
+        """\
+        CHOICES = ["a", "b", "c"]
+
+        def pick(state):
+            selected = state.get("selected", 0)
+            if 0 <= selected < len(CHOICES):
+                return CHOICES[selected]
+            return ""
+        """,
+    )
+    results = check_codebase(tmp_path, modes=[UNVALIDATED_LOOKUP_CHAIN])
+    assert len(results) == 0, (
+        "0 <= var < len(lst) bounds check must suppress unvalidated_lookup_chain. "
+        f"got: {[(r.line, r.call) for r in results]}"
+    )
+
+
 def test_asyncio_run_direct_import_not_flagged(tmp_path):
     """from asyncio import run; run(coro()) must not be flagged — run IS asyncio.run."""
     from .failure_mode import MISSING_AWAIT
