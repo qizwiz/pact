@@ -20,9 +20,21 @@ from dataclasses import dataclass
 
 try:
     from z3 import (
-        And, Bool, BoolSort, Const, DeclareSort, Function,
-        Implies, Int, Not, Or, Solver, sat, unsat,
+        And,
+        Bool,
+        BoolSort,
+        Const,
+        DeclareSort,
+        Function,
+        Implies,
+        Int,
+        Not,
+        Or,
+        Solver,
+        sat,
+        unsat,
     )
+
     _HAS_Z3 = True
 except ImportError:
     _HAS_Z3 = False
@@ -31,9 +43,9 @@ except ImportError:
 @dataclass
 class ProofCertificate:
     mode: str
-    bug_sat: bool           # True = bug scenario is satisfiable (real bug)
-    fix_unsat: bool         # True = fix makes bug impossible (fix is correct)
-    witness: dict           # concrete values showing the bug
+    bug_sat: bool  # True = bug scenario is satisfiable (real bug)
+    fix_unsat: bool  # True = fix makes bug impossible (fix is correct)
+    witness: dict  # concrete values showing the bug
     axioms: list[str]
     conclusion: str
 
@@ -75,8 +87,8 @@ def prove_save_without_update_fields() -> ProofCertificate:
     s = Solver()
 
     # Database state: two independent fields
-    db_a = Int("db_field_a")   # field Writer A will modify
-    db_b = Int("db_field_b")   # field Writer B will modify
+    db_a = Int("db_field_a")  # field Writer A will modify
+    db_b = Int("db_field_b")  # field Writer B will modify
 
     # Both writers read the same initial snapshot (before either writes)
     snap_A_a = Int("snap_A_field_a")
@@ -84,14 +96,14 @@ def prove_save_without_update_fields() -> ProofCertificate:
     snap_B_a = Int("snap_B_field_a")
     snap_B_b = Int("snap_B_field_b")
 
-    s.add(snap_A_a == db_a, snap_A_b == db_b)   # A reads DB
-    s.add(snap_B_a == db_a, snap_B_b == db_b)   # B reads same DB
+    s.add(snap_A_a == db_a, snap_A_b == db_b)  # A reads DB
+    s.add(snap_B_a == db_a, snap_B_b == db_b)  # B reads same DB
 
     # Each writer makes a distinct change
     new_A_a = Int("new_A_field_a")
     new_B_b = Int("new_B_field_b")
-    s.add(new_A_a != snap_A_a)   # A actually changed field_a
-    s.add(new_B_b != snap_B_b)   # B actually changed field_b
+    s.add(new_A_a != snap_A_a)  # A actually changed field_a
+    s.add(new_B_b != snap_B_b)  # B actually changed field_b
 
     # Without update_fields: full save writes ALL fields from snapshot
     # Interleaving: A reads → B reads → A saves → B saves (last-writer-wins)
@@ -99,8 +111,8 @@ def prove_save_without_update_fields() -> ProofCertificate:
     # After B saves (full, from its snapshot): db_a = snap_B_a, db_b = new_B_b
     final_a = Int("final_field_a")
     final_b = Int("final_field_b")
-    s.add(final_a == snap_B_a)   # B's full save restores old field_a
-    s.add(final_b == new_B_b)    # B's change to field_b lands
+    s.add(final_a == snap_B_a)  # B's full save restores old field_a
+    s.add(final_b == new_B_b)  # B's change to field_b lands
 
     # Assert the race: A's intended change is gone from final state
     s.add(final_a != new_A_a)
@@ -137,8 +149,8 @@ def prove_save_without_update_fields() -> ProofCertificate:
     s2.add(new2_A_a != snap2_A_a)
     s2.add(new2_B_b != snap2_B_b)
     # With update_fields: each writer only touches its own field
-    final2_a = new2_A_a   # A's scoped save lands cleanly
-    final2_b = new2_B_b   # B's scoped save lands cleanly
+    final2_a = new2_A_a  # A's scoped save lands cleanly
+    final2_b = new2_B_b  # B's scoped save lands cleanly
     # Try to find a scenario where either change is lost — should be UNSAT
     s2.add(Or(final2_a != new2_A_a, final2_b != new2_B_b))
     fix_result = s2.check()
@@ -180,9 +192,18 @@ def prove_missing_await() -> ProofCertificate:
 
     s = Solver()
     # Axiom (Python spec §5.4): async + awaited → caller gets Expected type
-    s.add(Implies(And(is_async, is_awaited), actual_type(is_async, is_awaited) == Expected))
+    s.add(
+        Implies(
+            And(is_async, is_awaited), actual_type(is_async, is_awaited) == Expected
+        )
+    )
     # Axiom (Python spec §5.4): async + NOT awaited → caller gets Coroutine object
-    s.add(Implies(And(is_async, Not(is_awaited)), actual_type(is_async, is_awaited) == Coroutine))
+    s.add(
+        Implies(
+            And(is_async, Not(is_awaited)),
+            actual_type(is_async, is_awaited) == Coroutine,
+        )
+    )
     # Distinct: Coroutine ≠ Expected (they are different types)
     s.add(Coroutine != Expected)
     # Observation: async function called without await
@@ -208,11 +229,21 @@ def prove_missing_await() -> ProofCertificate:
     is_async2 = Bool("is_async2")
     is_awaited2 = Bool("is_awaited2")
     actual_type2 = Function("actual_type2", BoolSort(), BoolSort(), Type)
-    s2.add(Implies(And(is_async2, is_awaited2), actual_type2(is_async2, is_awaited2) == Expected))
-    s2.add(Implies(And(is_async2, Not(is_awaited2)), actual_type2(is_async2, is_awaited2) == Coroutine))
+    s2.add(
+        Implies(
+            And(is_async2, is_awaited2),
+            actual_type2(is_async2, is_awaited2) == Expected,
+        )
+    )
+    s2.add(
+        Implies(
+            And(is_async2, Not(is_awaited2)),
+            actual_type2(is_async2, is_awaited2) == Coroutine,
+        )
+    )
     s2.add(Coroutine != Expected)
     s2.add(is_async2)
-    s2.add(is_awaited2)   # fix: await present
+    s2.add(is_awaited2)  # fix: await present
     s2.add(actual_type2(is_async2, is_awaited2) != Expected)
     fix_result = s2.check()  # UNSAT — with await, type is always Expected
 
@@ -249,7 +280,7 @@ def prove_optional_dereference() -> ProofCertificate:
     # Axiom: if None, attribute access raises (does not succeed)
     s.add(Implies(is_none, Not(access_succeeds)))
     # Observation: no guard — variable may be None
-    s.add(Or(is_none, Not(is_none)))   # unconstrained
+    s.add(Or(is_none, Not(is_none)))  # unconstrained
     # Find a model where is_none=True (access fails)
     s.add(is_none)
     bug_result = s.check()
@@ -266,11 +297,11 @@ def prove_optional_dereference() -> ProofCertificate:
     s2 = Solver()
     is_none2 = Bool("is_none2")
     access_succeeds2 = Bool("access_succeeds2")
-    s2.add(Implies(is_none2, Not(access_succeeds2)))         # None → fails
-    s2.add(Implies(Not(is_none2), access_succeeds2))         # not-None → succeeds
-    s2.add(Not(is_none2))                                    # guard: confirmed not-None
-    s2.add(Not(access_succeeds2))                            # try to find a failure
-    fix_result = s2.check()   # UNSAT — with guard, access cannot fail
+    s2.add(Implies(is_none2, Not(access_succeeds2)))  # None → fails
+    s2.add(Implies(Not(is_none2), access_succeeds2))  # not-None → succeeds
+    s2.add(Not(is_none2))  # guard: confirmed not-None
+    s2.add(Not(access_succeeds2))  # try to find a failure
+    fix_result = s2.check()  # UNSAT — with guard, access cannot fail
 
     return ProofCertificate(
         mode="optional_dereference",
@@ -307,16 +338,16 @@ def prove_llm_response_unguarded() -> ProofCertificate:
     choices_len = Int("choices_len")
 
     # ── Trigger conditions that produce empty choices ─────────────────────
-    content_filtered = Bool("content_filtered")   # policy violation
-    api_error        = Bool("api_error")          # timeout / 5xx
-    stream_truncated = Bool("stream_truncated")   # SSE stream closed early
+    content_filtered = Bool("content_filtered")  # policy violation
+    api_error = Bool("api_error")  # timeout / 5xx
+    stream_truncated = Bool("stream_truncated")  # SSE stream closed early
 
     s = Solver()
-    s.add(choices_len >= 0)                        # list length ≥ 0
+    s.add(choices_len >= 0)  # list length ≥ 0
 
     # Each trigger drives choices_len to zero
     s.add(Implies(content_filtered, choices_len == 0))
-    s.add(Implies(api_error,        choices_len == 0))
+    s.add(Implies(api_error, choices_len == 0))
     s.add(Implies(stream_truncated, choices_len == 0))
 
     # Any trigger is reachable (they are not mutually impossible)
@@ -324,7 +355,7 @@ def prove_llm_response_unguarded() -> ProofCertificate:
 
     # Unguarded: access index 0 unconditionally
     access_index = Int("access_index")
-    s.add(access_index == 0)                       # always choices[0]
+    s.add(access_index == 0)  # always choices[0]
 
     # IndexError ↔ index ≥ length
     index_error = Bool("index_error")
@@ -338,32 +369,32 @@ def prove_llm_response_unguarded() -> ProofCertificate:
     if bug_result == sat:
         m = s.model()
         trigger = (
-            "content_filtered" if m[content_filtered] else
-            "api_error"        if m[api_error]        else
-            "stream_truncated"
+            "content_filtered"
+            if m[content_filtered]
+            else "api_error" if m[api_error] else "stream_truncated"
         )
         witness = {
-            "trigger":          trigger,
-            "choices_len":      m[choices_len],
-            "access_index":     m[access_index],
-            "index_error":      True,
-            "exception":        "IndexError: list index out of range",
-            "seen in prod?":    "Yes — content filters return empty choices on policy violations",
+            "trigger": trigger,
+            "choices_len": m[choices_len],
+            "access_index": m[access_index],
+            "index_error": True,
+            "exception": "IndexError: list index out of range",
+            "seen in prod?": "Yes — content filters return empty choices on policy violations",
         }
 
     # ── Fix: guard access on choices_len > 0 ─────────────────────────────
     s2 = Solver()
-    choices_len2    = Int("choices_len2")
+    choices_len2 = Int("choices_len2")
     content_filtered2 = Bool("content_filtered2")
-    api_error2        = Bool("api_error2")
+    api_error2 = Bool("api_error2")
     stream_truncated2 = Bool("stream_truncated2")
-    access_index2   = Int("access_index2")
-    index_error2    = Bool("index_error2")
+    access_index2 = Int("access_index2")
+    index_error2 = Bool("index_error2")
     access_attempted2 = Bool("access_attempted2")
 
     s2.add(choices_len2 >= 0)
     s2.add(Implies(content_filtered2, choices_len2 == 0))
-    s2.add(Implies(api_error2,        choices_len2 == 0))
+    s2.add(Implies(api_error2, choices_len2 == 0))
     s2.add(Implies(stream_truncated2, choices_len2 == 0))
     s2.add(Or(content_filtered2, api_error2, stream_truncated2))
     s2.add(access_index2 == 0)
@@ -372,14 +403,12 @@ def prove_llm_response_unguarded() -> ProofCertificate:
     s2.add(access_attempted2 == (choices_len2 > 0))
 
     # IndexError only possible when access attempted AND index out of bounds
-    s2.add(Implies(access_attempted2,
-                   index_error2 == (access_index2 >= choices_len2)))
-    s2.add(Implies(Not(access_attempted2),
-                   Not(index_error2)))        # guard prevented access
+    s2.add(Implies(access_attempted2, index_error2 == (access_index2 >= choices_len2)))
+    s2.add(Implies(Not(access_attempted2), Not(index_error2)))  # guard prevented access
 
     # Try to find any scenario where IndexError still occurs
     s2.add(index_error2)
-    fix_result = s2.check()   # expected: UNSAT
+    fix_result = s2.check()  # expected: UNSAT
 
     return ProofCertificate(
         mode="llm_response_unguarded",
@@ -425,7 +454,9 @@ def prove_bare_except() -> ProofCertificate:
     if not _HAS_Z3:
         return ProofCertificate(
             mode="bare_except",
-            bug_sat=True, fix_unsat=True, witness={},
+            bug_sat=True,
+            fix_unsat=True,
+            witness={},
             axioms=["Z3 not installed — certificate is asserted, not computed."],
             conclusion="Install z3-solver to compute the formal certificate.",
         )
@@ -434,20 +465,24 @@ def prove_bare_except() -> ProofCertificate:
 
     s = Solver()
 
-    is_real_bug     = Bool("is_real_bug")
-    is_critical_exc = Bool("is_critical_exc")   # KeyboardInterrupt / SystemExit
-    caught_by_bare  = Bool("caught_by_bare")
-    body_is_pass    = Bool("body_is_pass")       # body does nothing (pass / log only)
-    propagates      = Bool("propagates")
+    is_real_bug = Bool("is_real_bug")
+    is_critical_exc = Bool("is_critical_exc")  # KeyboardInterrupt / SystemExit
+    caught_by_bare = Bool("caught_by_bare")
+    body_is_pass = Bool("body_is_pass")  # body does nothing (pass / log only)
+    propagates = Bool("propagates")
     caller_notified = Bool("caller_notified")
-    caller_sees     = Bool("caller_sees_failure")
+    caller_sees = Bool("caller_sees_failure")
 
     # Axioms
-    s.add(Or(is_real_bug, is_critical_exc))          # some exception must be raised
-    s.add(caught_by_bare)                             # bare except: catches everything
-    s.add(Implies(caught_by_bare, Not(propagates)))   # caught → doesn't propagate by default
-    s.add(Implies(body_is_pass, Not(caller_notified)))# pass body → caller never notified
-    s.add(body_is_pass)                               # model the common case
+    s.add(Or(is_real_bug, is_critical_exc))  # some exception must be raised
+    s.add(caught_by_bare)  # bare except: catches everything
+    s.add(
+        Implies(caught_by_bare, Not(propagates))
+    )  # caught → doesn't propagate by default
+    s.add(
+        Implies(body_is_pass, Not(caller_notified))
+    )  # pass body → caller never notified
+    s.add(body_is_pass)  # model the common case
     s.add(caller_sees == Or(propagates, caller_notified))
 
     # Bug condition: real exception, caller never sees it
@@ -468,23 +503,25 @@ def prove_bare_except() -> ProofCertificate:
 
     # Fix model: specific exception OR explicit re-raise
     s2 = Solver()
-    is_real_bug2     = Bool("is_real_bug2")
-    caught_specific  = Bool("caught_specific")   # only catches the intended type
-    exception_match  = Bool("exception_match")   # raised exc matches caught type
-    propagates2      = Bool("propagates2")
-    caller_sees2     = Bool("caller_sees_failure2")
+    is_real_bug2 = Bool("is_real_bug2")
+    caught_specific = Bool("caught_specific")  # only catches the intended type
+    exception_match = Bool("exception_match")  # raised exc matches caught type
+    propagates2 = Bool("propagates2")
+    caller_sees2 = Bool("caller_sees_failure2")
 
     s2.add(is_real_bug2)
-    s2.add(Implies(caught_specific, exception_match))          # only catches matching exc
+    s2.add(Implies(caught_specific, exception_match))  # only catches matching exc
     # If exception doesn't match, it propagates (unhandled)
     s2.add(Implies(Not(exception_match), propagates2))
     # If caught specifically and body handles it correctly, caller is notified via return val
     # or the exception propagates (re-raise pattern)
-    s2.add(propagates2 == Not(exception_match))                # non-matching always propagates
+    s2.add(propagates2 == Not(exception_match))  # non-matching always propagates
     s2.add(caller_sees2 == propagates2)
     # Fix bug condition: try to find silent failure with specific catch
     s2.add(Not(caller_sees2))
-    s2.add(Not(exception_match))  # non-matching exception with specific catch → propagates
+    s2.add(
+        Not(exception_match)
+    )  # non-matching exception with specific catch → propagates
 
     fix_result = s2.check()  # UNSAT: non-matching exception always propagates
 
@@ -529,7 +566,9 @@ def prove_mutable_default_arg() -> ProofCertificate:
     if not _HAS_Z3:
         return ProofCertificate(
             mode="mutable_default_arg",
-            bug_sat=True, fix_unsat=True, witness={},
+            bug_sat=True,
+            fix_unsat=True,
+            witness={},
             axioms=["Z3 not installed — certificate is asserted, not computed."],
             conclusion="Install z3-solver to compute the formal certificate.",
         )
@@ -538,13 +577,13 @@ def prove_mutable_default_arg() -> ProofCertificate:
 
     s = Solver()
 
-    call1_mutates      = Bool("call1_mutates")
-    shared_object      = Bool("shared_default_object")  # same object across calls
-    call2_initial_len  = Int("call2_initial_len")
-    state_leaked       = Bool("state_leaked")
+    call1_mutates = Bool("call1_mutates")
+    shared_object = Bool("shared_default_object")  # same object across calls
+    call2_initial_len = Int("call2_initial_len")
+    state_leaked = Bool("state_leaked")
 
-    s.add(shared_object)                                   # default is always shared
-    s.add(call1_mutates)                                   # first caller mutates it
+    s.add(shared_object)  # default is always shared
+    s.add(call1_mutates)  # first caller mutates it
     s.add(call2_initial_len >= 0)
     # Shared + mutated → call2 sees non-zero length
     s.add(Implies(And(shared_object, call1_mutates), call2_initial_len > 0))
@@ -564,18 +603,18 @@ def prove_mutable_default_arg() -> ProofCertificate:
 
     # Fix: None sentinel → fresh object each call
     s2 = Solver()
-    call1_mutates2     = Bool("call1_mutates2")
-    fresh_each_call    = Bool("fresh_each_call")     # fix: new object per call
+    call1_mutates2 = Bool("call1_mutates2")
+    fresh_each_call = Bool("fresh_each_call")  # fix: new object per call
     call2_initial_len2 = Int("call2_initial_len2")
-    state_leaked2      = Bool("state_leaked2")
+    state_leaked2 = Bool("state_leaked2")
 
-    s2.add(fresh_each_call)                                # fix is applied
+    s2.add(fresh_each_call)  # fix is applied
     s2.add(call1_mutates2)
     s2.add(call2_initial_len2 >= 0)
     # Fresh object → call2 always starts with empty collection
     s2.add(Implies(fresh_each_call, call2_initial_len2 == 0))
     s2.add(state_leaked2 == (call2_initial_len2 > 0))
-    s2.add(state_leaked2)                                  # try to find leaked state
+    s2.add(state_leaked2)  # try to find leaked state
 
     fix_result = s2.check()  # UNSAT: fresh object → len always 0 → state_leaked=False
 
@@ -618,7 +657,9 @@ def prove_required_arg_missing() -> ProofCertificate:
     if not _HAS_Z3:
         return ProofCertificate(
             mode="required_arg_missing",
-            bug_sat=True, fix_unsat=True, witness={},
+            bug_sat=True,
+            fix_unsat=True,
+            witness={},
             axioms=["Z3 not installed — certificate is asserted, not computed."],
             conclusion="Install z3-solver to compute the formal certificate.",
         )
@@ -629,10 +670,10 @@ def prove_required_arg_missing() -> ProofCertificate:
 
     required = Int("required_count")
     provided = Int("provided_count")
-    error    = Bool("error_raised")
+    error = Bool("error_raised")
 
-    s.add(required >= 1)        # at least one required arg
-    s.add(provided >= 0)        # caller provides zero or more
+    s.add(required >= 1)  # at least one required arg
+    s.add(provided >= 0)  # caller provides zero or more
     s.add(provided < required)  # underprovision
     s.add(error == (provided < required))
     s.add(error)
@@ -651,13 +692,13 @@ def prove_required_arg_missing() -> ProofCertificate:
     s2 = Solver()
     required2 = Int("required_count2")
     provided2 = Int("provided_count2")
-    error2    = Bool("error_raised2")
+    error2 = Bool("error_raised2")
 
     s2.add(required2 >= 1)
     s2.add(provided2 >= 0)
-    s2.add(provided2 >= required2)   # fix: caller provides enough
+    s2.add(provided2 >= required2)  # fix: caller provides enough
     s2.add(error2 == (provided2 < required2))
-    s2.add(error2)                   # try to find a TypeError
+    s2.add(error2)  # try to find a TypeError
 
     fix_result = s2.check()  # UNSAT: provided >= required → error impossible
 
@@ -698,7 +739,9 @@ def prove_format_arg_mismatch() -> ProofCertificate:
     if not _HAS_Z3:
         return ProofCertificate(
             mode="format_arg_mismatch",
-            bug_sat=True, fix_unsat=True, witness={},
+            bug_sat=True,
+            fix_unsat=True,
+            witness={},
             axioms=["Z3 not installed — certificate is asserted, not computed."],
             conclusion="Install z3-solver to compute the formal certificate.",
         )
@@ -707,13 +750,13 @@ def prove_format_arg_mismatch() -> ProofCertificate:
 
     s = Solver()
 
-    slots    = Int("format_slots")
+    slots = Int("format_slots")
     supplied = Int("supplied_args")
-    error    = Bool("error_raised")
+    error = Bool("error_raised")
 
-    s.add(slots >= 1)           # at least one format specifier
+    s.add(slots >= 1)  # at least one format specifier
     s.add(supplied >= 0)
-    s.add(supplied != slots)    # mismatch
+    s.add(supplied != slots)  # mismatch
     s.add(error == (supplied != slots))
     s.add(error)
 
@@ -729,15 +772,15 @@ def prove_format_arg_mismatch() -> ProofCertificate:
 
     # Fix: supply exactly the right number of arguments
     s2 = Solver()
-    slots2    = Int("format_slots2")
+    slots2 = Int("format_slots2")
     supplied2 = Int("supplied_args2")
-    error2    = Bool("error_raised2")
+    error2 = Bool("error_raised2")
 
     s2.add(slots2 >= 1)
     s2.add(supplied2 >= 0)
-    s2.add(supplied2 == slots2)   # fix: counts match
+    s2.add(supplied2 == slots2)  # fix: counts match
     s2.add(error2 == (supplied2 != slots2))
-    s2.add(error2)                # try to find a TypeError
+    s2.add(error2)  # try to find a TypeError
 
     fix_result = s2.check()  # UNSAT: equal counts → error impossible
 
@@ -781,7 +824,9 @@ def prove_unvalidated_lookup_chain() -> ProofCertificate:
     if not _HAS_Z3:
         return ProofCertificate(
             mode="unvalidated_lookup_chain",
-            bug_sat=True, fix_unsat=True, witness={},
+            bug_sat=True,
+            fix_unsat=True,
+            witness={},
             axioms=["Z3 not installed — certificate is asserted, not computed."],
             conclusion="Install z3-solver to compute the formal certificate.",
         )
@@ -797,16 +842,19 @@ def prove_unvalidated_lookup_chain() -> ProofCertificate:
     # key i is only reachable if all prior keys are present
     k1_reachable = Bool("key1_reachable")
     k2_reachable = Bool("key2_reachable")
-    error        = Bool("error_raised")
+    error = Bool("error_raised")
 
     s.add(k1_reachable == k0_present)
     s.add(k2_reachable == And(k0_present, k1_present))
     # Error if any reachable key is absent
-    s.add(error == Or(
-        Not(k0_present),
-        And(k1_reachable, Not(k1_present)),
-        And(k2_reachable, Not(k2_present)),
-    ))
+    s.add(
+        error
+        == Or(
+            Not(k0_present),
+            And(k1_reachable, Not(k1_present)),
+            And(k2_reachable, Not(k2_present)),
+        )
+    )
     # Bug: find an assignment where error is raised
     s.add(error)
 
@@ -824,13 +872,13 @@ def prove_unvalidated_lookup_chain() -> ProofCertificate:
     # Fix: .get() with default at each level — missing key returns {} not KeyError
     s2 = Solver()
     uses_get = Bool("uses_get_with_default")
-    error2   = Bool("error_raised2")
+    error2 = Bool("error_raised2")
 
     s2.add(uses_get)
     # .get("key", {}) returns {} for missing keys → subsequent .get() on {} also safe
     # Error is impossible when every access uses .get()
     s2.add(Implies(uses_get, Not(error2)))
-    s2.add(error2)   # try to find a KeyError with the fix applied
+    s2.add(error2)  # try to find a KeyError with the fix applied
 
     fix_result = s2.check()  # UNSAT: uses_get → Not(error2) contradicts error2=True
 
@@ -872,11 +920,12 @@ _PROVERS = {
 @dataclass
 class InstanceCertificate:
     """Proof certificate for a specific code instance."""
+
     file: str
     line: int
     mode: str
-    code: str           # the actual lines from the source file
-    modified_field: str # the field being modified
+    code: str  # the actual lines from the source file
+    modified_field: str  # the field being modified
     class_cert: "ProofCertificate"
 
     def render(self) -> str:
@@ -918,12 +967,18 @@ class InstanceCertificate:
             f"  @save_scoped({self.modified_field!r})   # raises PactViolation if violated",
             "",
         ]
-        verdict = "PROVEN" if (self.class_cert.bug_sat and self.class_cert.fix_unsat) else "INCOMPLETE"
+        verdict = (
+            "PROVEN"
+            if (self.class_cert.bug_sat and self.class_cert.fix_unsat)
+            else "INCOMPLETE"
+        )
         lines.append(f"VERDICT: {verdict} — instance inherits class proof")
         return "\n".join(lines)
 
 
-def prove_instance(file: str, line: int, code: str, modified_field: str) -> InstanceCertificate:
+def prove_instance(
+    file: str, line: int, code: str, modified_field: str
+) -> InstanceCertificate:
     """Produce an instance proof for a specific save_without_update_fields violation."""
     class_cert = prove_save_without_update_fields()
     return InstanceCertificate(
@@ -938,11 +993,16 @@ def prove_instance(file: str, line: int, code: str, modified_field: str) -> Inst
 
 def main() -> None:
     if not _HAS_Z3:
-        print("ERROR: z3-solver not installed. Run: pip install z3-solver", file=sys.stderr)
+        print(
+            "ERROR: z3-solver not installed. Run: pip install z3-solver",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
     parser = argparse.ArgumentParser(description="pact formal proof certificates")
-    parser.add_argument("--mode", choices=list(_PROVERS), help="Violation mode to prove")
+    parser.add_argument(
+        "--mode", choices=list(_PROVERS), help="Violation mode to prove"
+    )
     parser.add_argument("--file", help="Source file path (for instance proof)")
     parser.add_argument("--line", type=int, help="Line number (for instance proof)")
     parser.add_argument("--code", help="Code snippet (for instance proof)")

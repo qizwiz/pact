@@ -346,8 +346,16 @@ def _live_roots(G) -> set[str]:
         # no graph-visible caller because the framework invokes them by name.
         name = node.split(".")[-1]
         if name in {
-            "main", "__main__", "__init__", "run", "start", "setup",
-            "execute", "handle", "dispatch", "process",
+            "main",
+            "__main__",
+            "__init__",
+            "run",
+            "start",
+            "setup",
+            "execute",
+            "handle",
+            "dispatch",
+            "process",
         }:
             roots.add(node)
         # Public API convention: no leading underscore, top-level module name
@@ -406,9 +414,15 @@ class ReductionResult:
         )
         if self.dead_nodes:
             sample = sorted(self.dead_nodes)[:5]
-            suffix = f" … (+{len(self.dead_nodes)-5} more)" if len(self.dead_nodes) > 5 else ""
+            suffix = (
+                f" … (+{len(self.dead_nodes)-5} more)"
+                if len(self.dead_nodes) > 5
+                else ""
+            )
             lines.append(f"    dead functions:     {', '.join(sample)}{suffix}")
-        tangled = {rep: members for rep, members in self.scc_map.items() if len(members) > 1}
+        tangled = {
+            rep: members for rep, members in self.scc_map.items() if len(members) > 1
+        }
         if tangled:
             for rep, members in sorted(tangled.items(), key=lambda x: -len(x[1]))[:3]:
                 cycle = " → ".join(sorted(members)[:4])
@@ -493,11 +507,17 @@ def apply_full_reduction(
     G, _ = _build_digraph(functions, call_sites)
     if G is None:
         return ReductionResult(
-            original_nodes=0, original_edges=0,
-            after_scc_nodes=0, after_scc_edges=0,
-            after_dead_nodes=0, after_dead_edges=0,
-            final_nodes=0, final_edges=0,
-            scc_map={}, dead_nodes=frozenset(), graph=None,
+            original_nodes=0,
+            original_edges=0,
+            after_scc_nodes=0,
+            after_scc_edges=0,
+            after_dead_nodes=0,
+            after_dead_edges=0,
+            final_nodes=0,
+            final_edges=0,
+            scc_map={},
+            dead_nodes=frozenset(),
+            graph=None,
         )
 
     orig_n, orig_e = G.number_of_nodes(), G.number_of_edges()

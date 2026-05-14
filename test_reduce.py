@@ -312,10 +312,15 @@ class TestContractSccs:
     def test_result_is_dag(self):
         """Condensation of any graph is always a DAG."""
         import networkx as nx
+
         funcs = [_func(n) for n in "ABCDE"]
         calls = [
-            _call("A", "B"), _call("B", "C"), _call("C", "A"),  # cycle ABC
-            _call("C", "D"), _call("D", "E"), _call("E", "D"),  # cycle DE
+            _call("A", "B"),
+            _call("B", "C"),
+            _call("C", "A"),  # cycle ABC
+            _call("C", "D"),
+            _call("D", "E"),
+            _call("E", "D"),  # cycle DE
         ]
         G, _ = _build_digraph(funcs, calls)
         condensation, _ = contract_sccs(G)
@@ -364,6 +369,7 @@ class TestTransitiveReduce:
     def test_shortcut_edge_removed(self):
         """A→C is redundant when A→B→C exists; it should be removed."""
         import networkx as nx
+
         G = nx.DiGraph()
         G.add_edges_from([("A", "B"), ("B", "C"), ("A", "C")])
         reduced = transitive_reduce(G)
@@ -374,6 +380,7 @@ class TestTransitiveReduce:
     def test_unique_path_kept(self):
         """Non-redundant edges are preserved."""
         import networkx as nx
+
         G = nx.DiGraph()
         G.add_edges_from([("A", "B"), ("A", "C")])
         reduced = transitive_reduce(G)
@@ -392,12 +399,17 @@ class TestApplyFullReduction:
         funcs = [_func(n) for n in ["main", "A", "B", "C", "orphan"]]
         calls = [
             _call("main", "A"),
-            _call("A", "B"), _call("B", "A"),   # A↔B cycle
-            _call("A", "C"), _call("main", "C"), # main→C is a shortcut (main→A→C exists)
+            _call("A", "B"),
+            _call("B", "A"),  # A↔B cycle
+            _call("A", "C"),
+            _call("main", "C"),  # main→C is a shortcut (main→A→C exists)
             # orphan: no callers, not a root
         ]
         result = apply_full_reduction(funcs, calls, [])
-        assert result.original_nodes > result.final_nodes or result.original_edges > result.final_edges
+        assert (
+            result.original_nodes > result.final_nodes
+            or result.original_edges > result.final_edges
+        )
         assert result.graph is not None
         # Summary should not raise
         s = result.summary()
@@ -413,6 +425,7 @@ class TestApplyFullReduction:
     def test_result_graph_is_dag(self):
         """After full reduction the result graph must be a DAG."""
         import networkx as nx
+
         funcs = [_func(n) for n in ["X", "Y", "Z"]]
         calls = [_call("X", "Y"), _call("Y", "Z"), _call("Z", "X")]  # full cycle
         result = apply_full_reduction(funcs, calls, [])

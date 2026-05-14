@@ -48,7 +48,9 @@ def _make_guarded_save(allowed_fields: Optional[frozenset[str]], original_save):
     @functools.wraps(original_save)
     def guarded_save(instance, *args, **kwargs):
         update_fields = kwargs.get("update_fields") or (
-            args[0] if args and isinstance(args[0], (list, tuple, frozenset, set)) else None
+            args[0]
+            if args and isinstance(args[0], (list, tuple, frozenset, set))
+            else None
         )
 
         if update_fields is None:
@@ -106,10 +108,13 @@ def save_scoped(*fields: str):
     @save_scoped("api_key")           — only "api_key" may be saved
     @save_scoped()                    — any save must declare update_fields
     """
+
     def decorator(func):
         @functools.wraps(func)
         def wrapper(*args, **kwargs):
             with save_scoped_ctx(*fields):
                 return func(*args, **kwargs)
+
         return wrapper
+
     return decorator

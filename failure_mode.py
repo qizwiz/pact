@@ -168,6 +168,7 @@ def _chain_has_objects(node) -> bool:
     that may return None (Django ORM) from ones that can't (pandas, etc.).
     """
     import ast as _ast_inner
+
     while True:
         if isinstance(node, _ast_inner.Attribute):
             if node.attr == "objects":
@@ -238,7 +239,12 @@ def _scan_file_optional_deref(path: str) -> list[FailureEvidence]:
                 and node.value.func.attr in _OPTIONAL_RETURNING
             ):
                 call_args = node.value.args
-                if node.value.func.attr in ("first", "last", "get_or_none", "one_or_none"):
+                if node.value.func.attr in (
+                    "first",
+                    "last",
+                    "get_or_none",
+                    "one_or_none",
+                ):
                     recv = node.value.func.value
                     # Django ORM .first()/.last() on plain queryset: Model.objects.first()
                     # — the only case that legitimately returns None. Everything else
@@ -283,17 +289,38 @@ def _scan_file_optional_deref(path: str) -> list[FailureEvidence]:
                     # HTTP client .get(url, headers=..., timeout=...) — kwargs that
                     # dict.get() never has are a definitive indicator of an HTTP call.
                     _HTTP_KWARGS = frozenset(
-                        {"headers", "params", "timeout", "verify", "auth", "json",
-                         "data", "cookies", "stream", "proxies", "cert",
-                         "allow_redirects", "follow_redirects"}
+                        {
+                            "headers",
+                            "params",
+                            "timeout",
+                            "verify",
+                            "auth",
+                            "json",
+                            "data",
+                            "cookies",
+                            "stream",
+                            "proxies",
+                            "cert",
+                            "allow_redirects",
+                            "follow_redirects",
+                        }
                     )
                     kw_names = {kw.arg for kw in node.value.keywords}
                     if kw_names & _HTTP_KWARGS:
                         return
                     # HTTP client .get(url_var) — first arg named like a URL
                     _URL_VAR_NAMES = frozenset(
-                        {"url", "URL", "uri", "URI", "endpoint", "base_url",
-                         "href", "path", "route"}
+                        {
+                            "url",
+                            "URL",
+                            "uri",
+                            "URI",
+                            "endpoint",
+                            "base_url",
+                            "href",
+                            "path",
+                            "route",
+                        }
                     )
                     if (
                         len(call_args) >= 1
@@ -335,10 +362,7 @@ def _scan_file_optional_deref(path: str) -> list[FailureEvidence]:
                         if (
                             isinstance(left, _ast.Constant)
                             and isinstance(left.value, str)
-                            and (
-                                left.value.startswith("/")
-                                or "://" in left.value
-                            )
+                            and (left.value.startswith("/") or "://" in left.value)
                         ):
                             return
                         # self.url_prefix + '/workers' — rightmost component is a
@@ -356,16 +380,32 @@ def _scan_file_optional_deref(path: str) -> list[FailureEvidence]:
                     # Known HTTP client receiver names: requests.get(), session.get(),
                     # self.client.get() (Django test client), async_client.get(), etc.
                     _HTTP_CLIENTS = frozenset(
-                        {"requests", "httpx", "session", "_session", "client",
-                         "http_client", "http_session", "req_session", "async_client",
-                         "r", "s"}
+                        {
+                            "requests",
+                            "httpx",
+                            "session",
+                            "_session",
+                            "client",
+                            "http_client",
+                            "http_session",
+                            "req_session",
+                            "async_client",
+                            "r",
+                            "s",
+                        }
                     )
                     recv = node.value.func.value
-                    if isinstance(recv, _ast.Name) and recv.id.lstrip("_") in _HTTP_CLIENTS:
+                    if (
+                        isinstance(recv, _ast.Name)
+                        and recv.id.lstrip("_") in _HTTP_CLIENTS
+                    ):
                         return
                     # self.client.get(), self.async_client.get(), self.__session.get()
                     # — attribute chain; strip leading underscores for private attrs.
-                    if isinstance(recv, _ast.Attribute) and recv.attr.lstrip("_") in _HTTP_CLIENTS:
+                    if (
+                        isinstance(recv, _ast.Attribute)
+                        and recv.attr.lstrip("_") in _HTTP_CLIENTS
+                    ):
                         return
                     # self.client.collections.get() — grandparent is a known HTTP/API
                     # client (e.g. Weaviate client.collections.get(), FastAPI test
@@ -723,15 +763,17 @@ BARE_EXCEPT = FailureMode(
 # Django model .save() without update_fields re-writes every column,
 # clobbering concurrent partial updates.
 
-_SAFE_SAVE_RECEIVER_KINDS = frozenset({
-    "form",         # Django ModelForm.save() — intentional full save
-    "serializer",   # DRF serializer.save()
-    "fs",           # FileSystemStorage
-    "storage",      # Django storage backend
-    "file",         # file-like object
-    "input",        # allauth pattern: self.input is always a form
-    "store",        # Django session/cache store (SessionBase subclass) — not an ORM model
-})
+_SAFE_SAVE_RECEIVER_KINDS = frozenset(
+    {
+        "form",  # Django ModelForm.save() — intentional full save
+        "serializer",  # DRF serializer.save()
+        "fs",  # FileSystemStorage
+        "storage",  # Django storage backend
+        "file",  # file-like object
+        "input",  # allauth pattern: self.input is always a form
+        "store",  # Django session/cache store (SessionBase subclass) — not an ORM model
+    }
+)
 
 
 @functools.lru_cache(maxsize=None)
@@ -764,9 +806,24 @@ def _new_object_save_lines(path: str) -> frozenset:
         return frozenset()
 
     # ORM fetch call names — result is an existing DB row, not a new object
-    _ORM_FETCH = frozenset({"get", "first", "last", "latest", "earliest", "create",
-                             "get_or_create", "update_or_create", "bulk_create",
-                             "all", "filter", "exclude", "select_related", "prefetch_related"})
+    _ORM_FETCH = frozenset(
+        {
+            "get",
+            "first",
+            "last",
+            "latest",
+            "earliest",
+            "create",
+            "get_or_create",
+            "update_or_create",
+            "bulk_create",
+            "all",
+            "filter",
+            "exclude",
+            "select_related",
+            "prefetch_related",
+        }
+    )
 
     def _is_constructor_call(node: _ast.expr) -> bool:
         """True if node is a Call whose function looks like a class constructor."""
@@ -803,12 +860,17 @@ def _new_object_save_lines(path: str) -> frozenset:
             # Detect name.save() or self.name.save()
             elif isinstance(stmt, _ast.Expr) and isinstance(stmt.value, _ast.Call):
                 call_node = stmt.value
-                if isinstance(call_node.func, _ast.Attribute) and call_node.func.attr == "save":
+                if (
+                    isinstance(call_node.func, _ast.Attribute)
+                    and call_node.func.attr == "save"
+                ):
                     recv = call_node.func.value
                     recv_name: str | None = None
                     if isinstance(recv, _ast.Name):
                         recv_name = recv.id
-                    elif isinstance(recv, _ast.Attribute) and isinstance(recv.value, _ast.Name):
+                    elif isinstance(recv, _ast.Attribute) and isinstance(
+                        recv.value, _ast.Name
+                    ):
                         # self.something.save() — track on "something"
                         recv_name = recv.attr
                     if recv_name and constructed.get(recv_name):
@@ -820,12 +882,15 @@ def _new_object_save_lines(path: str) -> frozenset:
 def _is_test_file(path: str) -> bool:
     """Return True if path looks like a test file (test_*.py, *_test.py, tests/ dir)."""
     import os as _os
+
     basename = _os.path.basename(path)
     return (
         basename.startswith("test_")
         or basename.endswith("_test.py")
-        or basename == "test.py"       # base test-helper class (e.g. healthchecks/hc/test.py)
-        or basename == "conftest.py"   # pytest fixture file — fixture setup, not production
+        or basename
+        == "test.py"  # base test-helper class (e.g. healthchecks/hc/test.py)
+        or basename
+        == "conftest.py"  # pytest fixture file — fixture setup, not production
         or "/test/" in path
         or "/tests/" in path
         or "/testing/" in path
@@ -909,11 +974,25 @@ def _scan_file_mutable_defaults(path: str) -> list[FailureEvidence]:
     _MUTABLE = (_ast.List, _ast.Dict, _ast.Set)
 
     # Methods that mutate their receiver in place.
-    _MUTATING_METHODS = frozenset({
-        "append", "extend", "update", "add", "remove", "discard", "pop",
-        "clear", "insert", "reverse", "sort", "setdefault", "popitem",
-        "__setitem__", "__delitem__",
-    })
+    _MUTATING_METHODS = frozenset(
+        {
+            "append",
+            "extend",
+            "update",
+            "add",
+            "remove",
+            "discard",
+            "pop",
+            "clear",
+            "insert",
+            "reverse",
+            "sort",
+            "setdefault",
+            "popitem",
+            "__setitem__",
+            "__delitem__",
+        }
+    )
 
     def _is_overload(func_node: _ast.FunctionDef | _ast.AsyncFunctionDef) -> bool:
         for dec in func_node.decorator_list:
@@ -923,8 +1002,9 @@ def _scan_file_mutable_defaults(path: str) -> list[FailureEvidence]:
                 return True
         return False
 
-    def _param_is_mutated(func_node: _ast.FunctionDef | _ast.AsyncFunctionDef,
-                          param: str) -> bool:
+    def _param_is_mutated(
+        func_node: _ast.FunctionDef | _ast.AsyncFunctionDef, param: str
+    ) -> bool:
         """Return True if `param` is mutated anywhere in func_node's body.
 
         Checks subscript assignment (d[k]=v), mutating method calls
@@ -933,34 +1013,42 @@ def _scan_file_mutable_defaults(path: str) -> list[FailureEvidence]:
         """
         for n in _ast.walk(func_node):
             # param.mutating_method(...)
-            if (isinstance(n, _ast.Call)
-                    and isinstance(n.func, _ast.Attribute)
-                    and n.func.attr in _MUTATING_METHODS
-                    and isinstance(n.func.value, _ast.Name)
-                    and n.func.value.id == param):
+            if (
+                isinstance(n, _ast.Call)
+                and isinstance(n.func, _ast.Attribute)
+                and n.func.attr in _MUTATING_METHODS
+                and isinstance(n.func.value, _ast.Name)
+                and n.func.value.id == param
+            ):
                 return True
             # param[key] = value
             if isinstance(n, _ast.Assign):
                 for t in n.targets:
-                    if (isinstance(t, _ast.Subscript)
-                            and isinstance(t.value, _ast.Name)
-                            and t.value.id == param):
+                    if (
+                        isinstance(t, _ast.Subscript)
+                        and isinstance(t.value, _ast.Name)
+                        and t.value.id == param
+                    ):
                         return True
             # param[key] += value  or  param |= {k: v}
             if isinstance(n, _ast.AugAssign):
                 t = n.target
                 if isinstance(t, _ast.Name) and t.id == param:
                     return True
-                if (isinstance(t, _ast.Subscript)
-                        and isinstance(t.value, _ast.Name)
-                        and t.value.id == param):
+                if (
+                    isinstance(t, _ast.Subscript)
+                    and isinstance(t.value, _ast.Name)
+                    and t.value.id == param
+                ):
                     return True
             # del param[key]
             if isinstance(n, _ast.Delete):
                 for t in n.targets:
-                    if (isinstance(t, _ast.Subscript)
-                            and isinstance(t.value, _ast.Name)
-                            and t.value.id == param):
+                    if (
+                        isinstance(t, _ast.Subscript)
+                        and isinstance(t.value, _ast.Name)
+                        and t.value.id == param
+                    ):
                         return True
         return False
 
@@ -1064,9 +1152,7 @@ def _scan_file_missing_await(path: str) -> list[FailureEvidence]:
     # ambiguous (e.g. two closures with the same name inside different outer
     # functions). Skip them to avoid flagging calls to the sync version.
     sync_defined: set[str] = {
-        node.name
-        for node in _ast.walk(tree)
-        if isinstance(node, _ast.FunctionDef)
+        node.name for node in _ast.walk(tree) if isinstance(node, _ast.FunctionDef)
     }
     # Sync method names: same-named sync def with self/cls — dual sync/async
     # client pattern (e.g. SyncClient.close + AsyncClient.close in one file).
@@ -1077,6 +1163,7 @@ def _scan_file_missing_await(path: str) -> list[FailureEvidence]:
         and node.args.args
         and node.args.args[0].arg in ("self", "cls")
     }
+
     def _has_work_decorator(func_node: _ast.AsyncFunctionDef) -> bool:
         """Return True if func_node is decorated with @work or @work(...).
 
@@ -1092,7 +1179,9 @@ def _scan_file_missing_await(path: str) -> list[FailureEvidence]:
             elif isinstance(dec, _ast.Call):
                 if isinstance(dec.func, _ast.Name):
                     name = dec.func.id
-                elif isinstance(dec, _ast.Call) and isinstance(dec.func, _ast.Attribute):
+                elif isinstance(dec, _ast.Call) and isinstance(
+                    dec.func, _ast.Attribute
+                ):
                     name = dec.func.attr
             if name == "work":
                 return True
@@ -1130,7 +1219,9 @@ def _scan_file_missing_await(path: str) -> list[FailureEvidence]:
                 continue
             # Async generators (contain yield) return AsyncGenerator, not a coroutine.
             # Calling them without await is correct; they're consumed via `async for`.
-            if any(isinstance(n, (_ast.Yield, _ast.YieldFrom)) for n in _ast.walk(node)):
+            if any(
+                isinstance(n, (_ast.Yield, _ast.YieldFrom)) for n in _ast.walk(node)
+            ):
                 continue
             # Heuristic: if the first argument is self/cls, it's a method
             args = node.args.args
@@ -1148,7 +1239,10 @@ def _scan_file_missing_await(path: str) -> list[FailureEvidence]:
                 # collision; pact cannot resolve which definition is called.
                 # Also skip names used as async generators elsewhere in the file —
                 # pact cannot resolve which definition is called at each call site.
-                if node.name not in sync_defined and node.name not in async_generator_names:
+                if (
+                    node.name not in sync_defined
+                    and node.name not in async_generator_names
+                ):
                     module_async.add(node.name)
 
     if not module_async and not method_async:
@@ -1156,7 +1250,15 @@ def _scan_file_missing_await(path: str) -> list[FailureEvidence]:
 
     # Detect asyncio consumer names imported directly: `from asyncio import run`.
     _ASYNCIO_CONSUMER_SOURCE_NAMES = frozenset(
-        {"run", "ensure_future", "gather", "wait", "wait_for", "shield", "run_coroutine_threadsafe"}
+        {
+            "run",
+            "ensure_future",
+            "gather",
+            "wait",
+            "wait_for",
+            "shield",
+            "run_coroutine_threadsafe",
+        }
     )
     file_imported_consumers: set[str] = set()
     for node in _ast.walk(tree):
@@ -1184,19 +1286,19 @@ def _scan_file_missing_await(path: str) -> list[FailureEvidence]:
             "run_coroutine_threadsafe",
             "StreamingResponse",
             "EventSourceResponse",
-            "run_worker",           # Textual UI framework: schedules coroutine as worker
-            "call_soon",            # asyncio loop scheduling
+            "run_worker",  # Textual UI framework: schedules coroutine as worker
+            "call_soon",  # asyncio loop scheduling
             "call_soon_threadsafe",
-            "asyncio_run",          # user-defined wrapper: def asyncio_run(f): loop.run_until_complete(f)
-            "run_async",            # alternative user-defined wrapper name
-            "schedule",             # custom task schedulers (e.g. StreamTransformer.schedule(coro))
-            "run_until_complete",   # event_loop.run_until_complete(coro()) — any receiver name
-            "run_sync",             # Chainlit sync wrapper: run_sync(coro()) blocks until done
-            "as_completed",         # asyncio.as_completed([coro() for ...]) — iterates awaitables
-            "start_soon",           # AnyIO/trio TaskGroup.start_soon(func, coro) — schedules task
-            "spawn",                # Trio nursery.spawn() — legacy name for start_soon
-            "start_background_task", # some async frameworks
-            "start_task",            # custom task manager wrappers: self.start_task(coro()) → loop.create_task(coro)
+            "asyncio_run",  # user-defined wrapper: def asyncio_run(f): loop.run_until_complete(f)
+            "run_async",  # alternative user-defined wrapper name
+            "schedule",  # custom task schedulers (e.g. StreamTransformer.schedule(coro))
+            "run_until_complete",  # event_loop.run_until_complete(coro()) — any receiver name
+            "run_sync",  # Chainlit sync wrapper: run_sync(coro()) blocks until done
+            "as_completed",  # asyncio.as_completed([coro() for ...]) — iterates awaitables
+            "start_soon",  # AnyIO/trio TaskGroup.start_soon(func, coro) — schedules task
+            "spawn",  # Trio nursery.spawn() — legacy name for start_soon
+            "start_background_task",  # some async frameworks
+            "start_task",  # custom task manager wrappers: self.start_task(coro()) → loop.create_task(coro)
         }
     )
 
@@ -1224,7 +1326,11 @@ def _scan_file_missing_await(path: str) -> list[FailureEvidence]:
                     receiver = func.value.id
             elif isinstance(func, _ast.Name):
                 fname = func.id
-            if fname in _CORO_CONSUMERS or fname in file_imported_consumers or (fname is not None and fname.startswith("create_task")):
+            if (
+                fname in _CORO_CONSUMERS
+                or fname in file_imported_consumers
+                or (fname is not None and fname.startswith("create_task"))
+            ):
                 return True
             # Qualified consumers: asyncio.run(), loop.run_until_complete()
             if receiver is not None and (receiver, fname) in _CORO_CONSUMERS_QUALIFIED:
@@ -1240,7 +1346,11 @@ def _scan_file_missing_await(path: str) -> list[FailureEvidence]:
                     if isinstance(func, _ast.Attribute)
                     else func.id if isinstance(func, _ast.Name) else None
                 )
-                if fname in _CORO_CONSUMERS or fname in file_imported_consumers or (fname is not None and fname.startswith("create_task")):
+                if (
+                    fname in _CORO_CONSUMERS
+                    or fname in file_imported_consumers
+                    or (fname is not None and fname.startswith("create_task"))
+                ):
                     return True
                 # list.append((coro(), metadata)) — tuple wrapping coroutine before gather
                 if isinstance(func, _ast.Attribute) and func.attr == "append":
@@ -1268,12 +1378,14 @@ def _scan_file_missing_await(path: str) -> list[FailureEvidence]:
             if isinstance(gp, _ast.Call):
                 _func = gp.func
                 _fname = (
-                    _func.attr if isinstance(_func, _ast.Attribute)
+                    _func.attr
+                    if isinstance(_func, _ast.Attribute)
                     else _func.id if isinstance(_func, _ast.Name) else None
                 )
                 _recv = (
                     _func.value.id
-                    if isinstance(_func, _ast.Attribute) and isinstance(_func.value, _ast.Name)
+                    if isinstance(_func, _ast.Attribute)
+                    and isinstance(_func.value, _ast.Name)
                     else None
                 )
                 if (
@@ -1314,7 +1426,9 @@ def _scan_file_missing_await(path: str) -> list[FailureEvidence]:
         # coro().__await__() / .__aiter__() / .__anext__() — awaitable protocol
         # implementation (e.g. def __await__(self): return self._impl().__await__())
         if isinstance(parent, _ast.Attribute) and parent.attr in (
-            "__await__", "__aiter__", "__anext__"
+            "__await__",
+            "__aiter__",
+            "__anext__",
         ):
             return True
         # lambda ...: coro() — sync lambda returning coroutine for caller to await.
@@ -1502,8 +1616,7 @@ def _scan_file_format_mismatch(path: str) -> list[FailureEvidence]:
         # A name like "self.tx_ac" is covered if its root "self" is in kw_keys,
         # because .format(self=obj) resolves {self.tx_ac} by attribute lookup.
         missing_names = {
-            n for n in named
-            if n not in kw_keys and n.split(".")[0] not in kw_keys
+            n for n in named if n not in kw_keys and n.split(".")[0] not in kw_keys
         }
         if missing_names:
             evidence.append(

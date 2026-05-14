@@ -239,7 +239,9 @@ def test_star_args_not_flagged_as_missing_arg(tmp_path):
     )
     violations = check_codebase(tmp_path)
     v = [v for v in violations if v.context == "required_arg_missing"]
-    assert not v, "*spread positional calls must not be flagged as missing required args"
+    assert (
+        not v
+    ), "*spread positional calls must not be flagged as missing required args"
 
 
 def test_missing_arg_still_flagged_without_spread(tmp_path):
@@ -294,7 +296,9 @@ def test_pytest_fixture_call_not_flagged(tmp_path):
     )
     violations = check_codebase(tmp_path)
     v = [v for v in violations if v.context == "required_arg_missing"]
-    assert not v, "@pytest.fixture functions must not be flagged for missing args at call site"
+    assert (
+        not v
+    ), "@pytest.fixture functions must not be flagged for missing args at call site"
 
 
 def test_pytest_fixture_with_parens_not_flagged(tmp_path):
@@ -511,7 +515,9 @@ def test_non_django_save_not_flagged(tmp_path):
     )
     violations = check_codebase(tmp_path)
     v = [v for v in violations if v.context == "save_without_update_fields"]
-    assert not v, "non-Django .save() calls must not be flagged as missing update_fields"
+    assert (
+        not v
+    ), "non-Django .save() calls must not be flagged as missing update_fields"
 
 
 def test_pil_save_with_positional_not_flagged(tmp_path):
@@ -546,7 +552,9 @@ def test_django_save_without_update_fields_still_flagged(tmp_path):
     )
     violations = check_codebase(tmp_path)
     v = [v for v in violations if v.context == "save_without_update_fields"]
-    assert v, "Django .save() without update_fields must still be flagged in Django files"
+    assert (
+        v
+    ), "Django .save() without update_fields must still be flagged in Django files"
 
 
 def test_new_object_save_not_flagged(tmp_path):
@@ -566,7 +574,9 @@ def test_new_object_save_not_flagged(tmp_path):
     )
     violations = check_codebase(tmp_path)
     v = [v for v in violations if v.context == "save_without_update_fields"]
-    assert not v, "Constructor-then-save (INSERT) must not be flagged — update_fields invalid for new objects"
+    assert (
+        not v
+    ), "Constructor-then-save (INSERT) must not be flagged — update_fields invalid for new objects"
 
 
 def test_new_object_save_via_class_attr_not_flagged(tmp_path):
@@ -585,7 +595,9 @@ def test_new_object_save_via_class_attr_not_flagged(tmp_path):
     )
     violations = check_codebase(tmp_path)
     v = [v for v in violations if v.context == "save_without_update_fields"]
-    assert not v, "Check(...) constructor then .save() is an INSERT — must not be flagged"
+    assert (
+        not v
+    ), "Check(...) constructor then .save() is an INSERT — must not be flagged"
 
 
 def test_fetched_object_save_still_flagged(tmp_path):
@@ -694,7 +706,9 @@ def test_chained_queryset_get_not_flagged_as_optional(tmp_path):
     )
     violations = check_codebase(tmp_path)
     v = [v for v in violations if v.context == "optional_dereference"]
-    assert not v, "chained queryset .select_related().get() result must not be flagged as optional"
+    assert (
+        not v
+    ), "chained queryset .select_related().get() result must not be flagged as optional"
 
 
 def test_queryset_variable_get_kwargs_only_not_flagged(tmp_path):
@@ -738,7 +752,9 @@ def test_django_test_client_get_not_flagged(tmp_path):
     )
     violations = check_codebase(tmp_path)
     v = [v for v in violations if v.context == "optional_dereference"]
-    assert not v, "self.client.get() (Django test client) must not be flagged as optional"
+    assert (
+        not v
+    ), "self.client.get() (Django test client) must not be flagged as optional"
 
 
 def test_tornado_test_client_get_string_concat_not_flagged(tmp_path):
@@ -762,7 +778,9 @@ def test_tornado_test_client_get_string_concat_not_flagged(tmp_path):
     )
     violations = check_codebase(tmp_path)
     v = [v for v in violations if v.context == "optional_dereference"]
-    assert not v, "self.get('/path?' + params) Tornado test client must not be flagged as optional"
+    assert (
+        not v
+    ), "self.get('/path?' + params) Tornado test client must not be flagged as optional"
 
 
 def test_tornado_url_prefix_concat_not_flagged(tmp_path):
@@ -823,7 +841,9 @@ def test_ternary_guard_not_flagged(tmp_path):
     )
     violations = check_codebase(tmp_path)
     v = [v for v in violations if v.context == "optional_dereference"]
-    assert not v, "x.attr if x else y ternary guard must not be flagged as optional dereference"
+    assert (
+        not v
+    ), "x.attr if x else y ternary guard must not be flagged as optional dereference"
 
 
 def test_unguarded_optional_still_flagged(tmp_path):
@@ -1394,7 +1414,9 @@ def test_sync_method_calling_shared_name_not_flagged(tmp_path):
     )
     violations = check_codebase(tmp_path)
     v = [v for v in violations if v.context == "missing_await"]
-    assert not v, "sync def calling self.method() where async def exists in same file must not be flagged"
+    assert (
+        not v
+    ), "sync def calling self.method() where async def exists in same file must not be flagged"
 
 
 def test_async_method_unawaited_still_flagged(tmp_path):
@@ -1413,7 +1435,9 @@ def test_async_method_unawaited_still_flagged(tmp_path):
     )
     violations = check_codebase(tmp_path)
     v = [v for v in violations if v.context == "missing_await"]
-    assert v, "async def calling self.async_method() without await must still be flagged"
+    assert (
+        v
+    ), "async def calling self.async_method() without await must still be flagged"
 
 
 def test_closure_name_collision_not_flagged(tmp_path):
@@ -1689,7 +1713,9 @@ def test_unvalidated_lookup_chain_dict_write_not_flagged(tmp_path):
     )
     violations = check_codebase(tmp_path)
     v = [v for v in violations if v.context == "unvalidated_lookup_chain"]
-    assert not v, f"dict write d[k]=v must not be flagged as unvalidated_lookup_chain: {v}"
+    assert (
+        not v
+    ), f"dict write d[k]=v must not be flagged as unvalidated_lookup_chain: {v}"
 
 
 def test_optional_dereference_get_with_default_not_flagged(tmp_path):
@@ -1778,7 +1804,9 @@ def test_optional_dereference_requests_get_url_var_not_flagged(tmp_path):
     )
     violations = check_codebase(tmp_path)
     v = [v for v in violations if v.context == "optional_dereference"]
-    assert not v, "requests.get(url, timeout=60) response must not be flagged as optional"
+    assert (
+        not v
+    ), "requests.get(url, timeout=60) response must not be flagged as optional"
 
 
 def test_optional_dereference_session_get_not_flagged(tmp_path):
@@ -2061,9 +2089,15 @@ def test_overload_stub_mutable_default_not_flagged(tmp_path):
         """,
     )
     violations = check_codebase(tmp_path)
-    mda = [v for v in violations if v.context == "mutable_default_arg" and "client.py" in v.file]
+    mda = [
+        v
+        for v in violations
+        if v.context == "mutable_default_arg" and "client.py" in v.file
+    ]
     # Only the implementation (1 violation), not the 2 @overload stubs
-    assert len(mda) == 1, f"Expected 1 mutable_default_arg (impl only), got {len(mda)}: {[(v.line, v.call) for v in mda]}"
+    assert (
+        len(mda) == 1
+    ), f"Expected 1 mutable_default_arg (impl only), got {len(mda)}: {[(v.line, v.call) for v in mda]}"
 
 
 def test_typing_overload_mutable_default_not_flagged(tmp_path):
@@ -2085,7 +2119,11 @@ def test_typing_overload_mutable_default_not_flagged(tmp_path):
         """,
     )
     violations = check_codebase(tmp_path)
-    mda = [v for v in violations if v.context == "mutable_default_arg" and "validators.py" in v.file]
+    mda = [
+        v
+        for v in violations
+        if v.context == "mutable_default_arg" and "validators.py" in v.file
+    ]
     assert len(mda) == 1, f"Expected 1 (impl only), got {len(mda)}"
 
 
@@ -2110,8 +2148,14 @@ def test_list_comprehension_gather_pattern_not_flagged(tmp_path):
         """,
     )
     violations = check_codebase(tmp_path)
-    ma = [v for v in violations if v.context == "missing_await" and "batch_runner.py" in v.file]
-    assert len(ma) == 0, f"Expected 0 missing_await in list-comp gather pattern, got {len(ma)}: {[(v.line, v.call) for v in ma]}"
+    ma = [
+        v
+        for v in violations
+        if v.context == "missing_await" and "batch_runner.py" in v.file
+    ]
+    assert (
+        len(ma) == 0
+    ), f"Expected 0 missing_await in list-comp gather pattern, got {len(ma)}: {[(v.line, v.call) for v in ma]}"
 
 
 def test_gather_star_comprehension_not_flagged(tmp_path):
@@ -2131,8 +2175,14 @@ def test_gather_star_comprehension_not_flagged(tmp_path):
         """,
     )
     violations = check_codebase(tmp_path)
-    ma = [v for v in violations if v.context == "missing_await" and "direct_gather.py" in v.file]
-    assert len(ma) == 0, f"Expected 0 missing_await for starred comprehension, got {len(ma)}: {[(v.line, v.call) for v in ma]}"
+    ma = [
+        v
+        for v in violations
+        if v.context == "missing_await" and "direct_gather.py" in v.file
+    ]
+    assert (
+        len(ma) == 0
+    ), f"Expected 0 missing_await for starred comprehension, got {len(ma)}: {[(v.line, v.call) for v in ma]}"
 
 
 def test_list_literal_gather_pattern_not_flagged(tmp_path):
@@ -2154,7 +2204,9 @@ def test_list_literal_gather_pattern_not_flagged(tmp_path):
     )
     violations = check_codebase(tmp_path)
     ma = [v for v in violations if v.context == "missing_await"]
-    assert len(ma) == 0, f"List literal for gather must not be flagged: {[(v.line, v.call) for v in ma]}"
+    assert (
+        len(ma) == 0
+    ), f"List literal for gather must not be flagged: {[(v.line, v.call) for v in ma]}"
 
 
 def test_generator_return_gather_pattern_not_flagged(tmp_path):
@@ -2176,7 +2228,9 @@ def test_generator_return_gather_pattern_not_flagged(tmp_path):
     )
     violations = check_codebase(tmp_path)
     ma = [v for v in violations if v.context == "missing_await"]
-    assert len(ma) == 0, f"Generator return of coroutines must not be flagged: {[(v.line, v.call) for v in ma]}"
+    assert (
+        len(ma) == 0
+    ), f"Generator return of coroutines must not be flagged: {[(v.line, v.call) for v in ma]}"
 
 
 def test_user_defined_asyncio_run_wrapper_not_flagged(tmp_path):
@@ -2204,7 +2258,9 @@ def test_user_defined_asyncio_run_wrapper_not_flagged(tmp_path):
     )
     violations = check_codebase(tmp_path)
     ma = [v for v in violations if v.context == "missing_await"]
-    assert len(ma) == 0, f"asyncio_run wrapper must not be flagged: {[(v.line, v.call) for v in ma]}"
+    assert (
+        len(ma) == 0
+    ), f"asyncio_run wrapper must not be flagged: {[(v.line, v.call) for v in ma]}"
 
 
 def test_run_async_wrapper_not_flagged(tmp_path):
@@ -2226,7 +2282,9 @@ def test_run_async_wrapper_not_flagged(tmp_path):
     )
     violations = check_codebase(tmp_path)
     ma = [v for v in violations if v.context == "missing_await"]
-    assert len(ma) == 0, f"run_async wrapper must not be flagged: {[(v.line, v.call) for v in ma]}"
+    assert (
+        len(ma) == 0
+    ), f"run_async wrapper must not be flagged: {[(v.line, v.call) for v in ma]}"
 
 
 def test_numba_intrinsic_typingctx_not_counted(tmp_path):
@@ -2251,7 +2309,9 @@ def test_numba_intrinsic_typingctx_not_counted(tmp_path):
     )
     violations = check_codebase(tmp_path)
     ra = [v for v in violations if v.context == "required_arg_missing"]
-    assert len(ra) == 0, f"@intrinsic typingctx must not count toward arity: {[(v.line, v.call) for v in ra]}"
+    assert (
+        len(ra) == 0
+    ), f"@intrinsic typingctx must not count toward arity: {[(v.line, v.call) for v in ra]}"
 
 
 def test_optional_dereference_zero_arg_get_not_flagged(tmp_path):
@@ -2271,8 +2331,14 @@ def test_optional_dereference_zero_arg_get_not_flagged(tmp_path):
         """,
     )
     violations = check_codebase(tmp_path)
-    od = [v for v in violations if v.context == "optional_dereference" and "twisted_queue.py" in v.file]
-    assert len(od) == 0, f"Expected 0 optional_dereference for zero-arg .get(), got {len(od)}: {[(v.line, v.call) for v in od]}"
+    od = [
+        v
+        for v in violations
+        if v.context == "optional_dereference" and "twisted_queue.py" in v.file
+    ]
+    assert (
+        len(od) == 0
+    ), f"Expected 0 optional_dereference for zero-arg .get(), got {len(od)}: {[(v.line, v.call) for v in od]}"
 
 
 def test_optional_dereference_pandas_first_not_flagged(tmp_path):
@@ -2292,8 +2358,14 @@ def test_optional_dereference_pandas_first_not_flagged(tmp_path):
         """,
     )
     violations = check_codebase(tmp_path)
-    od = [v for v in violations if v.context == "optional_dereference" and "pandas_agg.py" in v.file]
-    assert len(od) == 0, f"Expected 0 violations for pandas groupby.first(), got {len(od)}: {[(v.line, v.call) for v in od]}"
+    od = [
+        v
+        for v in violations
+        if v.context == "optional_dereference" and "pandas_agg.py" in v.file
+    ]
+    assert (
+        len(od) == 0
+    ), f"Expected 0 violations for pandas groupby.first(), got {len(od)}: {[(v.line, v.call) for v in od]}"
 
 
 def test_click_command_no_args_not_flagged(tmp_path):
@@ -2316,8 +2388,14 @@ def test_click_command_no_args_not_flagged(tmp_path):
         """,
     )
     violations = check_codebase(tmp_path)
-    ra = [v for v in violations if v.context == "required_arg_missing" and "cli_tool.py" in v.file]
-    assert len(ra) == 0, f"Expected 0 required_arg_missing for @click.command(), got {len(ra)}: {[(v.line, v.call) for v in ra]}"
+    ra = [
+        v
+        for v in violations
+        if v.context == "required_arg_missing" and "cli_tool.py" in v.file
+    ]
+    assert (
+        len(ra) == 0
+    ), f"Expected 0 required_arg_missing for @click.command(), got {len(ra)}: {[(v.line, v.call) for v in ra]}"
 
 
 def test_app_command_no_args_not_flagged(tmp_path):
@@ -2338,8 +2416,14 @@ def test_app_command_no_args_not_flagged(tmp_path):
         """,
     )
     violations = check_codebase(tmp_path)
-    ra = [v for v in violations if v.context == "required_arg_missing" and "typer_tool.py" in v.file]
-    assert len(ra) == 0, f"Expected 0 required_arg_missing for @app.command(), got {len(ra)}: {[(v.line, v.call) for v in ra]}"
+    ra = [
+        v
+        for v in violations
+        if v.context == "required_arg_missing" and "typer_tool.py" in v.file
+    ]
+    assert (
+        len(ra) == 0
+    ), f"Expected 0 required_arg_missing for @app.command(), got {len(ra)}: {[(v.line, v.call) for v in ra]}"
 
 
 def test_dual_sync_async_client_missing_await_not_flagged(tmp_path):
@@ -2374,8 +2458,12 @@ def test_dual_sync_async_client_missing_await_not_flagged(tmp_path):
         """,
     )
     violations = check_codebase(tmp_path)
-    ma = [v for v in violations if v.context == "missing_await" and "clients.py" in v.file]
-    assert len(ma) == 0, f"Expected 0 missing_await for dual sync/async client, got {len(ma)}: {[(v.line, v.call) for v in ma]}"
+    ma = [
+        v for v in violations if v.context == "missing_await" and "clients.py" in v.file
+    ]
+    assert (
+        len(ma) == 0
+    ), f"Expected 0 missing_await for dual sync/async client, got {len(ma)}: {[(v.line, v.call) for v in ma]}"
 
 
 def test_main_in_dunder_main_block_not_flagged(tmp_path):
@@ -2394,8 +2482,14 @@ def test_main_in_dunder_main_block_not_flagged(tmp_path):
         """,
     )
     violations = check_codebase(tmp_path)
-    ra = [v for v in violations if v.context == "required_arg_missing" and "cli_tool.py" in v.file]
-    assert len(ra) == 0, f"Expected 0 required_arg_missing in __main__ block, got {len(ra)}: {[(v.line, v.call) for v in ra]}"
+    ra = [
+        v
+        for v in violations
+        if v.context == "required_arg_missing" and "cli_tool.py" in v.file
+    ]
+    assert (
+        len(ra) == 0
+    ), f"Expected 0 required_arg_missing in __main__ block, got {len(ra)}: {[(v.line, v.call) for v in ra]}"
 
 
 def test_main_called_outside_dunder_block_still_flagged(tmp_path):
@@ -2412,8 +2506,14 @@ def test_main_called_outside_dunder_block_still_flagged(tmp_path):
         """,
     )
     violations = check_codebase(tmp_path)
-    ra = [v for v in violations if v.context == "required_arg_missing" and "caller.py" in v.file]
-    assert len(ra) == 1, f"Expected 1 required_arg_missing outside __main__ block, got {len(ra)}"
+    ra = [
+        v
+        for v in violations
+        if v.context == "required_arg_missing" and "caller.py" in v.file
+    ]
+    assert (
+        len(ra) == 1
+    ), f"Expected 1 required_arg_missing outside __main__ block, got {len(ra)}"
 
 
 def test_string_literal_join_not_flagged_as_missing_separator(tmp_path):
@@ -2436,7 +2536,11 @@ def test_string_literal_join_not_flagged_as_missing_separator(tmp_path):
         """,
     )
     violations = check_codebase(tmp_path)
-    ra = [v for v in violations if v.context == "required_arg_missing" and "helpers.py" in v.file]
+    ra = [
+        v
+        for v in violations
+        if v.context == "required_arg_missing" and "helpers.py" in v.file
+    ]
     assert len(ra) == 0, f"str.join falsely flagged as missing-arg: {ra}"
 
 
@@ -2470,7 +2574,11 @@ def test_fstring_join_not_flagged_as_missing_separator(tmp_path):
         """,
     )
     violations = check_codebase(tmp_path)
-    ra = [v for v in violations if v.context == "required_arg_missing" and "templates.py" in v.file]
+    ra = [
+        v
+        for v in violations
+        if v.context == "required_arg_missing" and "templates.py" in v.file
+    ]
     assert len(ra) == 0, f"f-string str.join falsely flagged as missing-arg: {ra}"
 
 
@@ -2506,7 +2614,11 @@ def test_isinstance_and_attr_not_flagged_as_optional_dereference(tmp_path):
         """,
     )
     violations = check_codebase(tmp_path)
-    od = [v for v in violations if v.context == "optional_dereference" and "assembly.py" in v.file]
+    od = [
+        v
+        for v in violations
+        if v.context == "optional_dereference" and "assembly.py" in v.file
+    ]
     assert len(od) == 0, f"isinstance guard falsely flagged: {od}"
 
 
@@ -2533,7 +2645,11 @@ def test_get_with_keyword_default_not_flagged_as_optional_dereference(tmp_path):
         """,
     )
     violations = check_codebase(tmp_path)
-    od = [v for v in violations if v.context == "optional_dereference" and "xml_parse.py" in v.file]
+    od = [
+        v
+        for v in violations
+        if v.context == "optional_dereference" and "xml_parse.py" in v.file
+    ]
     assert len(od) == 0, f"get(default=non_None) falsely flagged: {od}"
 
 
@@ -2568,7 +2684,11 @@ def test_format_dotted_attr_covered_by_root_kwarg_not_flagged(tmp_path):
         """,
     )
     violations = check_codebase(tmp_path)
-    fa = [v for v in violations if v.context == "format_arg_mismatch" and "mapper.py" in v.file]
+    fa = [
+        v
+        for v in violations
+        if v.context == "format_arg_mismatch" and "mapper.py" in v.file
+    ]
     assert len(fa) == 0, f"dotted attr covered by root kwarg falsely flagged: {fa}"
 
 
@@ -2997,8 +3117,7 @@ def test_ts_return_async_call_not_flagged(tmp_path):
     from .ts_checker import check_ts_file
 
     ts_file = tmp_path / "client.ts"
-    ts_file.write_text(
-        """\
+    ts_file.write_text("""\
 class HttpClient {
     private baseUrl: string;
     constructor(baseUrl: string) { this.baseUrl = baseUrl; }
@@ -3009,8 +3128,7 @@ class HttpClient {
         return this.get(path);
     }
 }
-"""
-    )
+""")
     violations = check_ts_file(str(ts_file))
     ma = [v for v in violations if v.context == "missing_await"]
     assert len(ma) == 0, (

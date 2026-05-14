@@ -103,9 +103,7 @@ _KNOWN_ASYNC_METHODS: frozenset[str] = frozenset(
 )
 
 # Array methods whose return type is T | undefined
-_NULLABLE_ARRAY_METHODS: frozenset[str] = frozenset(
-    {"find", "shift", "pop", "at"}
-)
+_NULLABLE_ARRAY_METHODS: frozenset[str] = frozenset({"find", "shift", "pop", "at"})
 
 
 def _iter_ts_files(root: Path) -> Iterator[Path]:
@@ -233,7 +231,10 @@ def _scan_missing_await(
                 callee_method = _callee_name(node)
                 is_async = (
                     (callee_root in _KNOWN_ASYNC_APIS)
-                    or (callee_method in _KNOWN_ASYNC_METHODS and callee_root != callee_method)
+                    or (
+                        callee_method in _KNOWN_ASYNC_METHODS
+                        and callee_root != callee_method
+                    )
                     or (callee_root in async_names)
                     or (callee_method in async_names)
                 )
@@ -267,10 +268,11 @@ def _scan_missing_await(
             walk_async_body(child)
 
     def walk(node):
-        is_async_func = (
-            node.type in ("function_declaration", "arrow_function", "method_definition")
-            and _is_async_node(node)
-        )
+        is_async_func = node.type in (
+            "function_declaration",
+            "arrow_function",
+            "method_definition",
+        ) and _is_async_node(node)
         if is_async_func:
             body = node.child_by_field_name("body")
             if body is not None:

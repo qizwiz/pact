@@ -55,7 +55,9 @@ class FunctionManifest:
     module_path: str
     args: list[ArgConstraint] = field(default_factory=list)
     is_pytest_fixture: bool = False  # True when decorated with @pytest.fixture
-    is_click_command: bool = False   # True when decorated with @click.command/group or @app.command
+    is_click_command: bool = (
+        False  # True when decorated with @click.command/group or @app.command
+    )
 
     @property
     def required_args(self) -> list[ArgConstraint]:
@@ -73,9 +75,15 @@ class CallSite:
     )  # name → literal value
     positional_count: int = 0
     is_create_call: bool = False
-    is_method_call: bool = False  # True when call is obj.method(...) — receiver is implicit
-    has_var_args: bool = False   # True when call uses *args spread — positional coverage unknown
-    has_var_kwargs: bool = False  # True when call uses **kwargs spread — kwarg coverage unknown
+    is_method_call: bool = (
+        False  # True when call is obj.method(...) — receiver is implicit
+    )
+    has_var_args: bool = (
+        False  # True when call uses *args spread — positional coverage unknown
+    )
+    has_var_kwargs: bool = (
+        False  # True when call uses **kwargs spread — kwarg coverage unknown
+    )
     is_in_main_block: bool = False  # True when inside `if __name__ == "__main__":` body
     model_name: Optional[str] = None
     caller_name: Optional[str] = (
@@ -455,8 +463,13 @@ class _CallVisitor(ast.NodeVisitor):
             if len(test.ops) != 1 or not isinstance(test.ops[0], ast.Eq):
                 return False
             lhs, rhs = test.left, test.comparators[0]
-            def _is_dunder_name(n): return isinstance(n, ast.Name) and n.id == "__name__"
-            def _is_main_str(n): return isinstance(n, ast.Constant) and n.value == "__main__"
+
+            def _is_dunder_name(n):
+                return isinstance(n, ast.Name) and n.id == "__name__"
+
+            def _is_main_str(n):
+                return isinstance(n, ast.Constant) and n.value == "__main__"
+
             return (_is_dunder_name(lhs) and _is_main_str(rhs)) or (
                 _is_main_str(lhs) and _is_dunder_name(rhs)
             )
