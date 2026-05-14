@@ -252,3 +252,53 @@ def test_optional_dereference_proof():
     from .prover import prove_optional_dereference
     cert = prove_optional_dereference()
     assert cert.bug_sat and cert.fix_unsat
+
+
+@pytestmark_z3
+def test_bare_except_proof():
+    """Silent failure is SAT; specific catch makes it UNSAT."""
+    from .prover import prove_bare_except
+    cert = prove_bare_except()
+    assert cert.bug_sat,   "Bug: bare except swallowing real exception must be SAT"
+    assert cert.fix_unsat, "Fix: specific catch must make silent failure UNSAT"
+    assert cert.witness,   "Must have concrete witness (caught=True, pass body)"
+
+
+@pytestmark_z3
+def test_mutable_default_arg_proof():
+    """State leakage across calls is SAT; None sentinel makes it UNSAT."""
+    from .prover import prove_mutable_default_arg
+    cert = prove_mutable_default_arg()
+    assert cert.bug_sat,   "Bug: shared mutable default leaking state must be SAT"
+    assert cert.fix_unsat, "Fix: fresh object per call must make leakage UNSAT"
+    assert cert.witness,   "Must have concrete witness (call2_initial_len > 0)"
+
+
+@pytestmark_z3
+def test_required_arg_missing_proof():
+    """TypeError from underprovision is SAT; providing all args makes it UNSAT."""
+    from .prover import prove_required_arg_missing
+    cert = prove_required_arg_missing()
+    assert cert.bug_sat,   "Bug: provided < required must be SAT"
+    assert cert.fix_unsat, "Fix: provided >= required must make error UNSAT"
+    assert cert.witness,   "Must have concrete witness (required and provided counts)"
+
+
+@pytestmark_z3
+def test_format_arg_mismatch_proof():
+    """Format slot/arg count mismatch is SAT; matching counts makes it UNSAT."""
+    from .prover import prove_format_arg_mismatch
+    cert = prove_format_arg_mismatch()
+    assert cert.bug_sat,   "Bug: slots != supplied must be SAT"
+    assert cert.fix_unsat, "Fix: slots == supplied must make error UNSAT"
+    assert cert.witness,   "Must have concrete witness (slot and arg counts)"
+
+
+@pytestmark_z3
+def test_unvalidated_lookup_chain_proof():
+    """KeyError from absent chain key is SAT; .get() with default makes it UNSAT."""
+    from .prover import prove_unvalidated_lookup_chain
+    cert = prove_unvalidated_lookup_chain()
+    assert cert.bug_sat,   "Bug: absent key in chain must be SAT"
+    assert cert.fix_unsat, "Fix: .get() with default must make KeyError UNSAT"
+    assert cert.witness,   "Must have concrete witness (which key is absent)"
