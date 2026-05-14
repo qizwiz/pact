@@ -1058,6 +1058,15 @@ def _scan_file_missing_await(path: str) -> list[FailureEvidence]:
         and node.args.args
         and node.args.args[0].arg in ("self", "cls")
     }
+    # First pass: collect async generator names (contain yield/yield from).
+    # A name used for both an async generator and a coroutine in the same file
+    # (e.g. closure reuse pattern) cannot be safely flagged — exclude it.
+    async_generator_names: set[str] = {
+        node.name
+        for node in _ast.walk(tree)
+        if isinstance(node, _ast.AsyncFunctionDef)
+        and any(isinstance(n, (_ast.Yield, _ast.YieldFrom)) for n in _ast.walk(node))
+    }
     module_async: set[str] = set()
     method_async: set[str] = set()
     for node in _ast.walk(tree):
@@ -1077,7 +1086,9 @@ def _scan_file_missing_await(path: str) -> list[FailureEvidence]:
             else:
                 # Skip names that also have a sync def — closure-level name
                 # collision; pact cannot resolve which definition is called.
-                if node.name not in sync_defined:
+                # Also skip names used as async generators elsewhere in the file —
+                # pact cannot resolve which definition is called at each call site.
+                if node.name not in sync_defined and node.name not in async_generator_names:
                     module_async.add(node.name)
 
     if not module_async and not method_async:

@@ -3114,3 +3114,37 @@ def test_format_escaped_braces_not_flagged(tmp_path):
         "{{identifier}} escaped braces must not be flagged as missing format args. "
         f"got: {[(r.line, r.call) for r in results]}"
     )
+
+
+def test_async_name_reused_generator_and_coroutine_not_flagged(tmp_path):
+    """Closure reuse: same name used for async generator AND coroutine in same file.
+    Calls to the generator variant must not be flagged as missing await."""
+    from .failure_mode import MISSING_AWAIT
+
+    _write_src(
+        tmp_path,
+        "patch.py",
+        """\
+        def wrap_generator(fn):
+            async def new_function():  # async generator — has yield
+                async for item in fn():
+                    yield item
+            return new_function()  # returns AsyncGenerator, no await needed
+
+        def wrap_generator2(fn):
+            async def new_function():  # async generator — has yield
+                async for item in fn():
+                    yield item
+            return new_function()  # returns AsyncGenerator, no await needed
+
+        def wrap_coroutine(fn):
+            async def new_function():  # coroutine — no yield
+                return await fn()
+            return new_function()  # returns coroutine — would need await but caller handles it
+        """,
+    )
+    results = check_codebase(tmp_path, modes=[MISSING_AWAIT])
+    assert len(results) == 0, (
+        "return new_function() where new_function is an async generator must not be flagged. "
+        f"got: {[(r.line, r.call) for r in results]}"
+    )
