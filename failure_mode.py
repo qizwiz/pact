@@ -416,6 +416,37 @@ def _scan_file_optional_deref(path: str) -> list[FailureEvidence]:
             self.generic_visit(node)
 
         def visit_BoolOp(self, node):
+            if isinstance(node.op, _ast.Or):
+                # `x is None or x.attr` — left side is a null guard; right side
+                # is only evaluated when left is False (x is not None).
+                # Also handles `not x or x.attr` (not x → x is falsy/None).
+                first = node.values[0]
+                or_guarded: set[str] = set()
+                if (
+                    isinstance(first, _ast.Compare)
+                    and isinstance(first.left, _ast.Name)
+                    and len(first.ops) == 1
+                    and isinstance(first.ops[0], _ast.Is)
+                    and len(first.comparators) == 1
+                    and isinstance(first.comparators[0], _ast.Constant)
+                    and first.comparators[0].value is None
+                    and first.left.id in self.optional_vars
+                ):
+                    or_guarded.add(first.left.id)
+                elif (
+                    isinstance(first, _ast.UnaryOp)
+                    and isinstance(first.op, _ast.Not)
+                    and isinstance(first.operand, _ast.Name)
+                    and first.operand.id in self.optional_vars
+                ):
+                    or_guarded.add(first.operand.id)
+                self.visit(first)
+                for var in or_guarded:
+                    self.guarded.add(var)
+                for value in node.values[1:]:
+                    self.visit(value)
+                self.guarded -= or_guarded
+                return
             if not isinstance(node.op, _ast.And):
                 self.generic_visit(node)
                 return

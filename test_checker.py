@@ -2849,3 +2849,32 @@ def test_conftest_and_test_base_not_flagged(tmp_path):
         "conftest.py and test.py must not produce save_without_update_fields — "
         f"they are test infrastructure. got: {[(v.file.split('/')[-1], v.line, v.call) for v in sw]}"
     )
+
+
+def test_or_null_guard_not_flagged(tmp_path):
+    """x is None or x.attr must not produce optional_dereference FP.
+
+    Corpus evidence: google/adk-python mcp_session_manager.py:
+      ctx = self._session_contexts.get(session_key)
+      ctx_alive = ctx is None or ctx._is_task_alive
+    The 'or' short-circuit means ctx._is_task_alive is only evaluated
+    when ctx is NOT None. The checker was incorrectly flagging this.
+    """
+    _write_src(
+        tmp_path,
+        "session.py",
+        """\
+        def check(d, key):
+            ctx = d.get(key)
+            alive = ctx is None or ctx.is_alive   # guarded by Or
+            dead = not ctx or ctx.expired          # guarded by not-check Or
+            return alive, dead
+        """,
+    )
+    violations = check_codebase(tmp_path)
+    od = [v for v in violations if v.context == "optional_dereference"]
+    assert len(od) == 0, (
+        "x is None or x.attr and not x or x.attr must not be flagged — "
+        "the Or short-circuit guards the right-side dereference. "
+        f"got: {[(v.line, v.call) for v in od]}"
+    )
