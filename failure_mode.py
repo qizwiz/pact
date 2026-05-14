@@ -1007,6 +1007,10 @@ def _scan_file_missing_await(path: str) -> list[FailureEvidence]:
             gp = parent_map.get(id(parent))
             if isinstance(gp, (_ast.Assign, _ast.AnnAssign, _ast.AugAssign)):
                 return True
+            # return (coro(item) for item in items) — lazy generator returned to
+            # caller for gather; same intent as list comprehension assigned to var.
+            if isinstance(gp, _ast.Return):
+                return True
             # asyncio.gather(*[coro(item) for item in items])
             if isinstance(gp, _ast.Starred):
                 ggp = parent_map.get(id(gp))

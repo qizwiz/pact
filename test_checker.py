@@ -2028,6 +2028,28 @@ def test_list_literal_gather_pattern_not_flagged(tmp_path):
     assert len(ma) == 0, f"List literal for gather must not be flagged: {[(v.line, v.call) for v in ma]}"
 
 
+def test_generator_return_gather_pattern_not_flagged(tmp_path):
+    """return (coro(item) for item in items) — lazy generator of coroutines returned to caller."""
+    _write_src(
+        tmp_path,
+        "downloader.py",
+        """
+        import asyncio
+
+        async def fetch_video(url): pass
+
+        def fetch_all(urls):
+            return (fetch_video(url) for url in urls)
+
+        async def main(urls):
+            await asyncio.gather(*fetch_all(urls))
+        """,
+    )
+    violations = check_codebase(tmp_path)
+    ma = [v for v in violations if v.context == "missing_await"]
+    assert len(ma) == 0, f"Generator return of coroutines must not be flagged: {[(v.line, v.call) for v in ma]}"
+
+
 def test_optional_dereference_zero_arg_get_not_flagged(tmp_path):
     """obj.get() with no args is a custom method (e.g. Twisted DeferredQueue), not dict.get().
     dict.get() always requires at least one positional key argument."""
