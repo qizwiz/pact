@@ -1083,6 +1083,17 @@ def _scan_file_missing_await(path: str) -> list[FailureEvidence]:
     if not module_async and not method_async:
         return []
 
+    # Detect asyncio consumer names imported directly: `from asyncio import run`.
+    _ASYNCIO_CONSUMER_SOURCE_NAMES = frozenset(
+        {"run", "ensure_future", "gather", "wait", "wait_for", "shield", "run_coroutine_threadsafe"}
+    )
+    file_imported_consumers: set[str] = set()
+    for node in _ast.walk(tree):
+        if isinstance(node, _ast.ImportFrom) and node.module == "asyncio":
+            for alias in node.names:
+                if alias.name in _ASYNCIO_CONSUMER_SOURCE_NAMES:
+                    file_imported_consumers.add(alias.asname or alias.name)
+
     # Build a child→parent map so we can check the calling context.
     parent_map: dict[int, _ast.AST] = {}
     for node in _ast.walk(tree):
@@ -1136,7 +1147,7 @@ def _scan_file_missing_await(path: str) -> list[FailureEvidence]:
                     receiver = func.value.id
             elif isinstance(func, _ast.Name):
                 fname = func.id
-            if fname in _CORO_CONSUMERS or (fname is not None and fname.startswith("create_task")):
+            if fname in _CORO_CONSUMERS or fname in file_imported_consumers or (fname is not None and fname.startswith("create_task")):
                 return True
             # Qualified consumers: asyncio.run(), loop.run_until_complete()
             if receiver is not None and (receiver, fname) in _CORO_CONSUMERS_QUALIFIED:
@@ -1152,7 +1163,7 @@ def _scan_file_missing_await(path: str) -> list[FailureEvidence]:
                     if isinstance(func, _ast.Attribute)
                     else func.id if isinstance(func, _ast.Name) else None
                 )
-                if fname in _CORO_CONSUMERS or (fname is not None and fname.startswith("create_task")):
+                if fname in _CORO_CONSUMERS or fname in file_imported_consumers or (fname is not None and fname.startswith("create_task")):
                     return True
             # tasks = [coro1(), coro2(), coro3()] — list literal assigned to a
             # variable for later gather(*tasks). Same intent as list comprehension.
@@ -1183,7 +1194,7 @@ def _scan_file_missing_await(path: str) -> list[FailureEvidence]:
                         if isinstance(func, _ast.Attribute)
                         else func.id if isinstance(func, _ast.Name) else None
                     )
-                    if fname in _CORO_CONSUMERS:
+                    if fname in _CORO_CONSUMERS or fname in file_imported_consumers:
                         return True
         # task = coro() — coroutine stored for later scheduling (ensure_future, gather)
         # The bug pattern is an expression statement (parent is Expr), not an assignment.

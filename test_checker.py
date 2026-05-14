@@ -3065,3 +3065,31 @@ def test_lookup_chain_isinstance_guard_not_flagged(tmp_path):
         "isinstance(var, T) must suppress lookup-chain flag. "
         f"got: {[(r.line, r.call) for r in results]}"
     )
+
+
+def test_asyncio_run_direct_import_not_flagged(tmp_path):
+    """from asyncio import run; run(coro()) must not be flagged — run IS asyncio.run."""
+    from .failure_mode import MISSING_AWAIT
+
+    _write_src(
+        tmp_path,
+        "main.py",
+        """\
+        from asyncio import run
+
+        async def app():
+            pass
+
+        async def server():
+            pass
+
+        if __name__ == "__main__":
+            run(app())
+            run(server())
+        """,
+    )
+    results = check_codebase(tmp_path, modes=[MISSING_AWAIT])
+    assert len(results) == 0, (
+        "from asyncio import run; run(coro()) must not be flagged. "
+        f"got: {[(r.line, r.call) for r in results]}"
+    )
