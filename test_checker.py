@@ -2686,3 +2686,39 @@ def test_same_name_closures_different_signatures_not_flagged(tmp_path):
         "Same-named closures with different scopes must not produce required_arg_missing FPs, "
         f"got: {[(v.line, v.call, v.missing) for v in ra]}"
     )
+
+
+def test_schedule_coroutine_consumer_not_flagged(tmp_path):
+    """self.schedule(coro()) must not produce missing_await FP.
+
+    Corpus evidence: langchain-ai/langgraph StreamTransformer.process() calls
+    self.schedule(work()) where schedule() accepts Coroutine[Any, Any, Any] and
+    wraps it in asyncio.create_task. The coroutine is intentionally not awaited
+    at the call site.
+    """
+    _write_src(
+        tmp_path,
+        "stream.py",
+        """\
+        import asyncio
+
+        class StreamTransformer:
+            def schedule(self, coro):
+                return asyncio.get_event_loop().create_task(coro)
+
+            def process(self, event):
+                async def work() -> None:
+                    await asyncio.sleep(0.01)
+                    print("done")
+
+                self.schedule(work())
+                return True
+        """,
+    )
+    violations = check_codebase(tmp_path)
+    ma = [v for v in violations if v.context == "missing_await"]
+    assert len(ma) == 0, (
+        "self.schedule(coro()) must not be flagged as missing_await — "
+        "schedule() is a coroutine consumer. "
+        f"got: {[(v.line, v.call) for v in ma]}"
+    )

@@ -1058,6 +1058,7 @@ def _scan_file_missing_await(path: str) -> list[FailureEvidence]:
             "call_soon_threadsafe",
             "asyncio_run",      # user-defined wrapper: def asyncio_run(f): loop.run_until_complete(f)
             "run_async",        # alternative user-defined wrapper name
+            "schedule",         # custom task schedulers (e.g. StreamTransformer.schedule(coro))
         }
     )
 
