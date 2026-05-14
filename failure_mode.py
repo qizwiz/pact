@@ -815,6 +815,13 @@ def _scan_file_mutable_defaults(path: str) -> list[FailureEvidence]:
     evidence = []
     _MUTABLE = (_ast.List, _ast.Dict, _ast.Set)
 
+    # Methods that mutate their receiver in place.
+    _MUTATING_METHODS = frozenset({
+        "append", "extend", "update", "add", "remove", "discard", "pop",
+        "clear", "insert", "reverse", "sort", "setdefault", "popitem",
+        "__setitem__", "__delitem__",
+    })
+
     def _is_overload(func_node: _ast.FunctionDef | _ast.AsyncFunctionDef) -> bool:
         for dec in func_node.decorator_list:
             if isinstance(dec, _ast.Name) and dec.id == "overload":
@@ -823,45 +830,100 @@ def _scan_file_mutable_defaults(path: str) -> list[FailureEvidence]:
                 return True
         return False
 
+    def _param_is_mutated(func_node: _ast.FunctionDef | _ast.AsyncFunctionDef,
+                          param: str) -> bool:
+        """Return True if `param` is mutated anywhere in func_node's body.
+
+        Checks subscript assignment (d[k]=v), mutating method calls
+        (d.update(...)), augmented assignment (d |= x), and del d[k].
+        Pure reads (if param: / return param) are not mutations.
+        """
+        for n in _ast.walk(func_node):
+            # param.mutating_method(...)
+            if (isinstance(n, _ast.Call)
+                    and isinstance(n.func, _ast.Attribute)
+                    and n.func.attr in _MUTATING_METHODS
+                    and isinstance(n.func.value, _ast.Name)
+                    and n.func.value.id == param):
+                return True
+            # param[key] = value
+            if isinstance(n, _ast.Assign):
+                for t in n.targets:
+                    if (isinstance(t, _ast.Subscript)
+                            and isinstance(t.value, _ast.Name)
+                            and t.value.id == param):
+                        return True
+            # param[key] += value  or  param |= {k: v}
+            if isinstance(n, _ast.AugAssign):
+                t = n.target
+                if isinstance(t, _ast.Name) and t.id == param:
+                    return True
+                if (isinstance(t, _ast.Subscript)
+                        and isinstance(t.value, _ast.Name)
+                        and t.value.id == param):
+                    return True
+            # del param[key]
+            if isinstance(n, _ast.Delete):
+                for t in n.targets:
+                    if (isinstance(t, _ast.Subscript)
+                            and isinstance(t.value, _ast.Name)
+                            and t.value.id == param):
+                        return True
+        return False
+
     for node in _ast.walk(tree):
         if not isinstance(node, (_ast.FunctionDef, _ast.AsyncFunctionDef)):
             continue
         if _is_overload(node):
             continue
-        for default in node.args.defaults:
-            if isinstance(default, _MUTABLE):
-                kind = type(default).__name__.lower()
-                msg = (
-                    f"mutable {kind} default in '{node.name}' — "
-                    "shared across all calls; use None and allocate inside the function"
+
+        # Positional defaults map to the last N args (N = len(defaults)).
+        args = node.args.args
+        n_defaults = len(node.args.defaults)
+        n_args = len(args)
+        for i, default in enumerate(node.args.defaults):
+            if not isinstance(default, _MUTABLE):
+                continue
+            param_name = args[n_args - n_defaults + i].arg
+            if not _param_is_mutated(node, param_name):
+                continue
+            kind = type(default).__name__.lower()
+            msg = (
+                f"mutable {kind} default in '{node.name}' — "
+                "shared across all calls; use None and allocate inside the function"
+            )
+            evidence.append(
+                FailureEvidence(
+                    mode_name="mutable_default_arg",
+                    file=path,
+                    line=default.lineno,
+                    call=f"def {node.name}",
+                    message=msg,
+                    missing=[msg],
                 )
-                evidence.append(
-                    FailureEvidence(
-                        mode_name="mutable_default_arg",
-                        file=path,
-                        line=default.lineno,
-                        call=f"def {node.name}",
-                        message=msg,
-                        missing=[msg],
-                    )
+            )
+
+        # Keyword-only defaults are one-to-one with kwonlyargs.
+        for kwarg, kw_default in zip(node.args.kwonlyargs, node.args.kw_defaults):
+            if kw_default is None or not isinstance(kw_default, _MUTABLE):
+                continue
+            if not _param_is_mutated(node, kwarg.arg):
+                continue
+            kind = type(kw_default).__name__.lower()
+            msg = (
+                f"mutable {kind} keyword default in '{node.name}' — "
+                "shared across all calls; use None and allocate inside the function"
+            )
+            evidence.append(
+                FailureEvidence(
+                    mode_name="mutable_default_arg",
+                    file=path,
+                    line=kw_default.lineno,
+                    call=f"def {node.name}",
+                    message=msg,
+                    missing=[msg],
                 )
-        for kw_default in node.args.kw_defaults:
-            if kw_default is not None and isinstance(kw_default, _MUTABLE):
-                kind = type(kw_default).__name__.lower()
-                msg = (
-                    f"mutable {kind} keyword default in '{node.name}' — "
-                    "shared across all calls; use None and allocate inside the function"
-                )
-                evidence.append(
-                    FailureEvidence(
-                        mode_name="mutable_default_arg",
-                        file=path,
-                        line=kw_default.lineno,
-                        call=f"def {node.name}",
-                        message=msg,
-                        missing=[msg],
-                    )
-                )
+            )
     return evidence
 
 

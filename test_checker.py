@@ -871,6 +871,64 @@ def test_immutable_default_not_flagged(tmp_path):
     assert not v, "str/int/bool defaults should not be flagged"
 
 
+def test_readonly_dict_default_not_flagged(tmp_path):
+    """reacton/bqplot-style widget API: mutable default passed through but never mutated.
+
+    993 violations in widgetti/reacton were FPs — auto-generated component
+    functions use dict/list defaults as configuration specs, never mutated.
+    """
+    _write_src(
+        tmp_path,
+        "widgets.py",
+        """
+        def Axis(label="x", offset: dict = {}, tick_style: dict = {}):
+            # read-only: defaults are passed to constructor, never mutated
+            return {"label": label, "offset": offset, "tick_style": tick_style}
+
+        def Series(name="series", colors: list = ["steelblue"], interactions: dict = {"hover": "tooltip"}):
+            return {"name": name, "colors": colors, "interactions": interactions}
+    """,
+    )
+    violations = check_codebase(tmp_path)
+    v = [v for v in violations if v.context == "mutable_default_arg"]
+    assert not v, (
+        "Read-only mutable defaults (never mutated in function body) "
+        f"should not be flagged, got: {[(x.line, x.call) for x in v]}"
+    )
+
+
+def test_mutated_dict_default_still_flagged(tmp_path):
+    """Subscript assignment to a dict default IS a real bug — must be flagged."""
+    _write_src(
+        tmp_path,
+        "cache.py",
+        """
+        def set_flag(key, registry={}):
+            registry[key] = True   # mutates the shared default
+            return registry
+    """,
+    )
+    violations = check_codebase(tmp_path)
+    v = [v for v in violations if v.context == "mutable_default_arg"]
+    assert v, "Subscript assignment to dict default must be flagged"
+
+
+def test_mutated_list_default_via_method_flagged(tmp_path):
+    """Calling .append() on a list default IS a real bug — must be flagged."""
+    _write_src(
+        tmp_path,
+        "accum.py",
+        """
+        def accumulate(item, results=[]):
+            results.append(item)   # mutates the shared default
+            return results
+    """,
+    )
+    violations = check_codebase(tmp_path)
+    v = [v for v in violations if v.context == "mutable_default_arg"]
+    assert v, ".append() on list default must be flagged"
+
+
 # ---------------------------------------------------------------------------
 # missing_await mode
 # ---------------------------------------------------------------------------
@@ -1938,7 +1996,9 @@ def test_incremental_full_match_when_all_changed(tmp_path):
 
 
 def test_overload_stub_mutable_default_not_flagged(tmp_path):
-    """@overload type stubs never execute at runtime — mutable defaults in them are FPs."""
+    """@overload stubs never execute — mutable defaults there are FPs.
+    The implementation is only flagged if it actually mutates the default.
+    """
     _write_src(
         tmp_path,
         "client.py",
@@ -1953,6 +2013,7 @@ def test_overload_stub_mutable_default_not_flagged(tmp_path):
             def get(self, path: str, *, options: dict = {}, stream: Literal[True]) -> bytes: ...
 
             def get(self, path, *, options: dict = {}, stream=False):
+                options["_path"] = path   # mutates the shared default — real bug
                 return path
 
         def caller():
@@ -1967,7 +2028,7 @@ def test_overload_stub_mutable_default_not_flagged(tmp_path):
 
 
 def test_typing_overload_mutable_default_not_flagged(tmp_path):
-    """typing.overload (qualified) also suppresses the check."""
+    """typing.overload stubs are skipped; implementation flagged only if it mutates the default."""
     _write_src(
         tmp_path,
         "validators.py",
@@ -1978,8 +2039,7 @@ def test_typing_overload_mutable_default_not_flagged(tmp_path):
         def process(items: list = []) -> None: ...
 
         def process(items: list = []) -> None:
-            for item in items:
-                print(item)
+            items.append("sentinel")   # mutates the shared default — real bug
 
         def caller():
             process()
