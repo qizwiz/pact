@@ -3150,6 +3150,31 @@ def test_async_name_reused_generator_and_coroutine_not_flagged(tmp_path):
     )
 
 
+def test_run_sync_coro_consumer_not_flagged(tmp_path):
+    """run_sync(coro()) — Chainlit's sync-context coroutine runner — must not be flagged."""
+    from .failure_mode import MISSING_AWAIT
+
+    _write_src(
+        tmp_path,
+        "main.py",
+        """\
+        from chainlit.sync import run_sync
+
+        async def async_helper():
+            return 42
+
+        def sync_caller():
+            result = run_sync(async_helper())
+            return result
+        """,
+    )
+    results = check_codebase(tmp_path, modes=[MISSING_AWAIT])
+    assert len(results) == 0, (
+        "run_sync(coro()) must not be flagged as missing await. "
+        f"got: {[(r.line, r.call) for r in results]}"
+    )
+
+
 def test_nested_async_closure_return_not_flagged(tmp_path):
     """Inner async def returned as awaitable from sync outer function must not be flagged.
     Pattern: py_anext-style factory — sync fn returns coroutine for caller to await."""

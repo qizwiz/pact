@@ -1172,6 +1172,7 @@ def _scan_file_missing_await(path: str) -> list[FailureEvidence]:
             "run_async",            # alternative user-defined wrapper name
             "schedule",             # custom task schedulers (e.g. StreamTransformer.schedule(coro))
             "run_until_complete",   # event_loop.run_until_complete(coro()) — any receiver name
+            "run_sync",             # Chainlit sync wrapper: run_sync(coro()) blocks until done
         }
     )
 
