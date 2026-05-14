@@ -998,7 +998,7 @@ def _scan_file_missing_await(path: str) -> list[FailureEvidence]:
                     receiver = func.value.id
             elif isinstance(func, _ast.Name):
                 fname = func.id
-            if fname in _CORO_CONSUMERS:
+            if fname in _CORO_CONSUMERS or (fname is not None and fname.startswith("create_task")):
                 return True
             # Qualified consumers: asyncio.run(), loop.run_until_complete()
             if receiver is not None and (receiver, fname) in _CORO_CONSUMERS_QUALIFIED:
@@ -1014,7 +1014,7 @@ def _scan_file_missing_await(path: str) -> list[FailureEvidence]:
                     if isinstance(func, _ast.Attribute)
                     else func.id if isinstance(func, _ast.Name) else None
                 )
-                if fname in _CORO_CONSUMERS:
+                if fname in _CORO_CONSUMERS or (fname is not None and fname.startswith("create_task")):
                     return True
             # tasks = [coro1(), coro2(), coro3()] — list literal assigned to a
             # variable for later gather(*tasks). Same intent as list comprehension.

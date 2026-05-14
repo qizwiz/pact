@@ -997,6 +997,36 @@ def test_create_task_not_flagged_as_missing_await(tmp_path):
     assert not v, "coroutine passed to create_task must not be flagged"
 
 
+def test_create_task_prefixed_wrapper_not_flagged_as_missing_await(tmp_path):
+    # Regression: user-defined wrappers named create_task_* (e.g. create_task_with_error_handling)
+    # consume a coroutine the same way asyncio.create_task does — no await needed.
+    _write_src(
+        tmp_path,
+        "browser.py",
+        """
+        async def _fetch(url):
+            pass
+
+        async def _render():
+            pass
+
+        def create_task_with_error_handling(coro, *, name=None):
+            import asyncio
+            return asyncio.create_task(coro)
+
+        class Session:
+            async def load(self, url):
+                tasks = {
+                    'fetch': create_task_with_error_handling(_fetch(url), name='fetch'),
+                    'render': create_task_with_error_handling(_render(), name='render'),
+                }
+    """,
+    )
+    violations = check_codebase(tmp_path)
+    v = [v for v in violations if v.context == "missing_await"]
+    assert not v, "coroutine passed to create_task_* wrapper must not be flagged"
+
+
 def test_gather_args_not_flagged_as_missing_await(tmp_path):
     # tasks.append(coro()) + asyncio.gather(*tasks) is a standard pattern.
     _write_src(
