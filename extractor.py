@@ -58,6 +58,10 @@ class FunctionManifest:
     is_click_command: bool = (
         False  # True when decorated with @click.command/group or @app.command
     )
+    is_session_injected: bool = (
+        False  # True when decorated with @with_session / @db_session / @transactional
+        # etc. — the decorator injects the session arg so callers omit it.
+    )
 
     @property
     def required_args(self) -> list[ArgConstraint]:
@@ -401,8 +405,36 @@ class _FunctionVisitor(ast.NodeVisitor):
                 return dec.id in ("command", "group")
             return False
 
+        # Session-injection decorators: @with_session, @db_session, etc. —
+        # the decorator prepends a live DB session as the first positional arg,
+        # so callers omit it.  Treat like @pytest.fixture for required-arg checks.
+        _SESSION_INJECTOR_NAMES = frozenset(
+            {
+                "with_session",
+                "db_session",
+                "session_scope",
+                "transactional",
+                "transaction",
+                "in_transaction",
+                "use_session",
+                "inject_session",
+            }
+        )
+
+        def _is_session_injector_dec(dec: ast.expr) -> bool:
+            if isinstance(dec, ast.Call):
+                return _is_session_injector_dec(dec.func)
+            if isinstance(dec, ast.Name):
+                return dec.id in _SESSION_INJECTOR_NAMES
+            if isinstance(dec, ast.Attribute):
+                return dec.attr in _SESSION_INJECTOR_NAMES
+            return False
+
         is_fixture = any(_is_fixture_dec(d) for d in node.decorator_list)
         is_click = any(_is_click_dec(d) for d in node.decorator_list)
+        is_session_injected = any(
+            _is_session_injector_dec(d) for d in node.decorator_list
+        )
 
         # Numba @intrinsic / @type_callable: first param is `typingctx`, injected
         # by Numba's JIT machinery — callers never supply it explicitly.
@@ -429,6 +461,7 @@ class _FunctionVisitor(ast.NodeVisitor):
                 args=constraints,
                 is_pytest_fixture=is_fixture,
                 is_click_command=is_click,
+                is_session_injected=is_session_injected,
             )
         )
         self.generic_visit(node)

@@ -737,6 +737,10 @@ def _check_required_arg(
     # calling main() with no args reads from sys.argv. Not a missing-arg bug.
     if func.is_click_command:
         return []
+    # Session-injection decorators (@with_session, @db_session, etc.): the
+    # decorator prepends the DB session at runtime; callers correctly omit it.
+    if func.is_session_injected:
+        return []
     # `if __name__ == "__main__": main()` — entry point call, args come from
     # the runtime / argparse inside the function body, not the call site.
     if call.is_in_main_block:

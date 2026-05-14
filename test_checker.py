@@ -3899,6 +3899,53 @@ def test_optional_dereference_self_get_not_flagged(tmp_path):
     )
 
 
+def test_required_arg_missing_with_session_not_flagged(tmp_path):
+    """Functions decorated with @with_session have session injected by the decorator;
+    callers omit it.  Pact must not flag the call as required_arg_missing.
+
+    Corpus evidence: chatchat-space/Langchain-Chatchat — @with_session wraps the
+    function as wrapper(*args, **kwargs) which prepends session; calling
+    list_docs_from_db(kb_name=..., file_name=...) is correct.
+    """
+    _write_src(
+        tmp_path,
+        "session.py",
+        """\
+        def with_session(f):
+            def wrapper(*args, **kwargs):
+                with open('/dev/null') as session:
+                    return f(session, *args, **kwargs)
+            return wrapper
+        """,
+    )
+    _write_src(
+        tmp_path,
+        "repository.py",
+        """\
+        from session import with_session
+
+        @with_session
+        def list_docs_from_db(session, kb_name: str, file_name: str = None):
+            return session.query(kb_name)
+
+        @with_session
+        def delete_docs_from_db(session, kb_name: str):
+            session.delete(kb_name)
+
+        def caller(kb_name, file_name):
+            # Correct: session is injected by @with_session
+            docs = list_docs_from_db(kb_name=kb_name, file_name=file_name)
+            delete_docs_from_db(kb_name=kb_name)
+        """,
+    )
+    violations = check_codebase(tmp_path)
+    ra = [v for v in violations if v.context == "required_arg_missing"]
+    assert len(ra) == 0, (
+        "@with_session functions called without session must not be flagged "
+        f"(regression of Langchain-Chatchat FP), got: {[(v.line, v.call, v.missing) for v in ra]}"
+    )
+
+
 def test_required_arg_missing_shadowed_closure_not_flagged(tmp_path):
     """A module-level run(input) plus a local no-arg run closure must not flag run().
 
