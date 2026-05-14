@@ -3448,6 +3448,36 @@ def test_client_namespace_get_not_flagged(tmp_path):
     )
 
 
+def test_docker_client_containers_get_not_flagged(tmp_path):
+    """client.containers.get(hostname) (Docker SDK) must not be flagged —
+    recv is Attribute(value=Name('client'), attr='containers'), where the root
+    Name 'client' is a known HTTP/API client variable."""
+    from .failure_mode import OPTIONAL_DEREF as OPTIONAL_DEREFERENCE
+
+    _write_src(
+        tmp_path,
+        "docker_runner.py",
+        """\
+        import docker
+
+        def get_container_ip(hostname):
+            client = docker.from_env()
+            container = client.containers.get(hostname)
+            return container.attrs["NetworkSettings"]["Networks"]
+
+        def restart_container(name):
+            client = docker.from_env()
+            c = client.containers.get(name)
+            c.restart()
+        """,
+    )
+    results = check_codebase(tmp_path, modes=[OPTIONAL_DEREFERENCE])
+    assert len(results) == 0, (
+        "client.containers.get() must not be flagged as optional_dereference. "
+        f"got: {[(r.line, r.call) for r in results]}"
+    )
+
+
 def test_textual_work_decorator_not_flagged(tmp_path):
     """Textual @work-decorated async methods are worker dispatch, not coroutines.
     Calling self.method() without await is correct."""

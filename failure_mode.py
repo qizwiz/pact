@@ -377,6 +377,15 @@ def _scan_file_optional_deref(path: str) -> list[FailureEvidence]:
                         and recv.value.attr.lstrip("_") in _HTTP_CLIENTS
                     ):
                         return
+                    # client.containers.get() — Docker SDK / plain client variable
+                    # at the root: recv is Attribute(value=Name('client'), attr='containers')
+                    # so recv.value is a bare Name, not an Attribute.
+                    if (
+                        isinstance(recv, _ast.Attribute)
+                        and isinstance(recv.value, _ast.Name)
+                        and recv.value.id.lstrip("_") in _HTTP_CLIENTS
+                    ):
+                        return
                     # Custom class .get(non_string_key) — not a dict lookup; skip.
                     # dict.get() keys are almost always string literals or string
                     # variables (name, key, attr_name, etc.). A non-string constant
