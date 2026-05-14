@@ -1,0 +1,4 @@
+# corpus JSONL files can be large — don't track in git
+corpus/*.jsonl
+# but DO track the batch rotation pointer
+!corpus/batch_state.txt

@@ -1,23 +1,25 @@
-name: Nightly corpus scan
+name: Corpus batch scan
 
 on:
   schedule:
-    - cron: "17 3 * * *"   # 03:17 UTC daily — off-peak, avoids :00/:30 pile-ups
+    - cron: "17 */4 * * *"   # every 4 hours, off-peak offset
   workflow_dispatch:
     inputs:
-      query:
-        description: "GitHub search query"
-        default: "language:python stars:>500"
-      limit:
-        description: "Max repos to scan"
-        default: "30"
+      batch:
+        description: "Batch number to run (0-9, empty = read from corpus/batch_state.txt)"
+        default: ""
+
+permissions:
+  contents: write   # needed to commit batch_state.txt + results
 
 jobs:
   scan:
-    name: Corpus scan
+    name: "Batch scan"
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
 
       - uses: actions/setup-python@v5
         with:
@@ -26,71 +28,93 @@ jobs:
       - name: Install dependencies
         run: pip install z3-solver requests hypothesis pytest networkx
 
-      - name: Run corpus scan
+      - name: Resolve batch number and query
+        id: batch
+        run: |
+          OVERRIDE="${{ github.event.inputs.batch }}"
+          if [ -n "$OVERRIDE" ]; then
+            NUM=$OVERRIDE
+          else
+            NUM=$(cat corpus/batch_state.txt 2>/dev/null || echo "0")
+          fi
+          NUM=$(( NUM % 10 ))
+          echo "num=$NUM" >> "$GITHUB_OUTPUT"
+
+          QUERIES=(
+            "language:python topic:llm stars:>500"
+            "language:python topic:langchain stars:>200"
+            "language:python topic:openai stars:>300"
+            "language:python topic:agent stars:>400"
+            "language:python topic:rag stars:>200"
+            "language:python topic:evaluation stars:>100"
+            "language:python topic:fastapi stars:>1000"
+            "language:python topic:celery stars:>200"
+            "language:python topic:django stars:>500"
+            "language:python topic:pydantic stars:>300"
+          )
+          echo "query=${QUERIES[$NUM]}" >> "$GITHUB_OUTPUT"
+
+      - name: Run scan (token from env — never in args)
         env:
           GITHUB_TOKEN: ${{ secrets.CORPUS_GITHUB_TOKEN }}
         run: |
-          QUERY="${{ github.event.inputs.query || 'language:python topic:llm stars:>200' }}"
-          LIMIT="${{ github.event.inputs.limit || '30' }}"
-          python -c "
-          import sys
-          sys.path.insert(0, '.')
-          " 2>/dev/null || true
-          # Run from parent so pact is importable as a package
+          mkdir -p corpus
+          # Run from parent directory so `pact` is importable as a package
           cd ..
           python3 -m pact.scan_github \
-            --query "$QUERY" \
-            --limit "$LIMIT" \
-            --max-files 150 \
-            --token "$GITHUB_TOKEN" \
-            --out pact/corpus-nightly.jsonl
+            --query "${{ steps.batch.outputs.query }}" \
+            --limit 20 \
+            --max-files 100 \
+            --out "pact/corpus/batch-${{ steps.batch.outputs.num }}.jsonl"
           cd pact
 
-      - name: Summarize results
+      - name: Append to rolling corpus
         run: |
-          python3 - <<'EOF'
-          import json, collections, sys
-          lines = [json.loads(l) for l in open("corpus-nightly.jsonl") if l.strip()]
-          modes = collections.Counter(r["mode"] for r in lines)
-          repos = len(set(r["repo"] for r in lines))
-          print(f"## Nightly corpus summary")
-          print(f"- **{repos} repos** scanned")
-          print(f"- **{len(lines)} violations** found")
+          cat "corpus/batch-${{ steps.batch.outputs.num }}.jsonl" >> corpus/corpus.jsonl
+
+      - name: Advance batch state
+        run: |
+          NEXT=$(( (${{ steps.batch.outputs.num }} + 1) % 10 ))
+          echo "$NEXT" > corpus/batch_state.txt
+
+      - name: Summarize and FP canary
+        run: |
+          BATCH_NUM="${{ steps.batch.outputs.num }}"
+          python3 - <<EOF
+          import json, collections
+          batch = [json.loads(l) for l in open(f"corpus/batch-{$BATCH_NUM}.jsonl") if l.strip()]
+          total_corpus = sum(1 for l in open("corpus/corpus.jsonl") if l.strip())
+          modes = collections.Counter(r["mode"] for r in batch)
+          repos = len(set(r["repo"] for r in batch))
+          print(f"Batch {$BATCH_NUM}: {repos} repos, {len(batch)} violations — rolling corpus: {total_corpus}")
           print()
           print("| Mode | Count |")
           print("|------|-------|")
           for mode, count in modes.most_common(10):
               print(f"| {mode} | {count} |")
-          # False-positive canary: any mode >70% of a single repo's violations
+          # FP canary: any mode >70% of a single repo's hits
           by_repo = collections.defaultdict(list)
-          for r in lines:
+          for r in batch:
               by_repo[r["repo"]].append(r["mode"])
           suspects = []
           for repo, ms in by_repo.items():
-              total = len(ms)
-              if total < 5: continue
+              if len(ms) < 5:
+                  continue
               top_mode, top_count = collections.Counter(ms).most_common(1)[0]
-              if top_count / total > 0.7:
-                  suspects.append((top_count/total, repo, top_mode, total))
+              if top_count / len(ms) > 0.70:
+                  suspects.append((top_count / len(ms), repo, top_mode, len(ms)))
           if suspects:
               print()
-              print("### ⚠️ False-positive canary (>70% single mode)")
+              print("### FP canary (>70% single mode per repo)")
               for ratio, repo, mode, total in sorted(suspects, reverse=True)[:5]:
-                  print(f"- {repo}: {ratio:.0%} `{mode}` ({total} violations total)")
+                  print(f"  {ratio:.0%}  {repo}  {mode}  ({total} violations)")
           EOF
-          cat corpus-nightly.jsonl >> corpus-all.jsonl 2>/dev/null || mv corpus-nightly.jsonl corpus-all.jsonl
 
-      - name: Upload corpus artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: corpus-${{ github.run_id }}
-          path: corpus-nightly.jsonl
-          retention-days: 30
-
-      - name: Upload rolling corpus
-        uses: actions/upload-artifact@v4
-        with:
-          name: corpus-all
-          path: corpus-all.jsonl
-          retention-days: 90
-          overwrite: true
+      - name: Commit results
+        run: |
+          git config user.name "pact-corpus-bot"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add corpus/
+          git diff --staged --quiet && echo "nothing to commit" && exit 0
+          git commit -m "corpus: batch ${{ steps.batch.outputs.num }} ($(date -u +%Y-%m-%d))"
+          git push
