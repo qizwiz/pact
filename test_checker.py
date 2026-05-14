@@ -1989,6 +1989,38 @@ def test_optional_dereference_early_exit_simple_not_flagged(tmp_path):
     assert not v, "if x is None: return should permanently guard x after the block"
 
 
+def test_optional_dereference_membership_guard_not_flagged(tmp_path):
+    # `if key in container: val = container.get(key)` — the membership check
+    # guarantees .get() won't return None; should not be flagged.
+    _write_src(
+        tmp_path,
+        "mindsdb_tables.py",
+        """
+        def get_query_items(queries_data, query_ids):
+            results = []
+            for query_id in query_ids:
+                query_item = {}
+                if query_id is not None:
+                    if query_id in queries_data:
+                        query_item = queries_data.get(query_id)
+                    else:
+                        query_id = None
+                results.append((
+                    query_item.get("started_at"),
+                    query_item.get("finished_at"),
+                    query_item.get("processed_rows"),
+                ))
+            return results
+        """,
+    )
+    violations = check_codebase(tmp_path)
+    v = [v for v in violations if v.context == "optional_dereference"]
+    assert not v, (
+        "if key in container: val = container.get(key) should not flag val as optional "
+        "(regression of mindsdb/mindsdb FP)"
+    )
+
+
 def test_optional_dereference_dunder_session_not_flagged(tmp_path):
     # self.__session.get(url) — private HTTP client; response is not Optional.
     _write_src(

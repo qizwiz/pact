@@ -247,16 +247,20 @@ def _scan_file_optional_deref(path: str) -> list[FailureEvidence]:
             # var_name -> line where it was assigned from optional source
             self.optional_vars: dict[str, int] = {}
             self.guarded: set[str] = set()
+            # (key_name, container_name) pairs where `key in container` was tested
+            # — inside such blocks, container.get(key) is non-optional
+            self._membership_checked: set[tuple[str, str]] = set()
 
         def _enter_scope(self):
             """Save and reset optional_vars at function/class boundaries."""
-            saved = (dict(self.optional_vars), set(self.guarded))
+            saved = (dict(self.optional_vars), set(self.guarded), set(self._membership_checked))
             self.optional_vars = {}
             self.guarded = set()
+            self._membership_checked = set()
             return saved
 
         def _exit_scope(self, saved):
-            self.optional_vars, self.guarded = saved
+            self.optional_vars, self.guarded, self._membership_checked = saved
 
         def visit_FunctionDef(self, node):
             saved = self._enter_scope()
@@ -499,6 +503,17 @@ def _scan_file_optional_deref(path: str) -> list[FailureEvidence]:
                             "fd",
                         ):
                             return  # integer-semantics variable name → custom class
+                # `if key in container: val = container.get(key)` — the membership
+                # check guarantees the key exists, so .get() returns non-None.
+                if node.value.func.attr == "get" and len(call_args) >= 1:
+                    recv = node.value.func.value
+                    key_arg = call_args[0]
+                    if (
+                        isinstance(recv, _ast.Name)
+                        and isinstance(key_arg, _ast.Name)
+                        and (key_arg.id, recv.id) in self._membership_checked
+                    ):
+                        return
                 self.optional_vars[node.targets[0].id] = node.lineno
                 self.guarded.discard(node.targets[0].id)
 
@@ -508,7 +523,23 @@ def _scan_file_optional_deref(path: str) -> list[FailureEvidence]:
             for var in list(self.optional_vars):
                 if var in src:
                     self.guarded.add(var)
+            # Detect `if key in container:` — inside the body, container.get(key)
+            # is non-optional because the membership check guarantees the key exists.
+            _in_check: tuple[str, str] | None = None
+            _test = node.test
+            if (
+                isinstance(_test, _ast.Compare)
+                and len(_test.ops) == 1
+                and isinstance(_test.ops[0], _ast.In)
+                and len(_test.comparators) == 1
+                and isinstance(_test.left, _ast.Name)
+                and isinstance(_test.comparators[0], _ast.Name)
+            ):
+                _in_check = (_test.left.id, _test.comparators[0].id)
+                self._membership_checked.add(_in_check)
             self.generic_visit(node)
+            if _in_check is not None:
+                self._membership_checked.discard(_in_check)
             # Early-exit guard: if the if body always exits (return/raise/continue/break),
             # variables checked for None in the condition are permanently non-None afterward.
             # e.g. `if x is None or x.get(...) is None: continue` — x is guarded after.
