@@ -232,7 +232,10 @@ def scan_repo(
         if (
             _basename.startswith("test_")
             or _basename.endswith("_test.py")
-            or any(p in {"test", "tests", "testing"} for p in _parts)
+            or any(
+                p in {"test", "tests", "testing", "unittest", "unittests", "unit_tests"}
+                for p in _parts
+            )
         ):
             continue
         source = fetch_file_content(owner, repo, path, default_branch, session)
