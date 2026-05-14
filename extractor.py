@@ -541,6 +541,10 @@ class _CallVisitor(ast.NodeVisitor):
         if isinstance(node, ast.Name):
             return node.id
         if isinstance(node, ast.Attribute):
+            if isinstance(node.value, ast.Constant):
+                # "literal".method() is always a built-in call; don't match
+                # against user-defined functions with the same method name.
+                return None
             obj = self._name(node.value)
             return f"{obj}.{node.attr}" if obj else node.attr
         return None

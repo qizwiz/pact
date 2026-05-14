@@ -2285,3 +2285,27 @@ def test_main_called_outside_dunder_block_still_flagged(tmp_path):
     violations = check_codebase(tmp_path)
     ra = [v for v in violations if v.context == "required_arg_missing" and "caller.py" in v.file]
     assert len(ra) == 1, f"Expected 1 required_arg_missing outside __main__ block, got {len(ra)}"
+
+
+def test_string_literal_join_not_flagged_as_missing_separator(tmp_path):
+    """'sep'.join(items) must not be matched against a user-defined join(items, separator).
+
+    The receiver is a string constant — this is a built-in str.join call, not
+    a call to the local join() function.  Returning None from _name() when the
+    receiver is a Constant prevents the callee from being resolved to any
+    user-defined function that happens to share the method name.
+    """
+    _write_src(
+        tmp_path,
+        "helpers.py",
+        """
+        def join(items, separator):
+            return separator.join(items)
+
+        def render(keywords):
+            return ", ".join(keywords)   # str.join — NOT a call to the local join()
+        """,
+    )
+    violations = check_codebase(tmp_path)
+    ra = [v for v in violations if v.context == "required_arg_missing" and "helpers.py" in v.file]
+    assert len(ra) == 0, f"str.join falsely flagged as missing-arg: {ra}"
