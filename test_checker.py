@@ -2583,3 +2583,41 @@ def test_numba_intrinsic_typingctx_not_flagged(tmp_path):
         "Numba intrinsic calls with typingctx as first param must not be flagged, "
         f"got: {[(v.line, v.call, v.message) for v in ra]}"
     )
+
+
+def test_bodo_ctx_param_not_flagged(tmp_path):
+    """Bodo uses 'ctx' (short form) for the same auto-injected intrinsic parameter.
+
+    bodo-ai/Bodo had 18 required_arg_missing FPs from this pattern:
+      def run_crypto_function(ctx, msg, digest_size, output): ...
+    called as:
+      run_crypto_function(msg, digest_size, output)  # ctx injected by Bodo JIT
+    """
+    _write_src(
+        tmp_path,
+        "bodo_intrinsics.py",
+        """
+        def run_crypto_function(ctx, msg, digest_size, output):
+            # Bodo/Numba intrinsic: ctx auto-injected
+            pass
+
+        def _get_glue_connection(ctx, warehouse, conn_str):
+            pass
+
+        def impl_crypto(msg, digest_size):
+            output = "x" * digest_size
+            run_crypto_function(msg, digest_size, output)  # ctx auto-injected
+            return output
+
+        def impl_glue(warehouse):
+            conn_str = "conn://" + warehouse
+            conn = _get_glue_connection(warehouse, conn_str)  # ctx auto-injected
+            return conn
+        """,
+    )
+    violations = check_codebase(tmp_path)
+    ra = [v for v in violations if v.context == "required_arg_missing"]
+    assert len(ra) == 0, (
+        "Bodo intrinsic calls with 'ctx' as first param must not be flagged, "
+        f"got: {[(v.line, v.call, v.message) for v in ra]}"
+    )
