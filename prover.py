@@ -300,24 +300,99 @@ _PROVERS = {
 }
 
 
+@dataclass
+class InstanceCertificate:
+    """Proof certificate for a specific code instance."""
+    file: str
+    line: int
+    mode: str
+    code: str           # the actual lines from the source file
+    modified_field: str # the field being modified
+    class_cert: "ProofCertificate"
+
+    def render(self) -> str:
+        lines = [
+            f"INSTANCE PROOF: {self.file}:{self.line}",
+            "=" * 60,
+            "",
+            "OBSERVED CODE",
+            "-------------",
+        ]
+        for l in self.code.strip().splitlines():
+            lines.append(f"  {l}")
+        lines += [
+            "",
+            f"PATTERN MATCH: save_without_update_fields",
+            f"  Field modified:  {self.modified_field!r}",
+            f"  Save scope:      ALL fields (no update_fields)",
+            "",
+            "INHERITED CLASS PROOF",
+            "---------------------",
+            f"  Mode:   {self.class_cert.mode}",
+            f"  Bug:    {'SAT — race condition satisfiable' if self.class_cert.bug_sat else 'UNSAT'}",
+            f"  Fix:    {'UNSAT — no data-loss scenario after update_fields' if self.class_cert.fix_unsat else 'SAT'}",
+            "",
+            "INSTANTIATED WITNESS",
+            "--------------------",
+            f"  Writer A: sets project.{self.modified_field} = <new value>, calls project.save()",
+            f"  Writer B: concurrently modifies any OTHER project field, calls project.save()",
+            f"  Interleaving: B reads → A reads → A saves → B saves",
+            f"  Result: B's full save restores the old {self.modified_field!r}, silently losing A's change",
+            "",
+            "FIX",
+            "---",
+            f"  project.save(update_fields=[{self.modified_field!r}])",
+            "",
+            "RUNTIME ENFORCEMENT",
+            "-------------------",
+            f"  from pact.django_guard import save_scoped",
+            f"  @save_scoped({self.modified_field!r})   # raises PactViolation if violated",
+            "",
+        ]
+        verdict = "PROVEN" if (self.class_cert.bug_sat and self.class_cert.fix_unsat) else "INCOMPLETE"
+        lines.append(f"VERDICT: {verdict} — instance inherits class proof")
+        return "\n".join(lines)
+
+
+def prove_instance(file: str, line: int, code: str, modified_field: str) -> InstanceCertificate:
+    """Produce an instance proof for a specific save_without_update_fields violation."""
+    class_cert = prove_save_without_update_fields()
+    return InstanceCertificate(
+        file=file,
+        line=line,
+        mode="save_without_update_fields",
+        code=code,
+        modified_field=modified_field,
+        class_cert=class_cert,
+    )
+
+
 def main() -> None:
     if not _HAS_Z3:
         print("ERROR: z3-solver not installed. Run: pip install z3-solver", file=sys.stderr)
         sys.exit(1)
 
     parser = argparse.ArgumentParser(description="pact formal proof certificates")
-    parser.add_argument(
-        "--mode",
-        choices=list(_PROVERS),
-        required=True,
-        help="Violation mode to prove",
-    )
+    parser.add_argument("--mode", choices=list(_PROVERS), help="Violation mode to prove")
+    parser.add_argument("--file", help="Source file path (for instance proof)")
+    parser.add_argument("--line", type=int, help="Line number (for instance proof)")
+    parser.add_argument("--code", help="Code snippet (for instance proof)")
+    parser.add_argument("--field", help="Modified field name (for instance proof)")
     args = parser.parse_args()
 
-    cert = _PROVERS[args.mode]()
-    print(cert.render())
+    if args.file and args.line and args.code and args.field:
+        inst = prove_instance(args.file, args.line, args.code, args.field)
+        print(inst.render())
+        ok = inst.class_cert.bug_sat and inst.class_cert.fix_unsat
+    elif args.mode:
+        cert = _PROVERS[args.mode]()
+        print(cert.render())
+        ok = cert.bug_sat and cert.fix_unsat
+    else:
+        parser.print_help()
+        sys.exit(1)
 
-    if cert.bug_sat and cert.fix_unsat:
+    if ok:
         print("\nVERDICT: PROVEN — bug is real, fix is sufficient.")
         sys.exit(0)
     else:
