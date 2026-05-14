@@ -2497,3 +2497,50 @@ def test_format_dotted_attr_covered_by_root_kwarg_not_flagged(tmp_path):
     violations = check_codebase(tmp_path)
     fa = [v for v in violations if v.context == "format_arg_mismatch" and "mapper.py" in v.file]
     assert len(fa) == 0, f"dotted attr covered by root kwarg falsely flagged: {fa}"
+
+
+def test_numba_intrinsic_typingctx_not_flagged(tmp_path):
+    """Numba @intrinsic functions have typingctx auto-injected — callers don't pass it.
+
+    bodo-ai/Bodo had 18 required_arg_missing FPs from this pattern:
+      def _get_glue_connection(typingctx, warehouse, conn_str): ...
+    called as:
+      _get_glue_connection(warehouse, conn_str)   # typingctx injected by Numba
+    """
+    _write_src(
+        tmp_path,
+        "jit_intrinsics.py",
+        """
+        def _get_connection(typingctx, warehouse, conn_str):
+            # Numba intrinsic: typingctx is auto-injected by the JIT framework
+            def codegen(context, builder, signature, args):
+                pass
+            return None, codegen
+
+        def _run_kernel(typingctx, input_arr, length, output):
+            def codegen(context, builder, signature, args):
+                pass
+            return None, codegen
+
+        def overload_get_connection(warehouse):
+            def impl(warehouse):
+                conn_str = "conn://" + warehouse
+                conn = _get_connection(warehouse, conn_str)   # typingctx injected
+                return conn
+            return impl
+
+        def overload_run_kernel(input_arr, length):
+            def impl(input_arr, length):
+                import numpy as np
+                output = np.empty(length)
+                _run_kernel(input_arr, length, output)        # typingctx injected
+                return output
+            return impl
+        """,
+    )
+    violations = check_codebase(tmp_path)
+    ra = [v for v in violations if v.context == "required_arg_missing"]
+    assert len(ra) == 0, (
+        "Numba intrinsic calls with typingctx as first param must not be flagged, "
+        f"got: {[(v.line, v.call, v.message) for v in ra]}"
+    )

@@ -534,7 +534,19 @@ def _check_required_arg(
     # counted in positional_count, but a module-level function with the same
     # name has 'self' (or equivalent first param) as an explicit required arg.
     # Add 1 so the receiver is treated as positionally covered.
-    effective_positional = call.positional_count + (1 if call.is_method_call else 0)
+    #
+    # Numba/Bodo @intrinsic functions follow the same pattern: their first
+    # parameter is `typingctx` (or `cgctx`), auto-injected by the framework.
+    # Callers within JIT impl() bodies never pass it explicitly.
+    _NUMBA_CTX_PARAMS = frozenset({"typingctx", "cgctx", "context"})
+    is_numba_intrinsic = bool(
+        positional_required
+        and positional_required[0].name in _NUMBA_CTX_PARAMS
+        and not call.is_method_call
+    )
+    effective_positional = call.positional_count + (
+        1 if (call.is_method_call or is_numba_intrinsic) else 0
+    )
     positional_covered = {
         arg.name
         for i, arg in enumerate(positional_required)
