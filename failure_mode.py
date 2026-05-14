@@ -485,6 +485,16 @@ def _scan_file_optional_deref(path: str) -> list[FailureEvidence]:
                         and recv.value.id.lstrip("_") in _HTTP_CLIENTS
                     ):
                         return
+                    # PascalCase bare receiver — class method, not a dict lookup.
+                    # e.g. Moon.get(observer), RouterConfig.get(key), KernelRegistry.get(k)
+                    # ALL_CAPS constants (MODELS, DB_POOL) are excluded since they may be dicts.
+                    if (
+                        isinstance(recv, _ast.Name)
+                        and len(recv.id) >= 2
+                        and recv.id[0].isupper()
+                        and not recv.id.isupper()
+                    ):
+                        return
                     # Custom class .get(non_string_key) — not a dict lookup; skip.
                     # dict.get() keys are almost always string literals or string
                     # variables (name, key, attr_name, etc.). A non-string constant

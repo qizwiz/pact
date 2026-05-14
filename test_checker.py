@@ -1989,6 +1989,35 @@ def test_optional_dereference_early_exit_simple_not_flagged(tmp_path):
     assert not v, "if x is None: return should permanently guard x after the block"
 
 
+def test_optional_dereference_pascal_case_receiver_not_flagged(tmp_path):
+    # PascalCase receiver (class name) — Moon.get(observer), RouterConfig.get(key)
+    # are class methods, not dict lookups; should not be flagged.
+    _write_src(
+        tmp_path,
+        "starplot.py",
+        """
+        def plot_moon(observer):
+            m = Moon.get(observer)
+            op = m.create_optic(observer=observer, fov=10)
+            return op
+
+        def load_config(name):
+            cfg = RouterConfig.get(name)
+            return cfg.value
+
+        def load_kernel(spec):
+            k = KernelRegistry.get(spec)
+            return k.run()
+        """,
+    )
+    violations = check_codebase(tmp_path)
+    v = [v for v in violations if v.context == "optional_dereference"]
+    assert not v, (
+        "PascalCase receiver .get() is a class method, not a dict lookup "
+        "(regression of steveberardi/starplot FP)"
+    )
+
+
 def test_optional_dereference_reassignment_clears_optional(tmp_path):
     # `data = data.get("key")` then `data = non_optional_call()` — the second
     # assignment should clear `data` from optional_vars so subsequent uses
