@@ -3150,6 +3150,33 @@ def test_async_name_reused_generator_and_coroutine_not_flagged(tmp_path):
     )
 
 
+def test_anyio_start_soon_coro_arg_not_flagged(tmp_path):
+    """tg.start_soon(func, coro_arg) passes coro as arg to func which runs it — not a bug."""
+    from .failure_mode import MISSING_AWAIT
+
+    _write_src(
+        tmp_path,
+        "handler.py",
+        """\
+        async def check_and_run(matcher, bot):
+            await matcher.run(bot)
+
+        async def run_with_shield(coro):
+            import asyncio
+            await asyncio.shield(coro)
+
+        async def dispatch(tg, matchers, bot):
+            for matcher in matchers:
+                tg.start_soon(run_with_shield, check_and_run(matcher, bot))
+        """,
+    )
+    results = check_codebase(tmp_path, modes=[MISSING_AWAIT])
+    assert len(results) == 0, (
+        "tg.start_soon(func, coro()) must not flag coro() as missing await. "
+        f"got: {[(r.line, r.call) for r in results]}"
+    )
+
+
 def test_as_completed_listcomp_not_flagged(tmp_path):
     """asyncio.as_completed([coro() for ...]) must not be flagged — as_completed consumes them."""
     from .failure_mode import MISSING_AWAIT

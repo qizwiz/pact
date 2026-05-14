@@ -1174,6 +1174,9 @@ def _scan_file_missing_await(path: str) -> list[FailureEvidence]:
             "run_until_complete",   # event_loop.run_until_complete(coro()) — any receiver name
             "run_sync",             # Chainlit sync wrapper: run_sync(coro()) blocks until done
             "as_completed",         # asyncio.as_completed([coro() for ...]) — iterates awaitables
+            "start_soon",           # AnyIO/trio TaskGroup.start_soon(func, coro) — schedules task
+            "spawn",                # Trio nursery.spawn() — legacy name for start_soon
+            "start_background_task", # some async frameworks
         }
     )
 
