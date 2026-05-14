@@ -2824,7 +2824,6 @@ def test_conftest_and_test_base_not_flagged(tmp_path):
 
     Both are test infrastructure, not production code.
     """
-    import os
     # conftest.py
     conftest = tmp_path / "conftest.py"
     conftest.write_text(

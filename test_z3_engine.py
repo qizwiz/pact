@@ -5,9 +5,12 @@ We use synthetic Python source fixtures so tests don't depend on the
 futureagi/ app structure and run in milliseconds.
 """
 
+import importlib.util
 import textwrap
 import tempfile
 from pathlib import Path
+
+import pytest
 
 
 from .z3_engine import PactEngine
@@ -212,13 +215,7 @@ def test_unknown_model_not_flagged():
 # prover.py — proof certificates
 # ──────────────────────────────────────────────────────────────────────────────
 
-import pytest
-
-try:
-    import z3 as _z3
-    _HAS_Z3 = True
-except ImportError:
-    _HAS_Z3 = False
+_HAS_Z3 = importlib.util.find_spec("z3") is not None
 
 pytestmark_z3 = pytest.mark.skipif(not _HAS_Z3, reason="z3-solver not installed")
 
