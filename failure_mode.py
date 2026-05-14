@@ -496,6 +496,10 @@ def _check_optional_deref(
     models: dict[str, ModelManifest],
     functions: dict[str, FunctionManifest],
 ) -> list[FailureEvidence]:
+    # Test files: .first()/.get() without null checks is normal test-assertion
+    # style; failures are caught by the test runner, not silent production crashes.
+    if _is_test_file(call.file):
+        return []
     return _scan_file_optional_deref(call.file)
 
 

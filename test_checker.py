@@ -2722,3 +2722,42 @@ def test_schedule_coroutine_consumer_not_flagged(tmp_path):
         "schedule() is a coroutine consumer. "
         f"got: {[(v.line, v.call) for v in ma]}"
     )
+
+
+def test_optional_deref_suppressed_in_test_files(tmp_path):
+    """optional_dereference must not fire in test files.
+
+    Corpus evidence: suitenumerique/docs test_api_documents_threads.py —
+    thread = models.Thread.objects.first()  ← optional
+    thread.comments.first()                  ← flagged as FP
+
+    In test code, .first() without a null guard is normal assertion style;
+    an AttributeError fails the test loudly, which is the desired outcome.
+    Production code gets the check; test fixtures do not.
+    """
+    test_dir = tmp_path / "tests"
+    test_dir.mkdir()
+    _write_src(
+        test_dir,
+        "test_api.py",
+        """\
+        class FakeManager:
+            def first(self):
+                return None  # returns Optional
+
+        class FakeModel:
+            objects = FakeManager()
+            comments = FakeManager()
+
+        def test_something():
+            # Classic test pattern: .first() without null check
+            thread = FakeModel.objects.first()
+            comment = thread.comments.first()  # would be flagged in prod, not in test
+        """,
+    )
+    violations = check_codebase(tmp_path)
+    od = [v for v in violations if v.context == "optional_dereference"]
+    assert len(od) == 0, (
+        "optional_dereference must not fire in test files — "
+        f"got: {[(v.file, v.line, v.call) for v in od]}"
+    )
