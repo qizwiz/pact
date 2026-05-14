@@ -2309,3 +2309,66 @@ def test_string_literal_join_not_flagged_as_missing_separator(tmp_path):
     violations = check_codebase(tmp_path)
     ra = [v for v in violations if v.context == "required_arg_missing" and "helpers.py" in v.file]
     assert len(ra) == 0, f"str.join falsely flagged as missing-arg: {ra}"
+
+
+def test_isinstance_and_attr_not_flagged_as_optional_dereference(tmp_path):
+    """isinstance(x, T) and x.attr is safe via short-circuit — must not flag.
+
+    `isinstance(x, T)` returns False when x is None, so the `and` short-circuit
+    guarantees x.attr is never reached with x=None.  This is a standard Python
+    type-narrowing guard pattern.
+
+    Corpus evidence: neurobionics/onshape-robotics-toolkit — 2 violations of
+    `isinstance(instance, AssemblyInstance) and instance.isRigid` where instance
+    comes from self.instances.get(key).
+    """
+    _write_src(
+        tmp_path,
+        "assembly.py",
+        """
+        class AssemblyInstance:
+            isRigid: bool = True
+
+        class Assembly:
+            def __init__(self):
+                self.instances = {}
+
+            def is_rigid_assembly(self, key):
+                instance = self.instances.get(key)
+                return isinstance(instance, AssemblyInstance) and instance.isRigid
+
+            def is_flexible_assembly(self, key):
+                instance = self.instances.get(key)
+                return isinstance(instance, AssemblyInstance) and not instance.isRigid
+        """,
+    )
+    violations = check_codebase(tmp_path)
+    od = [v for v in violations if v.context == "optional_dereference" and "assembly.py" in v.file]
+    assert len(od) == 0, f"isinstance guard falsely flagged: {od}"
+
+
+def test_get_with_keyword_default_not_flagged_as_optional_dereference(tmp_path):
+    """xml_element.get('attr', default='fallback') returns a non-None value.
+
+    When .get() is called with a keyword `default=non_None_value`, the result
+    is guaranteed non-None.  Using it without a None check must not be flagged.
+
+    Corpus evidence: clemense/yourdfpy — rgba = xml_element.get('rgba', default='1 1 1 1')
+    followed by rgba.split() was falsely flagged as optional_dereference.
+    """
+    _write_src(
+        tmp_path,
+        "xml_parse.py",
+        """
+        class XmlElement:
+            def get(self, attr, default=None):
+                return default
+
+        def parse_color(xml_element):
+            rgba = xml_element.get('rgba', default='1 1 1 1')
+            return [float(x) for x in rgba.split()]
+        """,
+    )
+    violations = check_codebase(tmp_path)
+    od = [v for v in violations if v.context == "optional_dereference" and "xml_parse.py" in v.file]
+    assert len(od) == 0, f"get(default=non_None) falsely flagged: {od}"

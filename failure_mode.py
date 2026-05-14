@@ -272,6 +272,14 @@ def _scan_file_optional_deref(path: str) -> list[FailureEvidence]:
                         and call_args[1].value is None
                     ):
                         return
+                    # .get(key, default=non-None-value) — keyword default (e.g.
+                    # xml_element.get("attr", default="fallback")) is also non-Optional
+                    for kw in node.value.keywords:
+                        if kw.arg == "default" and not (
+                            isinstance(kw.value, _ast.Constant)
+                            and kw.value.value is None
+                        ):
+                            return
                     # HTTP client .get(url, headers=..., timeout=...) — kwargs that
                     # dict.get() never has are a definitive indicator of an HTTP call.
                     _HTTP_KWARGS = frozenset(
@@ -402,6 +410,8 @@ def _scan_file_optional_deref(path: str) -> list[FailureEvidence]:
             # `x and x.attr` — each value is evaluated only when all preceding
             # values are truthy. If an optional_var appears as a bare Name, it's
             # guarded within subsequent values of the same And chain.
+            # `isinstance(x, T) and x.attr` — isinstance acts as a type guard,
+            # guaranteeing x is non-None (and of type T) in subsequent operands.
             newly_guarded: set[str] = set()
             for value in node.values:
                 self.visit(value)
@@ -412,6 +422,18 @@ def _scan_file_optional_deref(path: str) -> list[FailureEvidence]:
                 ):
                     self.guarded.add(value.id)
                     newly_guarded.add(value.id)
+                elif (
+                    isinstance(value, _ast.Call)
+                    and isinstance(value.func, _ast.Name)
+                    and value.func.id == "isinstance"
+                    and value.args
+                    and isinstance(value.args[0], _ast.Name)
+                    and value.args[0].id in self.optional_vars
+                    and value.args[0].id not in self.guarded
+                ):
+                    # isinstance(x, T) implies x is not None
+                    self.guarded.add(value.args[0].id)
+                    newly_guarded.add(value.args[0].id)
             self.guarded -= newly_guarded
 
         def visit_IfExp(self, node):
