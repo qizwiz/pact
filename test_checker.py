@@ -1687,6 +1687,61 @@ def test_optional_dereference_dict_get_still_flagged(tmp_path):
     assert v, "dict.get() result used without None check must still be flagged"
 
 
+def test_optional_dereference_bool_and_guard_not_flagged(tmp_path):
+    # `x and x.attr` — short-circuit And guards the attribute access.
+    _write_src(
+        tmp_path,
+        "click.py",
+        """
+        DEFS = {}
+
+        def handle(tld):
+            definition = DEFS.get(tld)
+            js_required = definition and definition.render_js
+            return js_required
+        """,
+    )
+    violations = check_codebase(tmp_path)
+    v = [v for v in violations if v.context == "optional_dereference"]
+    assert not v, "x and x.attr short-circuit guard must suppress optional_dereference"
+
+
+def test_optional_dereference_assert_not_none_guard(tmp_path):
+    # `assert x is not None` must permanently guard subsequent uses of x.
+    _write_src(
+        tmp_path,
+        "config.py",
+        """
+        REGISTRY = {}
+
+        def build(key):
+            model = REGISTRY.get(key)
+            assert model is not None, "Missing model"
+            return model.arch
+        """,
+    )
+    violations = check_codebase(tmp_path)
+    v = [v for v in violations if v.context == "optional_dereference"]
+    assert not v, "assert x is not None must suppress optional_dereference for x"
+
+
+def test_optional_dereference_dunder_session_not_flagged(tmp_path):
+    # self.__session.get(url) — private HTTP client; response is not Optional.
+    _write_src(
+        tmp_path,
+        "client.py",
+        """
+        class Client:
+            def fetch(self, url):
+                r = self.__session.get(url)
+                return r.cookies["token"]
+        """,
+    )
+    violations = check_codebase(tmp_path)
+    v = [v for v in violations if v.context == "optional_dereference"]
+    assert not v, "self.__session.get(url) response must not be flagged as optional"
+
+
 def test_bare_except_no_callsite_flagged(tmp_path):
     """bare_except now has file_check — catches files with no outgoing calls."""
     _write_src(

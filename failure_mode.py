@@ -341,10 +341,11 @@ def _scan_file_optional_deref(path: str) -> list[FailureEvidence]:
                          "r", "s"}
                     )
                     recv = node.value.func.value
-                    if isinstance(recv, _ast.Name) and recv.id in _HTTP_CLIENTS:
+                    if isinstance(recv, _ast.Name) and recv.id.lstrip("_") in _HTTP_CLIENTS:
                         return
-                    # self.client.get(), self.async_client.get() — attribute chain
-                    if isinstance(recv, _ast.Attribute) and recv.attr in _HTTP_CLIENTS:
+                    # self.client.get(), self.async_client.get(), self.__session.get()
+                    # — attribute chain; strip leading underscores for private attrs.
+                    if isinstance(recv, _ast.Attribute) and recv.attr.lstrip("_") in _HTTP_CLIENTS:
                         return
                     # Custom class .get(non_string_key) — not a dict lookup; skip.
                     # dict.get() keys are almost always string literals or string
@@ -385,6 +386,33 @@ def _scan_file_optional_deref(path: str) -> list[FailureEvidence]:
                 if var in src:
                     self.guarded.add(var)
             self.generic_visit(node)
+
+        def visit_Assert(self, node):
+            # `assert x is not None` — permanently guards x in this scope.
+            src = _ast.unparse(node.test) if hasattr(_ast, "unparse") else ""
+            for var in list(self.optional_vars):
+                if var in src:
+                    self.guarded.add(var)
+            self.generic_visit(node)
+
+        def visit_BoolOp(self, node):
+            if not isinstance(node.op, _ast.And):
+                self.generic_visit(node)
+                return
+            # `x and x.attr` — each value is evaluated only when all preceding
+            # values are truthy. If an optional_var appears as a bare Name, it's
+            # guarded within subsequent values of the same And chain.
+            newly_guarded: set[str] = set()
+            for value in node.values:
+                self.visit(value)
+                if (
+                    isinstance(value, _ast.Name)
+                    and value.id in self.optional_vars
+                    and value.id not in self.guarded
+                ):
+                    self.guarded.add(value.id)
+                    newly_guarded.add(value.id)
+            self.guarded -= newly_guarded
 
         def visit_IfExp(self, node):
             # Ternary: body if test else orelse.
