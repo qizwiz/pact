@@ -2100,6 +2100,31 @@ def test_run_async_wrapper_not_flagged(tmp_path):
     assert len(ma) == 0, f"run_async wrapper must not be flagged: {[(v.line, v.call) for v in ma]}"
 
 
+def test_numba_intrinsic_typingctx_not_counted(tmp_path):
+    """Numba @intrinsic functions take typingctx as first param injected by JIT — not user-supplied."""
+    _write_src(
+        tmp_path,
+        "jit_kernels.py",
+        """
+        from numba.core.extending import intrinsic
+
+        def _get_connection(warehouse, conn_str): ...
+
+        @intrinsic(prefer_literal=True)
+        def _get_connection(typingctx, warehouse, conn_str):
+            def codegen(context, builder, sig, args): pass
+            return None
+
+        def build_connection(warehouse):
+            conn_str = "conn"
+            return _get_connection(warehouse, conn_str)
+        """,
+    )
+    violations = check_codebase(tmp_path)
+    ra = [v for v in violations if v.context == "required_arg_missing"]
+    assert len(ra) == 0, f"@intrinsic typingctx must not count toward arity: {[(v.line, v.call) for v in ra]}"
+
+
 def test_optional_dereference_zero_arg_get_not_flagged(tmp_path):
     """obj.get() with no args is a custom method (e.g. Twisted DeferredQueue), not dict.get().
     dict.get() always requires at least one positional key argument."""

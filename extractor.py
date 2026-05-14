@@ -391,6 +391,21 @@ class _FunctionVisitor(ast.NodeVisitor):
         is_fixture = any(_is_fixture_dec(d) for d in node.decorator_list)
         is_click = any(_is_click_dec(d) for d in node.decorator_list)
 
+        # Numba @intrinsic / @type_callable: first param is `typingctx`, injected
+        # by Numba's JIT machinery — callers never supply it explicitly.
+        def _is_numba_jit_dec(dec: ast.expr) -> bool:
+            name = None
+            if isinstance(dec, ast.Name):
+                name = dec.id
+            elif isinstance(dec, ast.Attribute):
+                name = dec.attr
+            elif isinstance(dec, ast.Call):
+                return _is_numba_jit_dec(dec.func)
+            return name in ("intrinsic", "type_callable", "overload")
+
+        if any(_is_numba_jit_dec(d) for d in node.decorator_list):
+            constraints = [c for c in constraints if c.name != "typingctx"]
+
         qual = ".".join(self._class_stack + [node.name])
         self.functions.append(
             FunctionManifest(
