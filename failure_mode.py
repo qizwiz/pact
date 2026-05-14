@@ -451,6 +451,9 @@ def _scan_file_optional_deref(path: str) -> list[FailureEvidence]:
                             "async_client",
                             "r",
                             "s",
+                            # `self.get(url)` is always a method call (e.g. Tornado
+                            # test case), never a plain dict lookup.
+                            "self",
                         }
                     )
                     recv = node.value.func.value
@@ -717,6 +720,10 @@ def _check_required_arg(
         return []
     # *args or **kwargs spreads mean we cannot statically determine coverage.
     if call.has_var_args or call.has_var_kwargs:
+        return []
+    # If the callee name is locally reassigned (e.g. run = lambda: ...) the
+    # function index holds a different definition — skip to avoid FPs.
+    if call.callee_is_local:
         return []
     func = functions.get(call.callee_name)
     if not func or not func.required_args:

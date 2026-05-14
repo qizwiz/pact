@@ -89,6 +89,11 @@ class CallSite:
     caller_name: Optional[str] = (
         None  # qualified name of the enclosing function, if any
     )
+    callee_is_local: bool = (
+        False  # True when the callee name is shadowed by a local assignment in
+        # the enclosing function (e.g. run = lambda: ...; run()) — looking up the
+        # name in the global function index would find the wrong definition.
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -439,6 +444,10 @@ class _CallVisitor(ast.NodeVisitor):
         self._class_stack: list[str] = []  # class names (mirrors _FunctionVisitor)
         self._func_stack: list[str] = []  # qualified function names within classes
         self._in_main_block: bool = False  # inside `if __name__ == "__main__":` body
+        # Stack of sets, one per function scope. Each set holds names that have
+        # been locally assigned (e.g. run = lambda: ...) and therefore shadow
+        # any same-named module/class-level function definition.
+        self._local_assign_stack: list[set[str]] = []
 
     def visit_ClassDef(self, node: ast.ClassDef) -> None:
         self._class_stack.append(node.name)
@@ -449,8 +458,19 @@ class _CallVisitor(ast.NodeVisitor):
         # Build the same qualified name as _FunctionVisitor: Class.method
         qual = ".".join(self._class_stack + [node.name])
         self._func_stack.append(qual)
+        self._local_assign_stack.append(set())
         self.generic_visit(node)
         self._func_stack.pop()
+        self._local_assign_stack.pop()
+
+    def visit_Assign(self, node: ast.Assign) -> None:
+        # Track `name = <anything>` within a function scope — this shadows any
+        # function definition with the same name.
+        if self._local_assign_stack:
+            for target in node.targets:
+                if isinstance(target, ast.Name):
+                    self._local_assign_stack[-1].add(target.id)
+        self.generic_visit(node)
 
     visit_FunctionDef = _enter_func
     visit_AsyncFunctionDef = _enter_func
@@ -535,6 +555,12 @@ class _CallVisitor(ast.NodeVisitor):
         # Regular call
         name = self._name(func)
         if name:
+            # A plain Name call (not attribute) is locally shadowed if this
+            # exact name was assigned in the enclosing function scope.
+            simple_name = name if isinstance(func, ast.Name) else None
+            is_local = simple_name is not None and any(
+                simple_name in scope for scope in self._local_assign_stack
+            )
             return CallSite(
                 callee_name=name,
                 file=self.file,
@@ -547,6 +573,7 @@ class _CallVisitor(ast.NodeVisitor):
                 has_var_args=has_var_args,
                 has_var_kwargs=has_var_kwargs,
                 is_in_main_block=self._in_main_block,
+                callee_is_local=is_local,
             )
         return None
 

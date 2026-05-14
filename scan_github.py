@@ -256,7 +256,13 @@ def scan_repo(
 
             # Run failure mode checks on this single file
             model_index = {m.name: m for m in models}
-            func_index = {f.name: f for f in functions}
+            # Functions whose simple name appears multiple times in this file are
+            # ambiguous (often a nested closure shadowing an outer definition).
+            # Drop them from the index so required_arg_missing doesn't pick the
+            # wrong definition and produce false positives.
+            from collections import Counter as _Counter
+            _name_counts = _Counter(f.name for f in functions)
+            func_index = {f.name: f for f in functions if _name_counts[f.name] == 1}
             seen: set[tuple] = set()
 
             from .failure_mode import FailureEvidence

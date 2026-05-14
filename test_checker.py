@@ -2037,7 +2037,7 @@ def test_optional_dereference_reassignment_clears_optional(tmp_path):
         """,
     )
     violations = check_codebase(tmp_path)
-    v = [v for v in violations if v.context == "optional_dereference" and v.lineno > 6]
+    v = [v for v in violations if v.context == "optional_dereference" and v.line > 6]
     assert not v, (
         "Reassignment from non-optional source should clear the variable from optional_vars "
         "(regression of Evil0ctal/Douyin_TikTok_Download_API FP)"
@@ -3864,4 +3864,68 @@ def test_textual_work_decorator_not_flagged(tmp_path):
     assert len(results) == 0, (
         "@work-decorated async methods must not be flagged as missing await. "
         f"got: {[(r.line, r.call) for r in results]}"
+    )
+
+
+def test_optional_dereference_self_get_not_flagged(tmp_path):
+    """self.get(url) is always a method call on the instance, never a dict lookup.
+
+    Corpus evidence: mher/flower — Tornado AsyncHTTPTestCase subclass where
+    self.get('/workers') returns an HTTPResponse, never None.  The checker was
+    treating 'self' like any other variable and marking the result optional.
+    """
+    from .failure_mode import OPTIONAL_DEREF
+
+    _write_src(
+        tmp_path,
+        "test_views.py",
+        """\
+        class TestViews:
+            def test_workers_page(self):
+                r = self.get('/workers')
+                self.assertEqual(200, r.code)
+
+            def test_tasks_page(self):
+                r = self.get('/tasks')
+                body = r.body.decode('utf-8')
+                self.assertIn('tasks', body)
+        """,
+    )
+    violations = check_codebase(tmp_path, modes=[OPTIONAL_DEREF])
+    od = [v for v in violations if v.context == "optional_dereference"]
+    assert len(od) == 0, (
+        "self.get(url) must not be flagged as optional_dereference "
+        f"(regression of mher/flower FP), got: {[(v.line, v.call) for v in od]}"
+    )
+
+
+def test_required_arg_missing_shadowed_closure_not_flagged(tmp_path):
+    """A module-level run(input) plus a local no-arg run closure must not flag run().
+
+    Corpus evidence: vllm-project/vllm benchmark_moe_permute_unpermute.py —
+    a local 'run = lambda: ...' closure captures inputs from outer scope, but the
+    module also defines 'def run(input):'.  The checker was picking up the module-
+    level definition and flagging the no-arg call as missing 'input'.
+    """
+    _write_src(
+        tmp_path,
+        "benchmark_moe.py",
+        """\
+        import torch
+
+        def run(input):
+            return torch.ops.moe(input)
+
+        def benchmark_warmup(stored_input):
+            run = lambda: torch.ops.moe(stored_input)
+            # JIT compilation & warmup
+            run()
+            run()
+        """,
+    )
+    violations = check_codebase(tmp_path)
+    ra = [v for v in violations if v.context == "required_arg_missing"]
+    assert len(ra) == 0, (
+        "Shadowed closure run() must not be flagged as required_arg_missing "
+        f"(regression of vllm FP), got: {[(v.line, v.call, v.missing) for v in ra]}"
     )
