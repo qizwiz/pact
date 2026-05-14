@@ -1177,6 +1177,7 @@ def _scan_file_missing_await(path: str) -> list[FailureEvidence]:
             "start_soon",           # AnyIO/trio TaskGroup.start_soon(func, coro) — schedules task
             "spawn",                # Trio nursery.spawn() — legacy name for start_soon
             "start_background_task", # some async frameworks
+            "start_task",            # custom task manager wrappers: self.start_task(coro()) → loop.create_task(coro)
         }
     )
 

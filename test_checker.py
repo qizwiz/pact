@@ -3258,6 +3258,44 @@ def test_run_sync_coro_consumer_not_flagged(tmp_path):
     )
 
 
+def test_custom_start_task_wrapper_not_flagged(tmp_path):
+    """self.start_task(coro()) — custom wrapper around loop.create_task — must not be flagged."""
+    from .failure_mode import MISSING_AWAIT
+
+    _write_src(
+        tmp_path,
+        "asyn.py",
+        """\
+        import asyncio
+
+        class AsyncWorker:
+            def start_task(self, coro):
+                task = self.loop.create_task(coro)
+                self._tasks.add(task)
+                return task
+
+            async def produce(self):
+                for item in self.items:
+                    await self.work_queue.put(item)
+
+            async def worker(self):
+                while (item := await self.work_queue.get()) is not None:
+                    result = await self.func(item)
+                    await self.result_queue.put(result)
+
+            async def run(self):
+                producer = self.start_task(self.produce())
+                for _i in range(self.workers):
+                    self.start_task(self.worker())
+        """,
+    )
+    results = check_codebase(tmp_path, modes=[MISSING_AWAIT])
+    assert len(results) == 0, (
+        "self.start_task(coro()) wrapping loop.create_task must not be flagged. "
+        f"got: {[(r.line, r.call) for r in results]}"
+    )
+
+
 def test_nested_async_closure_return_not_flagged(tmp_path):
     """Inner async def returned as awaitable from sync outer function must not be flagged.
     Pattern: py_anext-style factory — sync fn returns coroutine for caller to await."""
