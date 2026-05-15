@@ -2135,6 +2135,29 @@ def test_bare_except_noqa_not_flagged(tmp_path):
     assert not v, f"# noqa-annotated bare_except should not be flagged, got: {v}"
 
 
+def test_bare_except_reraise_not_flagged(tmp_path):
+    """bare `except: raise` is a pure re-raise — nothing swallowed, should not be flagged."""
+    _write_src(
+        tmp_path,
+        "importer.py",
+        """
+        import importlib
+
+        def safe_import(name):
+            try:
+                importlib.import_module(name)
+            except ModuleNotFoundError:
+                return False
+            except:
+                raise
+            return True
+    """,
+    )
+    violations = check_codebase(tmp_path)
+    v = [v for v in violations if v.context == "bare_except"]
+    assert not v, f"bare `except: raise` should not be flagged, got: {v}"
+
+
 def test_vendor_dir_bare_except_not_flagged(tmp_path):
     """Files under vendor/ are third-party code and must be skipped."""
     vendor_dir = tmp_path / "vendor" / "click"

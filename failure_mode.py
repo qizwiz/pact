@@ -832,6 +832,10 @@ def _scan_file_bare_except(path: str) -> list[FailureEvidence]:
             continue
         if node.type is None:
             # bare `except:` — catches KeyboardInterrupt, SystemExit, everything
+            # Exception: `except: raise` is a pure re-raise — nothing is swallowed
+            body = node.body
+            if len(body) == 1 and isinstance(body[0], _ast.Raise) and body[0].exc is None:
+                continue
             evidence.append(
                 FailureEvidence(
                     mode_name="bare_except",
