@@ -224,6 +224,7 @@ Every FailureMode has a TLC-verified TLA+ specification in [`docs/tla/`](docs/tl
 | [LlmResponseUnguarded.tla](docs/tla/LlmResponseUnguarded.tla) | 32 | All unguarded LLM response access sites detected |
 | [UnvalidatedLookupChain.tla](docs/tla/UnvalidatedLookupChain.tla) | 16 | dict.get() result used as subscript without membership check |
 | [RequiredArgMissing.tla](docs/tla/RequiredArgMissing.tla) | 32 | Covered, safe, and violating call sites are disjoint; all violations flagged |
+| [FormatArgMismatch.tla](docs/tla/FormatArgMismatch.tla) | 16 | Matched format calls never flagged; all mismatches eventually detected |
 
 ## Testing methodology
 
