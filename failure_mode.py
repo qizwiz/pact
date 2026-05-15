@@ -762,8 +762,8 @@ def _check_required_arg(
     # Numba/Bodo @intrinsic functions follow the same pattern: their first
     # parameter is `typingctx` (or `cgctx` / `ctx`), auto-injected by the
     # framework.  Callers within JIT impl() bodies never pass it explicitly.
-    # Bodo uses "ctx" as its conventional short form for the same parameter.
-    _NUMBA_CTX_PARAMS = frozenset({"typingctx", "cgctx", "context", "ctx"})
+    # Bodo uses "ctx" and "typingcontext" as aliases for the same parameter.
+    _NUMBA_CTX_PARAMS = frozenset({"typingctx", "typingcontext", "cgctx", "context", "ctx"})
     is_numba_intrinsic = bool(
         positional_required
         and positional_required[0].name in _NUMBA_CTX_PARAMS

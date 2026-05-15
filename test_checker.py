@@ -4114,3 +4114,27 @@ def test_mutable_default_list_constructor_flagged(tmp_path):
     )
     results = check_codebase(tmp_path, modes=[MUTABLE_DEFAULT_ARG])
     assert results, "def fn(x=list()) with mutation must be flagged"
+
+
+def test_numba_typingcontext_intrinsic_not_flagged(tmp_path):
+    """@intrinsic with 'typingcontext' first param — callers pass zero args (Bodo pattern)."""
+    from .failure_mode import REQUIRED_ARG_MISSING
+
+    _write_src(
+        tmp_path,
+        "m.py",
+        """
+        from numba import intrinsic
+
+        @intrinsic
+        def gen_random_int64(typingcontext):
+            def codegen(context, builder, sig, args):
+                pass
+            return None, codegen
+
+        def impl():
+            return gen_random_int64()
+        """,
+    )
+    results = check_codebase(tmp_path, modes=[REQUIRED_ARG_MISSING])
+    assert not results, f"false positive: gen_random_int64() with typingcontext intrinsic flagged: {results}"
