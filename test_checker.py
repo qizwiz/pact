@@ -2111,6 +2111,30 @@ def test_bare_except_no_callsite_flagged(tmp_path):
     assert v, "bare_except should fire even in file with no call sites"
 
 
+def test_bare_except_noqa_not_flagged(tmp_path):
+    """# noqa annotation on the except line suppresses the violation."""
+    _write_src(
+        tmp_path,
+        "handler.py",
+        """
+        def process():
+            try:
+                risky()
+            except Exception:  # noqa: BLE001
+                pass
+
+        def process2():
+            try:
+                other()
+            except:  # noqa
+                pass
+    """,
+    )
+    violations = check_codebase(tmp_path)
+    v = [v for v in violations if v.context == "bare_except"]
+    assert not v, f"# noqa-annotated bare_except should not be flagged, got: {v}"
+
+
 def test_vendor_dir_bare_except_not_flagged(tmp_path):
     """Files under vendor/ are third-party code and must be skipped."""
     vendor_dir = tmp_path / "vendor" / "click"

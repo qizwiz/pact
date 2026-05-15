@@ -821,9 +821,14 @@ def _scan_file_bare_except(path: str) -> list[FailureEvidence]:
     except (SyntaxError, OSError):
         return []
 
+    source_lines = source.splitlines()
     evidence = []
     for node in _ast.walk(tree):
         if not isinstance(node, _ast.ExceptHandler):
+            continue
+        # Respect # noqa annotations — developer has explicitly suppressed this warning
+        line_idx = node.lineno - 1
+        if 0 <= line_idx < len(source_lines) and "# noqa" in source_lines[line_idx]:
             continue
         if node.type is None:
             # bare `except:` — catches KeyboardInterrupt, SystemExit, everything
