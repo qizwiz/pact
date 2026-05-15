@@ -199,7 +199,41 @@ pact encodes each failure mode as a Z3 constraint over the call graph. The incre
 
 ## Architecture decisions
 
-Design rationale is in [`docs/adr/`](docs/adr/). Start with [ADR-036](docs/adr/ADR-036-pact-formal-analysis-toolkit.md) — why Z3 Fixedpoint over traditional dataflow, and why TLA+ over property testing alone.
+Design rationale is in [`docs/adr/`](docs/adr/). Key decisions:
+
+| ADR | Decision |
+|-----|----------|
+| [ADR-001](docs/adr/ADR-001-graph-first-architecture.md) | Graph-first over pattern-first — violations are path properties, not node matches |
+| [ADR-002](docs/adr/ADR-002-mermaid-over-sarif.md) | Mermaid PR comments over SARIF — call graph context beats file:line:col |
+| [ADR-003](docs/adr/ADR-003-tla-as-semantic-layer.md) | TLA+ as semantic layer — every FailureMode has a TLC-verified spec |
+| [ADR-004](docs/adr/ADR-004-yaml-rules-family-key.md) | YAML rules with `family:` key for cross-framework constraint families |
+| [ADR-005](docs/adr/ADR-005-coro-consumers-frozenset.md) | `_CORO_CONSUMERS` frozenset — O(1), immutable, TLC-verifiable |
+| [ADR-036](docs/adr/ADR-036-pact-formal-analysis-toolkit.md) | Z3 Fixedpoint over traditional dataflow; TLA+ over property testing alone |
+
+## Formal verification
+
+Every FailureMode has a TLC-verified TLA+ specification in [`docs/tla/`](docs/tla/):
+
+| Spec | States | What it proves |
+|------|--------|----------------|
+| [MissingAwait.tla](docs/tla/MissingAwait.tla) | 7 | `_CORO_CONSUMERS` exclusion is sound and complete |
+| [SaveWithoutUpdateFields.tla](docs/tla/SaveWithoutUpdateFields.tla) | 7 | Partial-save detection; safe saves never flagged |
+| [BareExcept.tla](docs/tla/BareExcept.tla) | 81 | Critical exceptions (KeyboardInterrupt) always propagate |
+| [OptionalDereference.tla](docs/tla/OptionalDereference.tla) | 256 | Guarded values never flagged; all unguarded optionals flagged |
+| [MutableDefaultArg.tla](docs/tla/MutableDefaultArg.tla) | 16 | Both conditions required: mutable default AND in-body mutation |
+| [LlmResponseUnguarded.tla](docs/tla/LlmResponseUnguarded.tla) | 32 | All unguarded LLM response access sites detected |
+
+## Testing methodology
+
+pact uses a five-layer verification approach:
+
+1. **TLA+ (spec)** — temporal properties for each FailureMode, verified by TLC
+2. **ADRs (rationale)** — architectural decisions documented before implementation
+3. **Z3 (satisfiability)** — per-call-site constraint checking at analysis time
+4. **Hypothesis (property-based)** — `test_hypothesis_checkers.py` generates random Python fragments and asserts soundness/precision invariants for each checker
+5. **Integration probe** — `scan_github` corpus of 41k+ violations across 200+ real repositories validates false-positive rates
+
+The Hypothesis layer (step 4) has already found one real false negative: `def fn(x=set())` was not flagged because `set()` is an `ast.Call` node, not an `ast.Set` literal. Fixed and regressed in `test_checker.py`.
 
 ## License
 
