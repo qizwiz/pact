@@ -25,21 +25,22 @@ jobs:
         run: pip install z3-solver networkx .
 
       - name: Run pact (diff-scoped)
-        id: pact
         run: |
           # --diff restricts violations to changed files; --pr-comment emits
           # the full Mermaid call graph + reduction sequence as a PR comment body.
-          comment=$(pact . --diff main --pr-comment --suggest 2>/dev/null || true)
-          echo "body<<EOF" >> $GITHUB_OUTPUT
-          echo "$comment" >> $GITHUB_OUTPUT
-          echo "EOF" >> $GITHUB_OUTPUT
+          # Write to file to avoid GITHUB_OUTPUT multiline encoding issues.
+          pact . --diff main --pr-comment --suggest > /tmp/pact-comment.md 2>/tmp/pact-err.txt || true
+          cat /tmp/pact-err.txt >&2 || true
+          wc -c /tmp/pact-comment.md
 
       - name: Post graph comment
         uses: actions/github-script@v7
         with:
           script: |
-            const body = `${{ steps.pact.outputs.body }}`;
-            if (!body || body.includes("no violations found") && !body.includes("```mermaid")) {
+            const fs = require('fs');
+            const body = fs.readFileSync('/tmp/pact-comment.md', 'utf8').trim();
+
+            if (!body || (body.includes("no violations found") && !body.includes("```mermaid"))) {
               console.log("pact: clean diff, skipping comment");
               return;
             }
