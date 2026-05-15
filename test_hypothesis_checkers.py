@@ -79,9 +79,9 @@ def test_bare_except_precision_specific_exception(exc_name):
                 raise RuntimeError("wrapped") from e
     """
     violations = _file_violations(BARE_EXCEPT, source)
-    assert not violations, (
-        f"false positive: except {exc_name} with real body was flagged"
-    )
+    assert (
+        not violations
+    ), f"false positive: except {exc_name} with real body was flagged"
 
 
 @given(_EXCEPTION_NAME)
@@ -98,9 +98,9 @@ def test_exception_with_log_body_not_flagged(exc_name):
                 log.exception("error: %s", e)
     """
     violations = _file_violations(BARE_EXCEPT, source)
-    assert not violations, (
-        f"false positive: except {exc_name} with log call was flagged"
-    )
+    assert (
+        not violations
+    ), f"false positive: except {exc_name} with log call was flagged"
 
 
 def test_except_exception_pass_flagged():
@@ -150,9 +150,7 @@ def test_mutable_default_with_mutation_flagged(param_name, mutable):
             return {param_name}
     """
     violations = _file_violations(MUTABLE_DEFAULT_ARG, source)
-    assert violations, (
-        f"def fn({param_name}={mutable}) with mutation not flagged"
-    )
+    assert violations, f"def fn({param_name}={mutable}) with mutation not flagged"
 
 
 @given(_IDENTIFIER, _SAFE_VALUE)
@@ -164,9 +162,9 @@ def test_safe_default_not_flagged(param_name, safe_val):
             return {param_name}
     """
     violations = _file_violations(MUTABLE_DEFAULT_ARG, source)
-    assert not violations, (
-        f"false positive: def fn({param_name}={safe_val}) was flagged"
-    )
+    assert (
+        not violations
+    ), f"false positive: def fn({param_name}={safe_val}) was flagged"
 
 
 @given(_IDENTIFIER, _MUTABLE_VALUE)
@@ -178,9 +176,9 @@ def test_mutable_default_read_only_not_flagged(param_name, mutable):
             return list({param_name})
     """
     violations = _file_violations(MUTABLE_DEFAULT_ARG, source)
-    assert not violations, (
-        f"false positive: def fn({param_name}={mutable}) read-only was flagged"
-    )
+    assert (
+        not violations
+    ), f"false positive: def fn({param_name}={mutable}) read-only was flagged"
 
 
 # ===========================================================================
@@ -190,7 +188,9 @@ def test_mutable_default_read_only_not_flagged(param_name, mutable):
 
 @given(
     _IDENTIFIER,
-    st.lists(st.sampled_from(["name", "status", "value", "count"]), min_size=1, max_size=3),
+    st.lists(
+        st.sampled_from(["name", "status", "value", "count"]), min_size=1, max_size=3
+    ),
 )
 @settings(max_examples=50)
 def test_save_with_update_fields_not_flagged(obj_name, fields):
@@ -209,9 +209,9 @@ def test_save_with_update_fields_not_flagged(obj_name, fields):
             obj.save(update_fields={field_list})
     """
     violations = _file_violations(SAVE_WITHOUT_UPDATE_FIELDS, source)
-    assert not violations, (
-        f"false positive: save(update_fields={field_list}) was flagged"
-    )
+    assert (
+        not violations
+    ), f"false positive: save(update_fields={field_list}) was flagged"
 
 
 @given(
@@ -228,9 +228,7 @@ def test_safe_save_receiver_not_flagged(safe_receiver):
             self.{safe_receiver}.save()
     """
     violations = _file_violations(SAVE_WITHOUT_UPDATE_FIELDS, source)
-    assert not violations, (
-        f"false positive: self.{safe_receiver}.save() was flagged"
-    )
+    assert not violations, f"false positive: self.{safe_receiver}.save() was flagged"
 
 
 # ===========================================================================
@@ -257,6 +255,6 @@ def test_checker_is_deterministic(mode):
         path = f.name
     r1 = mode.file_check(path)
     r2 = mode.file_check(path)
-    assert [(v.line, v.call) for v in r1] == [(v.line, v.call) for v in r2], (
-        f"{mode.name} is non-deterministic"
-    )
+    assert [(v.line, v.call) for v in r1] == [
+        (v.line, v.call) for v in r2
+    ], f"{mode.name} is non-deterministic"
