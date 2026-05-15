@@ -24,10 +24,10 @@ import ast
 import sys
 from pathlib import Path
 
-
 # ---------------------------------------------------------------------------
 # Extract frozenset literals from failure_mode.py without importing it
 # ---------------------------------------------------------------------------
+
 
 def _extract_frozenset(source: str, varname: str) -> list[str]:
     """Return the string elements of the first frozenset assigned to varname."""
@@ -45,7 +45,8 @@ def _extract_frozenset(source: str, varname: str) -> list[str]:
                         return sorted(
                             elt.value
                             for elt in args[0].elts
-                            if isinstance(elt, ast.Constant) and isinstance(elt.value, str)
+                            if isinstance(elt, ast.Constant)
+                            and isinstance(elt.value, str)
                         )
     return []
 
@@ -68,7 +69,8 @@ def _extract_qualified(source: str, varname: str) -> list[tuple[str, str]]:
                                 isinstance(elt, ast.Tuple)
                                 and len(elt.elts) == 2
                                 and all(
-                                    isinstance(e, ast.Constant) and isinstance(e.value, str)
+                                    isinstance(e, ast.Constant)
+                                    and isinstance(e.value, str)
                                     for e in elt.elts
                                 )
                             ):
@@ -149,6 +151,7 @@ def generate_cfg(
 # CLI
 # ---------------------------------------------------------------------------
 
+
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument(
@@ -185,7 +188,9 @@ def main(argv=None) -> int:
         print("error: could not find _CORO_CONSUMERS in source", file=sys.stderr)
         return 1
 
-    print(f"Extracted {len(consumers)} unqualified + {len(qualified)} qualified consumers")
+    print(
+        f"Extracted {len(consumers)} unqualified + {len(qualified)} qualified consumers"
+    )
     for c in consumers:
         print(f"  {c}")
     for r, n in qualified:
@@ -198,7 +203,9 @@ def main(argv=None) -> int:
     sample = min(args.max_consumed, len(consumers) + len(qualified))
     print(f"\nWrote {out_path}")
     print(f"Config: {sample} sampled consumers + 1 real bug = {sample + 1} sites")
-    print(f"(Full set: {len(consumers) + len(qualified)} consumers; abstract proof covers all)")
+    print(
+        f"(Full set: {len(consumers) + len(qualified)} consumers; abstract proof covers all)"
+    )
     return 0
 
 

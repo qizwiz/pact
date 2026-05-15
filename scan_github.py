@@ -57,8 +57,8 @@ _SKIP_PATHS = frozenset(
         "node_modules",
         "__pycache__",
         ".git",
-        ".claude",   # Claude Code hooks/config — not library code
-        ".cursor",   # Cursor IDE config
+        ".claude",  # Claude Code hooks/config — not library code
+        ".cursor",  # Cursor IDE config
         "dist",
         "build",
         ".eggs",
@@ -266,6 +266,7 @@ def scan_repo(
             # Drop them from the index so required_arg_missing doesn't pick the
             # wrong definition and produce false positives.
             from collections import Counter as _Counter
+
             _name_counts = _Counter(f.name for f in functions)
             func_index = {f.name: f for f in functions if _name_counts[f.name] == 1}
             seen: set[tuple] = set()

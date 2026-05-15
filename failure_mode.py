@@ -183,6 +183,7 @@ def _chain_has_objects(node) -> bool:
 def _body_has_early_exit(body: list) -> bool:
     """Return True if body's last statement (or any top-level statement) is an early exit."""
     import ast as _ast
+
     _exits = (_ast.Return, _ast.Raise, _ast.Continue, _ast.Break)
     return any(isinstance(stmt, _exits) for stmt in body)
 
@@ -253,7 +254,11 @@ def _scan_file_optional_deref(path: str) -> list[FailureEvidence]:
 
         def _enter_scope(self):
             """Save and reset optional_vars at function/class boundaries."""
-            saved = (dict(self.optional_vars), set(self.guarded), set(self._membership_checked))
+            saved = (
+                dict(self.optional_vars),
+                set(self.guarded),
+                set(self._membership_checked),
+            )
             self.optional_vars = {}
             self.guarded = set()
             self._membership_checked = set()
