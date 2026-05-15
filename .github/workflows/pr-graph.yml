@@ -26,6 +26,8 @@ jobs:
 
       - name: Run pact (diff-scoped)
         run: |
+          # Ensure main is a local ref so git diff main...HEAD works.
+          git fetch origin main:main --no-tags 2>/dev/null || true
           # --diff restricts violations to changed files; --pr-comment emits
           # the full Mermaid call graph + reduction sequence as a PR comment body.
           # Write to file to avoid GITHUB_OUTPUT multiline encoding issues.
