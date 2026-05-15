@@ -128,6 +128,7 @@ pact . --json
 | `mutable_default_arg` | `def f(x=[]):` — shared state across calls |
 | `llm_response_unguarded` | `response.choices[0]` without length check |
 | `model_constraint` | Django model created missing a required field |
+| `format_arg_mismatch` | `"{} {}".format(a)` — too few args → IndexError at runtime |
 
 Go support via `pact-go`: `go_ignored_error`, `go_bare_recover`, `go_unchecked_assertion`, `go_goroutine_no_sync`.
 

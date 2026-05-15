@@ -1,0 +1,66 @@
+name: pact
+description: Formal analysis for the codebases AI builds — find structural bugs tests don't catch
+author: qizwiz
+
+inputs:
+  path:
+    description: Path to scan (default current directory)
+    required: false
+    default: "."
+  incremental:
+    description: Only scan files changed since this ref (e.g. "main")
+    required: false
+    default: ""
+  strict:
+    description: Exit non-zero if any violations found
+    required: false
+    default: "false"
+  json:
+    description: Output violations as JSON
+    required: false
+    default: "false"
+  suggest:
+    description: Show refactoring targets ranked by violation density
+    required: false
+    default: "false"
+  python-version:
+    description: Python version to use
+    required: false
+    default: "3.11"
+
+outputs:
+  violations:
+    description: Number of violations found
+    value: ${{ steps.pact.outputs.violations }}
+
+runs:
+  using: composite
+  steps:
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ inputs.python-version }}
+
+    - name: Install pact-tool
+      shell: bash
+      run: pip install pact-tool z3-solver
+
+    - name: Run pact
+      id: pact
+      shell: bash
+      run: |
+        ARGS="${{ inputs.path }}"
+        if [ -n "${{ inputs.incremental }}" ]; then
+          ARGS="$ARGS --incremental ${{ inputs.incremental }}"
+        fi
+        if [ "${{ inputs.strict }}" = "true" ]; then
+          ARGS="$ARGS --strict"
+        fi
+        if [ "${{ inputs.json }}" = "true" ]; then
+          ARGS="$ARGS --json"
+        fi
+        if [ "${{ inputs.suggest }}" = "true" ]; then
+          ARGS="$ARGS --suggest"
+        fi
+        pact $ARGS
+        echo "violations=$?" >> "$GITHUB_OUTPUT"
