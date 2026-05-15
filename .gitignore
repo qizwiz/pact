@@ -2,3 +2,8 @@
 corpus/*.jsonl
 # but DO track the batch rotation pointer
 !corpus/batch_state.txt
+
+# TLC model checker artifacts
+docs/tla/*.bin
+docs/tla/states/
+docs/tla/*_TTrace_*.tla
