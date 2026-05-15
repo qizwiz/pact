@@ -15,7 +15,6 @@ Run: pytest test_hypothesis_checkers.py -v
 
 import tempfile
 import textwrap
-from pathlib import Path
 
 from hypothesis import given, settings
 from hypothesis import strategies as st
