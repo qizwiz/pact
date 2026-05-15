@@ -4137,4 +4137,6 @@ def test_numba_typingcontext_intrinsic_not_flagged(tmp_path):
         """,
     )
     results = check_codebase(tmp_path, modes=[REQUIRED_ARG_MISSING])
-    assert not results, f"false positive: gen_random_int64() with typingcontext intrinsic flagged: {results}"
+    assert (
+        not results
+    ), f"false positive: gen_random_int64() with typingcontext intrinsic flagged: {results}"
