@@ -4075,3 +4075,42 @@ def test_run_async_in_thread_coro_consumer_not_flagged(tmp_path):
         "run_async_in_thread / _run_async are coroutine consumers and must not be flagged. "
         f"got: {[(r.line, r.call) for r in results]}"
     )
+
+
+# ---------------------------------------------------------------------------
+# mutable_default_arg — regression: set() constructor not flagged (FN fix)
+# ---------------------------------------------------------------------------
+
+
+def test_mutable_default_set_constructor_flagged(tmp_path):
+    """def fn(x=set()) with mutation was a false-negative before set() constructor fix."""
+    from .failure_mode import MUTABLE_DEFAULT_ARG
+
+    _write_src(
+        tmp_path,
+        "m.py",
+        """
+        def accumulate(items=set()):
+            items.add("new")
+            return items
+        """,
+    )
+    results = check_codebase(tmp_path, modes=[MUTABLE_DEFAULT_ARG])
+    assert results, "def fn(x=set()) with mutation must be flagged"
+
+
+def test_mutable_default_list_constructor_flagged(tmp_path):
+    """def fn(x=list()) with mutation also caught by constructor check."""
+    from .failure_mode import MUTABLE_DEFAULT_ARG
+
+    _write_src(
+        tmp_path,
+        "m.py",
+        """
+        def collect(items=list()):
+            items.append("new")
+            return items
+        """,
+    )
+    results = check_codebase(tmp_path, modes=[MUTABLE_DEFAULT_ARG])
+    assert results, "def fn(x=list()) with mutation must be flagged"

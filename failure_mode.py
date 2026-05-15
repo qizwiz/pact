@@ -1091,6 +1091,33 @@ def _scan_file_mutable_defaults(path: str) -> list[FailureEvidence]:
 
     evidence = []
     _MUTABLE = (_ast.List, _ast.Dict, _ast.Set)
+    _MUTABLE_CALL_NAMES = frozenset({"list", "dict", "set", "List", "Dict", "Set"})
+
+    def _is_mutable_default(node: _ast.expr) -> bool:
+        """Return True for mutable default args including constructor calls.
+
+        Covers both literals ({}, [], {1,2}) and constructor calls (list(), dict(), set()).
+        set() cannot be expressed as a literal (bare {} is a dict), so without this
+        check `def f(x=set())` silently escapes detection.
+        """
+        if isinstance(node, _MUTABLE):
+            return True
+        return (
+            isinstance(node, _ast.Call)
+            and isinstance(node.func, _ast.Name)
+            and node.func.id in _MUTABLE_CALL_NAMES
+        )
+
+    def _mutable_kind(node: _ast.expr) -> str:
+        if isinstance(node, _ast.List):
+            return "list"
+        if isinstance(node, _ast.Dict):
+            return "dict"
+        if isinstance(node, _ast.Set):
+            return "set"
+        # _ast.Call case: list(), dict(), set()
+        assert isinstance(node, _ast.Call) and isinstance(node.func, _ast.Name)
+        return node.func.id.lower()
 
     # Methods that mutate their receiver in place.
     _MUTATING_METHODS = frozenset(
@@ -1182,12 +1209,12 @@ def _scan_file_mutable_defaults(path: str) -> list[FailureEvidence]:
         n_defaults = len(node.args.defaults)
         n_args = len(args)
         for i, default in enumerate(node.args.defaults):
-            if not isinstance(default, _MUTABLE):
+            if not _is_mutable_default(default):
                 continue
             param_name = args[n_args - n_defaults + i].arg
             if not _param_is_mutated(node, param_name):
                 continue
-            kind = type(default).__name__.lower()
+            kind = _mutable_kind(default)
             msg = (
                 f"mutable {kind} default in '{node.name}' — "
                 "shared across all calls; use None and allocate inside the function"
@@ -1205,11 +1232,11 @@ def _scan_file_mutable_defaults(path: str) -> list[FailureEvidence]:
 
         # Keyword-only defaults are one-to-one with kwonlyargs.
         for kwarg, kw_default in zip(node.args.kwonlyargs, node.args.kw_defaults):
-            if kw_default is None or not isinstance(kw_default, _MUTABLE):
+            if kw_default is None or not _is_mutable_default(kw_default):
                 continue
             if not _param_is_mutated(node, kwarg.arg):
                 continue
-            kind = type(kw_default).__name__.lower()
+            kind = _mutable_kind(kw_default)
             msg = (
                 f"mutable {kind} keyword default in '{node.name}' — "
                 "shared across all calls; use None and allocate inside the function"
