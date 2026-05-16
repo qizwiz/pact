@@ -79,7 +79,13 @@ $ pact /tmp/langchain/libs/
 **[future-agi/future-agi](https://github.com/future-agi/future-agi)** — production AI platform:
 ```
 $ pact futureagi/
-✗  pact: 6,931 violation(s)
+✗  pact: 755 violation(s)
+
+  save_without_update_fields  410   .save() races concurrent writes across 600 models
+  bare_except                 190   silent error swallowing in worker paths
+  model_constraint             59   missing required fields in .create() calls
+  optional_dereference         55   unguarded .first()/.get() in view layer
+  missing_await                 2   coroutines called without await
 ```
 See [`examples/future-agi/findings.md`](examples/future-agi/findings.md).
 
