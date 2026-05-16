@@ -29,3 +29,7 @@ Repos from the scan corpus that surfaced interesting patterns (not PRs, but lear
 | celery/kombu | 6 bare_except | Cleanup silencing + context manager protocol | Real violations |
 | wagtail/wagtail | 7 save_without_update_fields | Production Django CMS | Real violations |
 | django/django | 2 bare_except | App-discovery probe pattern | Intentional, real |
+| paperless-ngx/paperless-ngx | 12 save_without_update_fields | Document management, async worker paths | **PR candidate** — 40k stars |
+| pennersr/django-allauth | 8 save_without_update_fields | Auth library, user.save() after set_password — security-relevant | **PR candidate** — 10k stars |
+| LibrePhotos/librephotos | 95 save_without_update_fields | Photo management; 33 in user.py alone | **PR candidate** — 8k stars |
+| healthchecks/healthchecks | 31 save_without_update_fields | Monitoring service with concurrent pings | **PR candidate** — 10k stars |
