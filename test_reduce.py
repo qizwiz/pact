@@ -95,15 +95,23 @@ class TestSCCTangles:
         result = find_sccs(G, func_by_name, [])
         assert result == []
 
-    def test_violation_urgency_increases_score(self):
-        """A tangle with violations scores higher than one without."""
+    def test_violations_are_urgency_not_score(self):
+        """Violations annotate a tangle as urgency but do not affect structural score.
+
+        Two tangles with identical structure must have identical scores regardless
+        of violation count — structure drives rank, violations are a separate signal.
+        """
         funcs = [_func("A", "a.py"), _func("B", "a.py")]
         calls = [_call("A", "B"), _call("B", "A")]
         viols = [_viol("a.py")]
         G, func_by_name = _build_digraph(funcs, calls)
         result_with = find_sccs(G, func_by_name, viols)
         result_without = find_sccs(G, func_by_name, [])
-        assert result_with[0].score > result_without[0].score
+        # Score is structural: same for both (reduction_potential only)
+        assert result_with[0].score == result_without[0].score
+        # Urgency differs: violations are annotated separately
+        assert result_with[0].urgency > result_without[0].urgency
+        assert result_without[0].urgency == 0.0
 
     def test_self_loop_not_counted_as_tangle(self):
         """A → A is a self-loop; it forms an SCC of size 1, not a tangle."""

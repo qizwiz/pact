@@ -168,7 +168,9 @@ The formal spec for pact itself is at [`docs/tla/Pact.tla`](docs/tla/Pact.tla), 
 
 ## Graph reduction
 
-`--reduce` finds **structural fragility** — call cycles, pass-through hops, and fan-out hubs — ranked by `reduction_potential + violations × 0.5`:
+Fewer moving parts is better engineering, independent of observed failures. A pass-through node with zero violations is equally worth removing as one with violations — the structural noise exists regardless. pact ranks simplification targets by structural complexity eliminated, not by violation count.
+
+`--reduce` finds call cycles (SCCs), pass-through hops, and fan-out hubs — ranked by `reduction_potential` (structure eliminated), with violations annotated separately as urgency:
 
 ```
 $ pact . --reduce
@@ -178,14 +180,27 @@ $ pact . --reduce
   TANGLE  payments.charge  [payments/charge.py:14]
     cycle: payments.charge → payments.validate → payments.charge
     3 functions in a mutual call cycle — breaking the cycle removes 2 back-edge(s) and makes the subgraph a DAG
-    reduction_potential=2  violations=4  score=4.0
+    reduction_potential=2  score=2.0  violations=4
 
   PASSTHROUGH  api.route_and_forward  [api/router.py:88]
     in=1 caller  out=1 callee — pure hop with no logic of its own; inline to collapse 1 node + 2 edges
-    reduction_potential=3  violations=1  score=3.5
+    reduction_potential=3  score=3.0
 ```
 
-`--reduce-apply` runs the full three-stage transformation pipeline and reports what was eliminated:
+`--fitness` reports how close your call graph is to its theoretical minimum — the transitive reduction of the condensation DAG:
+
+```
+$ pact . --fitness
+
+⬡ pact --fitness: structural fitness of call graph
+
+  structural fitness: 0.87  [█████████████████░░░]
+  nodes  127/142 load-bearing  (15 overhead, 89% efficient)
+  edges  241/318 non-redundant  (77 overhead, 76% efficient)
+  ⚠ 15 node(s) and 77 edge(s) are structural overhead — run --reduce-apply to see the breakdown
+```
+
+`--reduce-apply` runs the full three-stage transformation pipeline (SCC contraction → dead-node pruning → transitive reduction) and reports what was eliminated:
 
 ```
 $ pact . --reduce-apply

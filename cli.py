@@ -7,7 +7,7 @@ from pathlib import Path
 
 from .checker import check_codebase, check_codebase_incremental
 from .extractor import extract_from_codebase
-from .reduce import analyze_graph_reduction, apply_full_reduction
+from .reduce import analyze_graph_reduction, apply_full_reduction, compute_fitness
 from .refactor import suggest_refactors
 from .specgen import spec_gen
 from .speccomplete import spec_complete
@@ -221,6 +221,15 @@ def main(argv=None) -> int:
         ),
     )
     p.add_argument(
+        "--fitness",
+        action="store_true",
+        help=(
+            "Structural fitness score: ratio of actual call graph size to its "
+            "minimum equivalent (transitive reduction of the condensation DAG). "
+            "1.0 = optimal structure; lower = excess nodes/edges beyond the minimum."
+        ),
+    )
+    p.add_argument(
         "--graph",
         action="store_true",
         help="Print the violation call graph as a Mermaid flowchart",
@@ -349,6 +358,12 @@ def main(argv=None) -> int:
         result = apply_full_reduction(functions, call_sites, violations)
         print("\n⬡ pact --reduce-apply: three-stage graph reduction pipeline\n")
         print(result.summary())
+        print()
+
+    if args.fitness and not args.json_mode:
+        fitness = compute_fitness(functions, call_sites)
+        print("\n⬡ pact --fitness: structural fitness of call graph\n")
+        print(fitness.summary())
         print()
 
     if args.graph:
