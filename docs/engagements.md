@@ -39,3 +39,6 @@ Repos from the scan corpus that surfaced interesting patterns (not PRs, but lear
 | pennersr/django-allauth | 8 save_without_update_fields | Auth library, user.save() after set_password — security-relevant | **PR candidate** — 10k stars |
 | LibrePhotos/librephotos | 95 save_without_update_fields | Photo management; 33 in user.py alone | **PR candidate** — 8k stars |
 | healthchecks/healthchecks | 31 save_without_update_fields | Monitoring service with concurrent pings | **PR candidate** — 10k stars |
+| django-cms/django-cms | 13 save_without_update_fields | Django CMS; mixed with optional_dereference (18 total) | **PR candidate** — 10k stars |
+| suitenumerique/docs | 9 save_without_update_fields | French gov docs platform | **PR candidate** — new find r18-8 |
+| wagtail/wagtail | 7 save_without_update_fields | Production Django CMS, confirmed real | **PR candidate** — 18k stars |
