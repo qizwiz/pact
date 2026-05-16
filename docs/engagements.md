@@ -42,3 +42,4 @@ Repos from the scan corpus that surfaced interesting patterns (not PRs, but lear
 | django-cms/django-cms | 13 save_without_update_fields | Django CMS; mixed with optional_dereference (18 total) | **PR candidate** — 10k stars |
 | suitenumerique/docs | 9 save_without_update_fields | French gov docs platform | **PR candidate** — new find r18-8 |
 | wagtail/wagtail | 7 save_without_update_fields | Production Django CMS, confirmed real | **PR candidate** — 18k stars |
+| meta-llama/llama-cookbook | 12 llm_response_unguarded | Meta's official LLM examples; diverse files (RAG, groq templates, triage) — educational code that gets copied | **PR candidate** — high impact |
