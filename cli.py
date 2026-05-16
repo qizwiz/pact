@@ -7,7 +7,12 @@ from pathlib import Path
 
 from .checker import check_codebase, check_codebase_incremental
 from .extractor import extract_from_codebase
-from .reduce import analyze_graph_reduction, apply_full_reduction
+from .reduce import (
+    analyze_graph_reduction,
+    apply_full_reduction,
+    compute_blast_radii,
+    compute_fitness,
+)
 from .refactor import suggest_refactors
 from .specgen import spec_gen
 from .speccomplete import spec_complete
@@ -221,6 +226,25 @@ def main(argv=None) -> int:
         ),
     )
     p.add_argument(
+        "--fitness",
+        action="store_true",
+        help=(
+            "Structural fitness score: ratio of actual call graph size to its "
+            "minimum equivalent (transitive reduction of the condensation DAG). "
+            "1.0 = optimal structure; lower = excess nodes/edges beyond the minimum."
+        ),
+    )
+    p.add_argument(
+        "--blast-radius",
+        action="store_true",
+        help=(
+            "Re-rank violations by call-graph blast radius: the number of distinct "
+            "functions that can transitively reach the function containing each "
+            "violation.  Higher blast radius = higher actual exposure.  This is a "
+            "verifiable graph-theoretic upper bound, not a heuristic severity label."
+        ),
+    )
+    p.add_argument(
         "--graph",
         action="store_true",
         help="Print the violation call graph as a Mermaid flowchart",
@@ -296,6 +320,20 @@ def main(argv=None) -> int:
                 indent=2,
             )
         )
+    elif args.blast_radius:
+        if not violations:
+            label = f"(diff vs {args.diff})" if args.diff else ""
+            print(f"✓  pact: no constraint violations {label}".strip())
+        else:
+            ranked = compute_blast_radii(functions, call_sites, violations)
+            label = f"(diff vs {args.diff})" if args.diff else ""
+            print(
+                f"✗  pact: {len(ranked)} violation(s) ranked by blast radius"
+                f" {label}\n".strip()
+            )
+            for r in ranked:
+                print(r.summary())
+                print()
     else:
         if not violations:
             label = f"(diff vs {args.diff})" if args.diff else ""
@@ -349,6 +387,12 @@ def main(argv=None) -> int:
         result = apply_full_reduction(functions, call_sites, violations)
         print("\n⬡ pact --reduce-apply: three-stage graph reduction pipeline\n")
         print(result.summary())
+        print()
+
+    if args.fitness and not args.json_mode:
+        fitness = compute_fitness(functions, call_sites)
+        print("\n⬡ pact --fitness: structural fitness of call graph\n")
+        print(fitness.summary())
         print()
 
     if args.graph:

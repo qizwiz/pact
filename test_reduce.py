@@ -12,6 +12,7 @@ import pytest
 from .reduce import (
     analyze_graph_reduction,
     apply_full_reduction,
+    compute_blast_radii,
     contract_sccs,
     eliminate_dead,
     transitive_reduce,
@@ -19,6 +20,7 @@ from .reduce import (
     find_passthroughs,
     find_sccs,
     _build_digraph,
+    _func_for_violation,
 )
 from .extractor import FunctionManifest, CallSite
 from .encoder import Violation
@@ -95,15 +97,23 @@ class TestSCCTangles:
         result = find_sccs(G, func_by_name, [])
         assert result == []
 
-    def test_violation_urgency_increases_score(self):
-        """A tangle with violations scores higher than one without."""
+    def test_violations_are_urgency_not_score(self):
+        """Violations annotate a tangle as urgency but do not affect structural score.
+
+        Two tangles with identical structure must have identical scores regardless
+        of violation count — structure drives rank, violations are a separate signal.
+        """
         funcs = [_func("A", "a.py"), _func("B", "a.py")]
         calls = [_call("A", "B"), _call("B", "A")]
         viols = [_viol("a.py")]
         G, func_by_name = _build_digraph(funcs, calls)
         result_with = find_sccs(G, func_by_name, viols)
         result_without = find_sccs(G, func_by_name, [])
-        assert result_with[0].score > result_without[0].score
+        # Score is structural: same for both (reduction_potential only)
+        assert result_with[0].score == result_without[0].score
+        # Urgency differs: violations are annotated separately
+        assert result_with[0].urgency > result_without[0].urgency
+        assert result_without[0].urgency == 0.0
 
     def test_self_loop_not_counted_as_tangle(self):
         """A → A is a self-loop; it forms an SCC of size 1, not a tangle."""
@@ -431,3 +441,140 @@ class TestApplyFullReduction:
         result = apply_full_reduction(funcs, calls, [])
         if result.graph is not None:
             assert nx.is_directed_acyclic_graph(result.graph)
+
+
+# ---------------------------------------------------------------------------
+# Blast radius tests
+# ---------------------------------------------------------------------------
+
+
+class TestBlastRadius:
+    def test_zero_blast_radius_for_entry_point(self):
+        """A function with no callers has blast_radius=0."""
+        funcs = [
+            _func("entry", line=1),
+            _func("leaf", line=10),
+        ]
+        calls = [_call("entry", "leaf")]
+        # Violation is in entry (line 1) — entry has no callers, so blast_radius=0
+        viols = [
+            Violation(
+                file="mod.py",
+                line=1,
+                call="entry",
+                missing=["x"],
+                context="bare_except",
+            )
+        ]
+        ranked = compute_blast_radii(funcs, calls, viols)
+        assert len(ranked) == 1
+        assert ranked[0].blast_radius == 0
+        assert ranked[0].enclosing_func == "entry"
+
+    def test_blast_radius_counts_transitive_callers(self):
+        """A → B → C: violation in C has blast_radius=2 (A and B can reach it)."""
+        funcs = [_func("A", line=1), _func("B", line=10), _func("C", line=20)]
+        calls = [_call("A", "B"), _call("B", "C")]
+        viols = [
+            Violation(
+                file="mod.py", line=20, call="C", missing=["x"], context="bare_except"
+            )
+        ]
+        ranked = compute_blast_radii(funcs, calls, viols)
+        assert ranked[0].blast_radius == 2
+        assert "A" in ranked[0].reachable_from
+        assert "B" in ranked[0].reachable_from
+
+    def test_higher_blast_radius_ranked_first(self):
+        """Violations are sorted descending by blast_radius."""
+        funcs = [
+            _func("root", line=1),
+            _func("mid", line=10),
+            _func("leaf_deep", line=20),
+            _func("leaf_shallow", line=30),
+        ]
+        calls = [
+            _call("root", "mid"),
+            _call("mid", "leaf_deep"),
+            _call("root", "leaf_shallow"),
+        ]
+        v_deep = Violation(
+            file="mod.py",
+            line=20,
+            call="leaf_deep",
+            missing=["x"],
+            context="bare_except",
+        )
+        v_shallow = Violation(
+            file="mod.py",
+            line=30,
+            call="leaf_shallow",
+            missing=["x"],
+            context="bare_except",
+        )
+        ranked = compute_blast_radii(funcs, calls, [v_deep, v_shallow])
+        # leaf_deep reachable from root+mid (2), leaf_shallow reachable from root (1)
+        assert ranked[0].violation == v_deep
+        assert ranked[0].blast_radius == 2
+        assert ranked[1].violation == v_shallow
+        assert ranked[1].blast_radius == 1
+
+    def test_unlocatable_violation_gets_zero(self):
+        """Violations in files with no extracted functions get blast_radius=0."""
+        funcs = [_func("A", file="other.py", line=1)]
+        calls = []
+        viols = [
+            Violation(
+                file="unknown.py",
+                line=5,
+                call="x",
+                missing=["y"],
+                context="bare_except",
+            )
+        ]
+        ranked = compute_blast_radii(funcs, calls, viols)
+        assert ranked[0].blast_radius == 0
+
+    def test_empty_violations_returns_empty(self):
+        funcs = [_func("A"), _func("B")]
+        calls = [_call("A", "B")]
+        ranked = compute_blast_radii(funcs, calls, [])
+        assert ranked == []
+
+    def test_func_for_violation_finds_enclosing(self):
+        """_func_for_violation returns the last function starting before the violation."""
+        funcs = {
+            "first": FunctionManifest(
+                name="first", file="f.py", line=1, args=[], module_path="f"
+            ),
+            "second": FunctionManifest(
+                name="second", file="f.py", line=20, args=[], module_path="f"
+            ),
+        }
+        v_in_first = Violation(
+            file="f.py", line=15, call="x", missing=["y"], context="bare_except"
+        )
+        v_in_second = Violation(
+            file="f.py", line=25, call="x", missing=["y"], context="bare_except"
+        )
+        assert _func_for_violation(v_in_first, funcs) == "first"
+        assert _func_for_violation(v_in_second, funcs) == "second"
+
+    def test_blast_radius_summary_contains_key_fields(self):
+        """ViolationWithBlast.summary() includes file, line, blast count, context."""
+        funcs = [_func("caller", line=1), _func("target", line=10)]
+        calls = [_call("caller", "target")]
+        viols = [
+            Violation(
+                file="mod.py",
+                line=10,
+                call="target",
+                missing=["check"],
+                context="optional_dereference",
+            )
+        ]
+        ranked = compute_blast_radii(funcs, calls, viols)
+        s = ranked[0].summary()
+        assert "mod.py" in s
+        assert "optional_dereference" in s
+        assert "blast=" in s

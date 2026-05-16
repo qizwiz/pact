@@ -1,0 +1,94 @@
+name: Precise scan
+
+on:
+  workflow_dispatch:
+    inputs:
+      repo_url:
+        description: "GitHub repo to scan (e.g. https://github.com/owner/repo)"
+        required: true
+        type: string
+      ref:
+        description: "Branch, tag, or SHA (default: HEAD)"
+        required: false
+        default: ""
+      keep_image:
+        description: "Keep Docker image after scan (for debugging)"
+        required: false
+        default: "false"
+        type: choice
+        options: ["false", "true"]
+
+jobs:
+  precise-scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout pact
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install pact
+        run: pip install -e ".[llm]" z3-solver networkx jedi
+
+      - name: Clone target repo
+        run: |
+          REPO_URL="${{ inputs.repo_url }}"
+          REPO_NAME=$(basename "$REPO_URL" .git)
+          git clone --depth=1 "$REPO_URL" /tmp/target-repo
+          if [ -n "${{ inputs.ref }}" ]; then
+            git -C /tmp/target-repo fetch --depth=1 origin "${{ inputs.ref }}"
+            git -C /tmp/target-repo checkout FETCH_HEAD
+          fi
+          echo "REPO_NAME=$REPO_NAME" >> $GITHUB_ENV
+
+      - name: Generate Dockerfile
+        run: |
+          python3 -m pact.dockerize /tmp/target-repo --dockerfile-only > /tmp/target-repo/Dockerfile.pact
+          echo "=== Generated Dockerfile ==="
+          cat /tmp/target-repo/Dockerfile.pact
+
+      - name: Build analysis image
+        run: |
+          docker build -f /tmp/target-repo/Dockerfile.pact \
+            -t pact-precise-target \
+            /tmp/target-repo
+
+      - name: Run pact (precise — with Jedi inside container)
+        run: |
+          docker run --rm pact-precise-target \
+            --json \
+            --blast-radius \
+          | tee /tmp/findings.json
+          echo ""
+          echo "=== Blast-radius ranked violations ==="
+          python3 -c "
+          import json, sys
+          findings = json.load(open('/tmp/findings.json'))
+          print(f'{len(findings)} violation(s)')
+          for f in findings[:20]:
+              print(f'  {f[\"file\"]}:{f[\"line\"]}  [{f[\"context\"]}]  {f[\"call\"]}')
+          "
+
+      - name: Run pact fitness
+        run: |
+          python3 -m pact.cli /tmp/target-repo --fitness
+
+      - name: Run pact reduce
+        run: |
+          python3 -m pact.cli /tmp/target-repo --reduce --reduce-limit 10
+
+      - name: Upload findings
+        uses: actions/upload-artifact@v4
+        with:
+          name: pact-findings-${{ env.REPO_NAME }}
+          path: /tmp/findings.json
+          retention-days: 14
+
+      - name: Cleanup image
+        if: inputs.keep_image != 'true'
+        run: docker rmi pact-precise-target || true

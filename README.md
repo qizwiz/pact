@@ -168,18 +168,49 @@ The formal spec for pact itself is at [`docs/tla/Pact.tla`](docs/tla/Pact.tla), 
 
 ## Graph reduction
 
-`--reduce` finds **structural fragility** — call cycles, pass-through hops, and fan-out hubs — ranked by `reduction_potential + violations × 0.5`:
+Fewer moving parts is better engineering, independent of observed failures. A pass-through node with zero violations is equally worth removing as one with violations — the structural noise exists regardless. pact ranks simplification targets by structural complexity eliminated, not by violation count.
+
+`--reduce` finds call cycles (SCCs), pass-through hops, and fan-out hubs — ranked by `reduction_potential` (structure eliminated), with violations annotated separately as urgency:
 
 ```
 $ pact . --reduce
 
-⬡  TANGLE  payments.charge → payments.validate → payments.charge
-     cycle of 3 — break to make this subgraph a DAG
-     score=4.0  violations=4
+⬡ pact --reduce: 3 simplification target(s)  (showing top 3)
 
-⬡  PASSTHROUGH  api.route_and_forward
-     1 caller → 1 callee — pure hop; inline to collapse 1 node + 2 edges
-     score=3.5  violations=1
+  TANGLE  payments.charge  [payments/charge.py:14]
+    cycle: payments.charge → payments.validate → payments.charge
+    3 functions in a mutual call cycle — breaking the cycle removes 2 back-edge(s) and makes the subgraph a DAG
+    reduction_potential=2  score=2.0  violations=4
+
+  PASSTHROUGH  api.route_and_forward  [api/router.py:88]
+    in=1 caller  out=1 callee — pure hop with no logic of its own; inline to collapse 1 node + 2 edges
+    reduction_potential=3  score=3.0
+```
+
+`--fitness` reports how close your call graph is to its theoretical minimum — the transitive reduction of the condensation DAG:
+
+```
+$ pact . --fitness
+
+⬡ pact --fitness: structural fitness of call graph
+
+  structural fitness: 0.87  [█████████████████░░░]
+  nodes  127/142 load-bearing  (15 overhead, 89% efficient)
+  edges  241/318 non-redundant  (77 overhead, 76% efficient)
+  ⚠ 15 node(s) and 77 edge(s) are structural overhead — run --reduce-apply to see the breakdown
+```
+
+`--reduce-apply` runs the full three-stage transformation pipeline (SCC contraction → dead-node pruning → transitive reduction) and reports what was eliminated:
+
+```
+$ pact . --reduce-apply
+
+  Graph reduction pipeline
+    original:           142 nodes, 318 edges
+    after SCC contract: 139 nodes (2 cycle(s) collapsed), 312 edges
+    after dead-prune:   127 nodes (12 unreachable removed), 298 edges
+    after trans-reduce: 127 nodes, 241 edges (57 redundant edge(s) removed)
+    TOTAL eliminated:   15 node(s), 77 edge(s) → 127 nodes / 241 edges remain
 ```
 
 ## How it works
@@ -210,6 +241,9 @@ Design rationale is in [`docs/adr/`](docs/adr/). Key decisions:
 | [ADR-004](docs/adr/ADR-004-yaml-rules-family-key.md) | YAML rules with `family:` key for cross-framework constraint families |
 | [ADR-005](docs/adr/ADR-005-coro-consumers-frozenset.md) | `_CORO_CONSUMERS` frozenset — O(1), immutable, TLC-verifiable |
 | [ADR-006](docs/adr/ADR-006-bare-except-reraise-exclusion.md) | `except: raise` excluded from bare_except — pure re-raise swallows nothing |
+| [ADR-007](docs/adr/ADR-007-structure-first-scoring.md) | Structure-first `--reduce` scoring — violations annotate, not rank; `--fitness` reports graph compression ratio |
+| [ADR-008](docs/adr/ADR-008-precise-mode-container-isolation.md) | Precise mode: container-isolated Jedi analysis + blast radius ranking via `nx.ancestors()` |
+| [ADR-009](docs/adr/ADR-009-monolith-density-signal.md) | Monolith density signal — per-file violation concentration ≥50 triggers structural warning, not individual bug list |
 | [ADR-036](docs/adr/ADR-036-pact-formal-analysis-toolkit.md) | Z3 Fixedpoint over traditional dataflow; TLA+ over property testing alone |
 
 ## Formal verification
@@ -236,7 +270,7 @@ pact uses a five-layer verification approach:
 2. **ADRs (rationale)** — architectural decisions documented before implementation
 3. **Z3 (satisfiability)** — per-call-site constraint checking at analysis time
 4. **Hypothesis (property-based)** — `test_hypothesis_checkers.py` generates random Python fragments and asserts soundness/precision invariants for each checker
-5. **Integration probe** — `scan_github` corpus of 44k+ violations across 200+ real repositories validates false-positive rates
+5. **Integration probe** — `scan_github` corpus of 50k+ violations across 200+ real repositories validates false-positive rates
 
 The Hypothesis layer (step 4) has already found one real false negative: `def fn(x=set())` was not flagged because `set()` is an `ast.Call` node, not an `ast.Set` literal. Fixed and regressed in `test_checker.py`.
 
