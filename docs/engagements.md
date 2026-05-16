@@ -43,3 +43,4 @@ Repos from the scan corpus that surfaced interesting patterns (not PRs, but lear
 | suitenumerique/docs | 9 save_without_update_fields | French gov docs platform | **PR candidate** — new find r18-8 |
 | wagtail/wagtail | 7 save_without_update_fields | Production Django CMS, confirmed real | **PR candidate** — 18k stars |
 | meta-llama/llama-cookbook | 12 llm_response_unguarded | Meta's official LLM examples; diverse files (RAG, groq templates, triage) — educational code that gets copied | **PR candidate** — high impact |
+| microsoft/generative-ai-for-beginners | 9 llm_response_unguarded | MS beginner course lesson 6; 9 scripts each with `response.choices[0]` unguarded — 61k stars, teaches unsafe pattern | **PR candidate** — 61k stars |
