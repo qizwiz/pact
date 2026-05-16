@@ -243,6 +243,7 @@ Design rationale is in [`docs/adr/`](docs/adr/). Key decisions:
 | [ADR-006](docs/adr/ADR-006-bare-except-reraise-exclusion.md) | `except: raise` excluded from bare_except — pure re-raise swallows nothing |
 | [ADR-007](docs/adr/ADR-007-structure-first-scoring.md) | Structure-first `--reduce` scoring — violations annotate, not rank; `--fitness` reports graph compression ratio |
 | [ADR-008](docs/adr/ADR-008-precise-mode-container-isolation.md) | Precise mode: container-isolated Jedi analysis + blast radius ranking via `nx.ancestors()` |
+| [ADR-009](docs/adr/ADR-009-monolith-density-signal.md) | Monolith density signal — per-file violation concentration ≥50 triggers structural warning, not individual bug list |
 | [ADR-036](docs/adr/ADR-036-pact-formal-analysis-toolkit.md) | Z3 Fixedpoint over traditional dataflow; TLA+ over property testing alone |
 
 ## Formal verification
