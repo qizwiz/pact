@@ -830,7 +830,7 @@ def _is_probe_expr(expr: object) -> bool:
     """Return True if expr is a pure introspection expression (no side effects)."""
     import ast as _ast
 
-    if expr is None or isinstance(expr, (_ast.Name, _ast.Constant)):
+    if expr is None or isinstance(expr, (_ast.Name, _ast.Attribute, _ast.Constant)):
         return True
     if isinstance(expr, _ast.Call):
         func = expr.func
@@ -853,7 +853,9 @@ def _is_probe_stmt(stmt: object) -> bool:
     import ast as _ast
 
     if isinstance(stmt, _ast.Return):
-        return _is_probe_expr(stmt.value)
+        # Only constant returns (True/False/None) are probe stmts — returning
+        # obj.attr or a computed value may fail and would be swallowed.
+        return stmt.value is None or isinstance(stmt.value, _ast.Constant)
     if isinstance(stmt, _ast.If):
         return (
             _is_probe_expr(stmt.test)
