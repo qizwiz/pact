@@ -18,6 +18,12 @@ PRs filed against external repos using pact-detected violations. Tracks what we 
 | jina-ai/serve | `except: raise` flagged as bare_except — pure re-raise swallows nothing | [ADR-006](adr/ADR-006-bare-except-reraise-exclusion.md) |
 | arize-ai/phoenix | `response.choices[0]` unguarded — `llm_response_unguarded` mode confirmed real | (mode existed; PR filed) |
 
+## Findings ready to file (pending Codeberg account)
+
+| Repo | Branch | Violations | Notes |
+|------|--------|-----------|-------|
+| [pennersr/django-allauth](https://codeberg.org/allauth/django-allauth) | qizwiz/django-allauth:fix/save-update-fields | 3 `save_without_update_fields` | Canonical repo is Codeberg, not GitHub. Code tested (231 passed). Fixes: adapter.py set_password(), models.py set_as_primary() (pk guard needed for by-code flow), EmailConfirmation.send(). Needs Codeberg fork to file PR. |
+
 ## Corpus repos with notable findings
 
 Repos from the scan corpus that surfaced interesting patterns (not PRs, but learning):
