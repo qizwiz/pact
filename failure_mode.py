@@ -809,6 +809,60 @@ REQUIRED_ARG_MISSING = FailureMode(
 # Detects `except:` or `except Exception: pass` — silent failure patterns.
 
 
+_PROBE_BUILTINS: frozenset[str] = frozenset(
+    {"issubclass", "isinstance", "getattr", "hasattr", "type", "vars", "dir"}
+)
+_PROBE_INSPECT_ATTRS: frozenset[str] = frozenset(
+    {
+        "getdoc",
+        "isfunction",
+        "ismethod",
+        "isclass",
+        "ismodule",
+        "isbuiltin",
+        "signature",
+        "getmembers",
+    }
+)
+
+
+def _is_probe_expr(expr: object) -> bool:
+    """Return True if expr is a pure introspection expression (no side effects)."""
+    import ast as _ast
+
+    if expr is None or isinstance(expr, (_ast.Name, _ast.Attribute, _ast.Constant)):
+        return True
+    if isinstance(expr, _ast.Call):
+        func = expr.func
+        if isinstance(func, _ast.Name) and func.id in _PROBE_BUILTINS:
+            return True
+        if isinstance(func, _ast.Attribute) and func.attr in _PROBE_INSPECT_ATTRS:
+            return True
+        return False
+    if isinstance(expr, _ast.Compare):
+        return _is_probe_expr(expr.left) and all(
+            _is_probe_expr(c) for c in expr.comparators
+        )
+    if isinstance(expr, _ast.BoolOp):
+        return all(_is_probe_expr(v) for v in expr.values)
+    return False
+
+
+def _is_probe_stmt(stmt: object) -> bool:
+    """Return True if stmt is a pure introspection statement — no observable mutations."""
+    import ast as _ast
+
+    if isinstance(stmt, _ast.Return):
+        return _is_probe_expr(stmt.value)
+    if isinstance(stmt, _ast.If):
+        return (
+            _is_probe_expr(stmt.test)
+            and all(_is_probe_stmt(s) for s in stmt.body)
+            and all(_is_probe_stmt(s) for s in stmt.orelse)
+        )
+    return False
+
+
 @functools.lru_cache(maxsize=None)
 def _scan_file_bare_except(path: str) -> list[FailureEvidence]:
     """File-level scan for bare except: and silent except Exception: pass."""
@@ -820,6 +874,12 @@ def _scan_file_bare_except(path: str) -> list[FailureEvidence]:
         tree = _ast.parse(source, filename=path)
     except (SyntaxError, OSError):
         return []
+
+    # Build parent map for context-aware exclusions
+    parent_map: dict[int, object] = {}
+    for node in _ast.walk(tree):
+        for child in _ast.iter_child_nodes(node):  # type: ignore[arg-type]
+            parent_map[id(child)] = node
 
     source_lines = source.splitlines()
     evidence = []
@@ -860,16 +920,32 @@ def _scan_file_bare_except(path: str) -> list[FailureEvidence]:
                     and body[0].value.value is ...
                 )
             )
-            if is_silent:
-                evidence.append(
-                    FailureEvidence(
-                        mode_name="bare_except",
-                        file=path,
-                        line=node.lineno,
-                        call="except Exception: pass",
-                        message="`except Exception: pass` silently swallows all errors",
-                    )
+            if not is_silent:
+                continue
+            # ADR-011 exclusion 1: nested last-resort handler.
+            # `except Exception: pass` inside another except body is an intentional
+            # "last-resort" fallback — the outer handler already guards the error path.
+            try_node = parent_map.get(id(node))
+            try_parent = parent_map.get(id(try_node)) if try_node is not None else None
+            if isinstance(try_parent, _ast.ExceptHandler):
+                continue
+            # ADR-011 exclusion 2: probing try/except-as-control-flow.
+            # Short try blocks (≤3 stmts) that only contain pure introspection
+            # expressions (issubclass, isinstance, getattr, hasattr, inspect.*)
+            # use exceptions as flow control — not as error suppression.
+            if isinstance(try_node, _ast.Try):
+                try_body = try_node.body
+                if len(try_body) <= 3 and all(_is_probe_stmt(s) for s in try_body):
+                    continue
+            evidence.append(
+                FailureEvidence(
+                    mode_name="bare_except",
+                    file=path,
+                    line=node.lineno,
+                    call="except Exception: pass",
+                    message="`except Exception: pass` silently swallows all errors",
                 )
+            )
     return evidence
 
 
