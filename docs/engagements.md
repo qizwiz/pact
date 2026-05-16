@@ -8,7 +8,7 @@ PRs filed against external repos using pact-detected violations. Tracks what we 
 | 2026-05-14 | [comet-ml/opik](https://github.com/comet-ml/opik) | [#6700](https://github.com/comet-ml/opik/pull/6700) | `llm_response_unguarded` | 5k | Open | Bot requested streaming fix + test; streaming guard applied; replied explaining docs scripts have no test runner |
 | 2026-05-14 | [vibrantlabsai/ragas](https://github.com/vibrantlabsai/ragas) | [#2720](https://github.com/vibrantlabsai/ragas/pull/2720) | `llm_response_unguarded` | 8k | Open | 0 reviews |
 | 2026-05-14 | [microsoft/markitdown](https://github.com/microsoft/markitdown) | [#1876](https://github.com/microsoft/markitdown/pull/1876) | `llm_response_unguarded` | 52k | Open | 0 reviews; highest-star repo targeted so far |
-| 2026-05-15 | [celery/django-celery-beat](https://github.com/celery/django-celery-beat) | [#1038](https://github.com/celery/django-celery-beat/pull/1038) | `save_without_update_fields` | 1.5k | Open | Maintainer requested tests; added 3 regression tests + pk guard fix (c372f43); replied to auvipy |
+| 2026-05-15 | [celery/django-celery-beat](https://github.com/celery/django-celery-beat) | [#1038](https://github.com/celery/django-celery-beat/pull/1038) | `save_without_update_fields` | 1.5k | Open | CI green (all 20 matrix jobs: Django 3.2→6.0, Python 3.9→3.14+pypy); awaiting human review |
 | 2026-05-16 | [celery/django-celery](https://github.com/celery/django-celery) | [#643](https://github.com/celery/django-celery/pull/643) | `save_without_update_fields` | 1.6k | Open | Same race condition as django-celery-beat; found via r16-7 celery corpus batch |
 
 ## Findings that drove ADRs
