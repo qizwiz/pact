@@ -25,7 +25,7 @@ Repos from the scan corpus that surfaced interesting patterns (not PRs, but lear
 | Repo | Violations | Pattern | Verdict |
 |------|-----------|---------|---------|
 | jina-ai/serve | 24 bare_except | `except: raise` routing | FP → fixed ADR-006 |
-| Cloud-CV/EvalAI | 45 save_without_update_fields | Django eval platform with concurrent writes | Real violations |
+| Cloud-CV/EvalAI | 45 save_without_update_fields | Django eval platform, 16 in aws_utils.py (worker paths), 11 in views.py | **PR candidate** — 2k stars |
 | celery/kombu | 6 bare_except | Cleanup silencing + context manager protocol | Real violations |
 | wagtail/wagtail | 7 save_without_update_fields | Production Django CMS | Real violations |
 | django/django | 2 bare_except | App-discovery probe pattern | Intentional, real |
