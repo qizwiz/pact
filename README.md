@@ -121,7 +121,7 @@ pact . --json
 |------|-----------------|
 | `optional_dereference` | `.first()` / `.get()` result used without `None` check |
 | `missing_await` | Async function called without `await` — body never runs |
-| `bare_except` | `except Exception: pass` — silent error suppression |
+| `bare_except` | `except Exception: pass` or bare `except:` — silent error suppression (pure `except: raise` excluded) |
 | `save_without_update_fields` | `.save()` overwrites all columns, races concurrent writes |
 | `unvalidated_lookup_chain` | `d.get(k)` result used as dict key without guard |
 | `required_arg_missing` | Call omits a required argument |
@@ -209,6 +209,7 @@ Design rationale is in [`docs/adr/`](docs/adr/). Key decisions:
 | [ADR-003](docs/adr/ADR-003-tla-as-semantic-layer.md) | TLA+ as semantic layer — every FailureMode has a TLC-verified spec |
 | [ADR-004](docs/adr/ADR-004-yaml-rules-family-key.md) | YAML rules with `family:` key for cross-framework constraint families |
 | [ADR-005](docs/adr/ADR-005-coro-consumers-frozenset.md) | `_CORO_CONSUMERS` frozenset — O(1), immutable, TLC-verifiable |
+| [ADR-006](docs/adr/ADR-006-bare-except-reraise-exclusion.md) | `except: raise` excluded from bare_except — pure re-raise swallows nothing |
 | [ADR-036](docs/adr/ADR-036-pact-formal-analysis-toolkit.md) | Z3 Fixedpoint over traditional dataflow; TLA+ over property testing alone |
 
 ## Formal verification
@@ -235,7 +236,7 @@ pact uses a five-layer verification approach:
 2. **ADRs (rationale)** — architectural decisions documented before implementation
 3. **Z3 (satisfiability)** — per-call-site constraint checking at analysis time
 4. **Hypothesis (property-based)** — `test_hypothesis_checkers.py` generates random Python fragments and asserts soundness/precision invariants for each checker
-5. **Integration probe** — `scan_github` corpus of 41k+ violations across 200+ real repositories validates false-positive rates
+5. **Integration probe** — `scan_github` corpus of 44k+ violations across 200+ real repositories validates false-positive rates
 
 The Hypothesis layer (step 4) has already found one real false negative: `def fn(x=set())` was not flagged because `set()` is an `ast.Call` node, not an `ast.Set` literal. Fixed and regressed in `test_checker.py`.
 
