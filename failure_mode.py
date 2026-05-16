@@ -830,7 +830,7 @@ def _is_probe_expr(expr: object) -> bool:
     """Return True if expr is a pure introspection expression (no side effects)."""
     import ast as _ast
 
-    if expr is None or isinstance(expr, (_ast.Name, _ast.Attribute, _ast.Constant)):
+    if expr is None or isinstance(expr, (_ast.Name, _ast.Constant)):
         return True
     if isinstance(expr, _ast.Call):
         func = expr.func
@@ -886,9 +886,12 @@ def _scan_file_bare_except(path: str) -> list[FailureEvidence]:
     for node in _ast.walk(tree):
         if not isinstance(node, _ast.ExceptHandler):
             continue
-        # Respect # noqa annotations — developer has explicitly suppressed this warning
+        # Respect # noqa / # pragma: no cover — developer has explicitly suppressed
         line_idx = node.lineno - 1
-        if 0 <= line_idx < len(source_lines) and "# noqa" in source_lines[line_idx]:
+        if 0 <= line_idx < len(source_lines) and (
+            "# noqa" in source_lines[line_idx]
+            or "# pragma: no cover" in source_lines[line_idx]
+        ):
             continue
         if node.type is None:
             # bare `except:` — catches KeyboardInterrupt, SystemExit, everything
