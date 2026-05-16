@@ -8,7 +8,7 @@ PRs filed against external repos using pact-detected violations. Tracks what we 
 | 2026-05-14 | [comet-ml/opik](https://github.com/comet-ml/opik) | [#6700](https://github.com/comet-ml/opik/pull/6700) | `llm_response_unguarded` | 5k | Open | Bot review requested `getattr` streaming fix; applied and replied |
 | 2026-05-14 | [vibrantlabsai/ragas](https://github.com/vibrantlabsai/ragas) | [#2720](https://github.com/vibrantlabsai/ragas/pull/2720) | `llm_response_unguarded` | 8k | Open | 0 reviews |
 | 2026-05-14 | [microsoft/markitdown](https://github.com/microsoft/markitdown) | [#1876](https://github.com/microsoft/markitdown/pull/1876) | `llm_response_unguarded` | 52k | Open | 0 reviews; highest-star repo targeted so far |
-| 2026-05-15 | [celery/django-celery-beat](https://github.com/celery/django-celery-beat) | [#1038](https://github.com/celery/django-celery-beat/pull/1038) | `save_without_update_fields` | 1.5k | Open | 0 reviews |
+| 2026-05-15 | [celery/django-celery-beat](https://github.com/celery/django-celery-beat) | [#1038](https://github.com/celery/django-celery-beat/pull/1038) | `save_without_update_fields` | 1.5k | Open | @auvipy requested tests → 3 regression tests added, replied 2026-05-16 |
 
 ## Findings that drove ADRs
 
