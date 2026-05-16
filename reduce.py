@@ -203,6 +203,134 @@ def _viols_for_member(
     return [v for v in violations if v.file == f.file and v.line >= f.line]
 
 
+def _func_for_violation(v: Violation, func_by_name: dict) -> str | None:
+    """Return the innermost function name that contains violation v.
+
+    Inverse of _viols_for_member: given a (file, line) violation, find the
+    enclosing function node in the call graph by scanning sorted start lines
+    and returning the last function whose start line is <= violation line.
+    Returns None if no function in the same file precedes the violation.
+    """
+    file_funcs = sorted(
+        [f for f in func_by_name.values() if f.file == v.file],
+        key=lambda f: f.line,
+    )
+    best: str | None = None
+    for f in file_funcs:
+        if f.line <= v.line:
+            best = f.name
+        else:
+            break
+    return best
+
+
+@dataclass
+class ViolationWithBlast:
+    """A violation annotated with its call-graph blast radius.
+
+    blast_radius is the number of distinct functions that can transitively
+    reach the function containing this violation.  It is a verifiable,
+    graph-theoretic upper bound on how many callers are exposed to the
+    violation — not a heuristic severity label.
+
+    Two violations of the same type are not equivalent: a bare_except
+    reachable from 40 callers matters more than one reachable from 2.
+    This is the causal metric that makes prioritization non-arbitrary.
+    """
+
+    violation: Violation
+    blast_radius: int  # len(nx.ancestors(G, enclosing_func))
+    enclosing_func: str  # function node name in the call graph
+    reachable_from: frozenset[str]  # the ancestor set itself
+
+    def summary(self, show_callers: int = 3) -> str:
+        v = self.violation
+        bar_width = 10
+        # Scale bar relative to blast_radius: log scale, cap at bar_width
+        import math
+
+        filled = min(bar_width, round(math.log2(self.blast_radius + 1)))
+        bar = "█" * filled + "░" * (bar_width - filled)
+        lines = [
+            f"  {v.file}:{v.line}  [{v.context}]  blast={self.blast_radius} [{bar}]",
+            f"    {v.call}  —  {', '.join(v.missing)}",
+        ]
+        if show_callers and self.reachable_from:
+            sample = sorted(self.reachable_from)[:show_callers]
+            suffix = (
+                f" … (+{self.blast_radius - show_callers} more)"
+                if self.blast_radius > show_callers
+                else ""
+            )
+            lines.append(f"    reachable from: {', '.join(sample)}{suffix}")
+        return "\n".join(lines)
+
+
+def compute_blast_radii(
+    functions: list[FunctionManifest],
+    call_sites: list[CallSite],
+    violations: list[Violation],
+) -> list["ViolationWithBlast"]:
+    """Annotate each violation with its call-graph blast radius.
+
+    For each violation, finds the enclosing function in the call graph, then
+    computes nx.ancestors() — the set of all functions that can transitively
+    reach it.  Returns violations sorted descending by blast radius so the
+    highest-impact findings appear first.
+
+    Violations whose enclosing function cannot be located in the call graph
+    (e.g., module-level code, generated code) are included with blast_radius=0
+    so no finding is silently dropped.
+    """
+    if not _HAS_NX:
+        return [
+            ViolationWithBlast(
+                violation=v,
+                blast_radius=0,
+                enclosing_func="",
+                reachable_from=frozenset(),
+            )
+            for v in violations
+        ]
+
+    G, func_by_name = _build_digraph(functions, call_sites)
+    if G is None:
+        return [
+            ViolationWithBlast(
+                violation=v,
+                blast_radius=0,
+                enclosing_func="",
+                reachable_from=frozenset(),
+            )
+            for v in violations
+        ]
+
+    results: list[ViolationWithBlast] = []
+    for v in violations:
+        func = _func_for_violation(v, func_by_name)
+        if func and func in G:
+            ancestors = nx.ancestors(G, func)
+            results.append(
+                ViolationWithBlast(
+                    violation=v,
+                    blast_radius=len(ancestors),
+                    enclosing_func=func,
+                    reachable_from=frozenset(ancestors),
+                )
+            )
+        else:
+            results.append(
+                ViolationWithBlast(
+                    violation=v,
+                    blast_radius=0,
+                    enclosing_func=func or "",
+                    reachable_from=frozenset(),
+                )
+            )
+
+    return sorted(results, key=lambda r: -r.blast_radius)
+
+
 def find_sccs(
     G, func_by_name: dict, violations: list[Violation]
 ) -> list[ReductionCandidate]:
