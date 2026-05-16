@@ -252,7 +252,7 @@ pact uses a five-layer verification approach:
 2. **ADRs (rationale)** — architectural decisions documented before implementation
 3. **Z3 (satisfiability)** — per-call-site constraint checking at analysis time
 4. **Hypothesis (property-based)** — `test_hypothesis_checkers.py` generates random Python fragments and asserts soundness/precision invariants for each checker
-5. **Integration probe** — `scan_github` corpus of 44k+ violations across 200+ real repositories validates false-positive rates
+5. **Integration probe** — `scan_github` corpus of 45k+ violations across 200+ real repositories validates false-positive rates
 
 The Hypothesis layer (step 4) has already found one real false negative: `def fn(x=set())` was not flagged because `set()` is an `ast.Call` node, not an `ast.Set` literal. Fixed and regressed in `test_checker.py`.
 
