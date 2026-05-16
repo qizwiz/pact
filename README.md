@@ -173,13 +173,29 @@ The formal spec for pact itself is at [`docs/tla/Pact.tla`](docs/tla/Pact.tla), 
 ```
 $ pact . --reduce
 
-⬡  TANGLE  payments.charge → payments.validate → payments.charge
-     cycle of 3 — break to make this subgraph a DAG
-     score=4.0  violations=4
+⬡ pact --reduce: 3 simplification target(s)  (showing top 3)
 
-⬡  PASSTHROUGH  api.route_and_forward
-     1 caller → 1 callee — pure hop; inline to collapse 1 node + 2 edges
-     score=3.5  violations=1
+  TANGLE  payments.charge  [payments/charge.py:14]
+    cycle: payments.charge → payments.validate → payments.charge
+    3 functions in a mutual call cycle — breaking the cycle removes 2 back-edge(s) and makes the subgraph a DAG
+    reduction_potential=2  violations=4  score=4.0
+
+  PASSTHROUGH  api.route_and_forward  [api/router.py:88]
+    in=1 caller  out=1 callee — pure hop with no logic of its own; inline to collapse 1 node + 2 edges
+    reduction_potential=3  violations=1  score=3.5
+```
+
+`--reduce-apply` runs the full three-stage transformation pipeline and reports what was eliminated:
+
+```
+$ pact . --reduce-apply
+
+  Graph reduction pipeline
+    original:           142 nodes, 318 edges
+    after SCC contract: 139 nodes (2 cycle(s) collapsed), 312 edges
+    after dead-prune:   127 nodes (12 unreachable removed), 298 edges
+    after trans-reduce: 127 nodes, 241 edges (57 redundant edge(s) removed)
+    TOTAL eliminated:   15 node(s), 77 edge(s) → 127 nodes / 241 edges remain
 ```
 
 ## How it works
