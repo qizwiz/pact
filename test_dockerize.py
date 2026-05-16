@@ -1,11 +1,6 @@
 """Tests for pact.dockerize — auto-Dockerizer and precise scanner."""
 
-import json
-import subprocess
-from pathlib import Path
-from unittest.mock import MagicMock, patch
-
-import pytest
+from unittest.mock import patch
 
 from .dockerize import (
     PreciseScanner,
