@@ -57,6 +57,7 @@ _SKIP_PATHS = frozenset(
         "node_modules",
         "__pycache__",
         ".git",
+        ".github",  # CI/repo metadata — not application code (ADR-015)
         ".claude",  # Claude Code hooks/config — not library code
         ".cursor",  # Cursor IDE config
         "dist",
@@ -160,6 +161,9 @@ def list_python_files(
         parts = path.split("/")
         if any(p in _SKIP_PATHS for p in parts):
             continue
+        stem = parts[-1][:-3]  # strip .py suffix
+        if stem.endswith(".backup") or stem.endswith("_backup"):
+            continue  # ADR-014: backup files are never production code
         paths.append(path)
     return paths
 
