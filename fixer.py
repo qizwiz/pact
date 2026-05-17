@@ -24,7 +24,6 @@ Usage
 
 from __future__ import annotations
 
-import ast
 import difflib
 import re
 from pathlib import Path
@@ -192,7 +191,7 @@ def fix_file(
     path = str(path)
     try:
         original = Path(path).read_text(encoding="utf-8", errors="replace")
-    except OSError as e:
+    except OSError:
         return FileResult(
             path=path,
             original="",

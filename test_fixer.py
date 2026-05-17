@@ -1,11 +1,8 @@
 """Tests for pact.fixer — automated patch generation."""
 
 import textwrap
-from pathlib import Path
 
-import pytest
-
-from .fixer import FileResult, FIX_MODES, fix_file, diff_text
+from .fixer import FIX_MODES, fix_file, diff_text
 from .failure_mode import FailureEvidence
 
 
