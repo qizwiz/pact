@@ -247,6 +247,28 @@ def test_missing_await_skipped_inside_asyncio_run(tmp_path):
     assert len(result.skipped) == 1
 
 
+def test_missing_await_skipped_inside_custom_sync_runner(tmp_path):
+    """_run_sync(coro()) must not be flagged — ADR-022 custom runner exclusion."""
+    src = textwrap.dedent("""\
+        import asyncio
+
+        def _run_sync(coro):
+            return asyncio.run(coro)
+
+        async def astore_files(eid, files):
+            pass
+
+        def store_files(eid, files):
+            _run_sync(astore_files(eid, files))
+    """)
+    f = tmp_path / "file_store.py"
+    f.write_text(src)
+    ev = _ev("missing_await", 10, "astore_files", str(f))
+    result = fix_file(str(f), [ev])
+    assert not result.changed
+    assert len(result.skipped) == 1
+
+
 # ---------------------------------------------------------------------------
 # FIX_MODES constant
 # ---------------------------------------------------------------------------

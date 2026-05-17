@@ -1582,6 +1582,9 @@ def _scan_file_missing_await(path: str) -> list[FailureEvidence]:
                 fname in _CORO_CONSUMERS
                 or fname in file_imported_consumers
                 or (fname is not None and fname.startswith("create_task"))
+                or (
+                    fname is not None and fname.endswith("run_sync")
+                )  # ADR-022: _run_sync, mylib_run_sync, etc.
             ):
                 return True
             # Qualified consumers: asyncio.run(), loop.run_until_complete()
@@ -1602,6 +1605,7 @@ def _scan_file_missing_await(path: str) -> list[FailureEvidence]:
                     fname in _CORO_CONSUMERS
                     or fname in file_imported_consumers
                     or (fname is not None and fname.startswith("create_task"))
+                    or (fname is not None and fname.endswith("run_sync"))  # ADR-022
                 ):
                     return True
                 # list.append((coro(), metadata)) — tuple wrapping coroutine before gather
