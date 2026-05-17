@@ -673,6 +673,9 @@ def iter_python_files(root: Path):
     for path in root.rglob("*.py"):
         if any(part in _SKIP_DIRS for part in path.parts):
             continue
+        stem = path.stem  # e.g. "firecrawl.backup" for "firecrawl.backup.py"
+        if stem.endswith(".backup") or stem.endswith("_backup"):
+            continue
         yield path
 
 
