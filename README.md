@@ -255,6 +255,7 @@ Design rationale is in [`docs/adr/`](docs/adr/). Key decisions:
 | [ADR-012](docs/adr/ADR-012-pragma-no-cover-escape-hatch.md) | `# pragma: no cover` on except line suppresses bare_except; `_ast.Attribute` fix in `_is_probe_expr` (see ADR-013) |
 | [ADR-013](docs/adr/ADR-013-attribute-access-probe-expr.md) | Attribute access is a pure probe expression; only constant returns (`True`/`False`/`None`) are probe statements |
 | [ADR-014](docs/adr/ADR-014-skip-backup-files.md) | Skip `*.backup.py` and `*_backup.py` — backup files are never production code |
+| [ADR-015](docs/adr/ADR-015-skip-github-dir.md) | Skip `.github/` directory — CI/repo metadata is not application code |
 | [ADR-036](docs/adr/ADR-036-pact-formal-analysis-toolkit.md) | Z3 Fixedpoint over traditional dataflow; TLA+ over property testing alone |
 
 ## Formal verification

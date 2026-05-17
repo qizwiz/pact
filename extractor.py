@@ -632,6 +632,7 @@ _SKIP_DIRS = frozenset(
     {
         "__pycache__",
         ".git",
+        ".github",
         ".venv",
         "venv",
         "node_modules",
