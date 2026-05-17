@@ -122,7 +122,7 @@ def generate_test_file(
         await_kw = "await " if ctx.is_async else ""
 
         if ctx.is_method and ctx.class_name:
-            setup = _method_setup(ctx, var, attr)
+            setup = _method_setup(ctx, var, attr, patched_source, path, ev.line)
             call = f"{await_kw}instance.{ctx.name}({_dummy_call_args(ctx)})"
         else:
             setup = _func_setup(var, attr)
@@ -151,12 +151,48 @@ def generate_test_file(
     return "\n".join(lines) + "\n"
 
 
-def _method_setup(ctx: _FuncContext, var: str, attr: str) -> list[str]:
-    lines = [
-        f"# Bypass __init__ — we only need to set {var}",
-        "from importlib import import_module",
-        f"# instance = {ctx.class_name}.__new__({ctx.class_name})",
-        "instance = MagicMock(spec_set=False)",
+def _resolve_class(source: str, path: str, line: int) -> tuple[str, str] | None:
+    """
+    Use Jedi to resolve the class of `self` at `line`.
+    Returns (module_name, class_name) or None if resolution fails.
+    """
+    try:
+        import jedi
+
+        script = jedi.Script(source=source, path=path)
+        names = script.infer(line=line, column=8)
+        for n in names:
+            if n.module_name and n.name and n.type == "class":
+                return (n.module_name, n.name)
+    except Exception:
+        pass
+    return None
+
+
+def _method_setup(
+    ctx: _FuncContext,
+    var: str,
+    attr: str,
+    source: str = "",
+    path: str = "",
+    line: int = 0,
+) -> list[str]:
+    resolved = _resolve_class(source, path, line) if source and path else None
+    if resolved:
+        mod, cls = resolved
+        lines = [
+            "try:",
+            f"    from {mod} import {cls}",
+            f"    instance = {cls}.__new__({cls})",
+            "except Exception:",
+            "    instance = MagicMock(spec_set=False)",
+        ]
+    else:
+        lines = [
+            f"# Bypass __init__ — we only need to set {var}",
+            "instance = MagicMock(spec_set=False)",
+        ]
+    lines += [
         f"mock_{var} = MagicMock()",
         f"mock_{var}.{attr} = []",
         f"instance.{var} = mock_{var}",
