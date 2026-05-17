@@ -24,6 +24,7 @@ Usage
 
 from __future__ import annotations
 
+import ast
 import difflib
 import re
 from pathlib import Path
@@ -76,6 +77,57 @@ def diff_text(path: str, original: str, patched: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# AST helpers
+# ---------------------------------------------------------------------------
+
+
+def _build_stmt_index(source: str) -> dict[int, int]:
+    """
+    Return a mapping from every source line number to the start line of the
+    innermost statement that contains it.
+
+    Used to find the correct insertion point for guards: when a violation
+    falls inside a multi-line expression (e.g. a function-call argument list),
+    we insert the guard before the enclosing statement, not at the violation
+    line itself.
+    """
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return {}
+
+    # Collect (start, end) for every statement node in the tree
+    stmts: list[tuple[int, int]] = []
+
+    def _collect(nodes: list) -> None:
+        for node in nodes:
+            if not isinstance(node, ast.stmt) or not hasattr(node, "lineno"):
+                continue
+            stmts.append((node.lineno, getattr(node, "end_lineno", node.lineno)))
+            # Recurse into all child statement lists
+            for field, value in ast.iter_fields(node):
+                if isinstance(value, list):
+                    _collect(value)
+
+    _collect(tree.body)
+
+    # For each line, find the innermost (tightest range) enclosing statement
+    index: dict[int, int] = {}
+    for start, end in stmts:
+        for line in range(start, end + 1):
+            cur = index.get(line)
+            if cur is None or (end - start) < (
+                # tighter range wins
+                next(
+                    (e - s for s, e in stmts if s == cur),
+                    end - start + 1,
+                )
+            ):
+                index[line] = start
+    return index
+
+
+# ---------------------------------------------------------------------------
 # llm_response_unguarded fix
 # ---------------------------------------------------------------------------
 # Violation: var.choices[0] (or var.content[0], etc.) without length guard.
@@ -84,10 +136,15 @@ def diff_text(path: str, original: str, patched: str) -> str:
 # Fix: insert `if not var.attr:\n    return\n` immediately before the
 # statement that contains the unguarded subscript.  The user should review
 # whether `return` is correct vs `continue`, `raise`, etc.
+#
+# Uses _build_stmt_index to handle violations inside multi-line expressions:
+# the guard is always inserted before the enclosing statement, not at the
+# violation line itself.
 # ---------------------------------------------------------------------------
 
 
 def _fix_llm_unguarded(
+    source: str,
     lines: list[str],
     violations: list[FailureEvidence],
 ) -> tuple[list[str], list[FailureEvidence], list[FailureEvidence]]:
@@ -95,34 +152,42 @@ def _fix_llm_unguarded(
     applied: list[FailureEvidence] = []
     skipped: list[FailureEvidence] = []
 
-    # Parse var/attr from ev.call = "response.choices[0]"
     _pat = re.compile(r"^(\w+)\.(\w+)\[0\]$")
+    stmt_index = _build_stmt_index(source)
 
-    # Group violations by line; process in reverse so insertions don't shift
-    # later line numbers.
-    by_line: dict[int, list[FailureEvidence]] = {}
+    # Map each violation to its enclosing statement start line
+    # Multiple violations may map to the same statement — deduplicate guards.
+    by_insert_line: dict[int, list[tuple[str, str, FailureEvidence]]] = {}
     for ev in violations:
-        by_line.setdefault(ev.line, []).append(ev)
+        m = _pat.match(ev.call)
+        if not m:
+            skipped.append(ev)
+            continue
+        var, attr = m.group(1), m.group(2)
+        insert_line = stmt_index.get(ev.line, ev.line)
+        by_insert_line.setdefault(insert_line, []).append((var, attr, ev))
 
     result = list(lines)
-    for line_no in sorted(by_line.keys(), reverse=True):
-        evs = by_line[line_no]
-        raw_line = result[line_no - 1]
+    for insert_line in sorted(by_insert_line.keys(), reverse=True):
+        entries = by_insert_line[insert_line]
+        raw_line = result[insert_line - 1]
         indent = " " * (len(raw_line) - len(raw_line.lstrip()))
 
         guard_lines: list[str] = []
-        for ev in evs:
-            m = _pat.match(ev.call)
-            if not m:
-                skipped.append(ev)
+        seen_pairs: set[tuple[str, str]] = set()
+        for var, attr, ev in entries:
+            pair = (var, attr)
+            if pair in seen_pairs:
+                # Same guard already being inserted for this statement
+                applied.append(ev)
                 continue
-            var, attr = m.group(1), m.group(2)
+            seen_pairs.add(pair)
             guard_lines.append(f"{indent}if not {var}.{attr}:\n")
             guard_lines.append(f"{indent}    return  # pact: guard empty {attr} list\n")
             applied.append(ev)
 
         if guard_lines:
-            result[line_no - 1 : line_no - 1] = guard_lines
+            result[insert_line - 1 : insert_line - 1] = guard_lines
 
     return result, applied, skipped
 
@@ -134,17 +199,42 @@ def _fix_llm_unguarded(
 # ev.call format: "trigger_evaluation"  (the callee name)
 #
 # Fix: prepend `await ` to the call on that line.  Only applied when the
-# call appears at statement level (not inside a larger expression we can't
-# safely rewrite without full AST unparsing).
+# AST confirms the call is a direct statement (Expr) or the RHS of an
+# assignment — never when it's nested inside a larger expression.
 # ---------------------------------------------------------------------------
+
+# Coroutine consumers: callers that schedule the coroutine themselves
+_CORO_CONSUMERS_RE = re.compile(
+    r"\b(asyncio\.run|asyncio\.create_task|asyncio\.ensure_future"
+    r"|loop\.run_until_complete|executor\.submit|ThreadPoolExecutor"
+    r"|ensure_future|create_task)\s*\("
+)
 
 
 def _fix_missing_await(
+    source: str,
     lines: list[str],
     violations: list[FailureEvidence],
 ) -> tuple[list[str], list[FailureEvidence], list[FailureEvidence]]:
     applied: list[FailureEvidence] = []
     skipped: list[FailureEvidence] = []
+
+    # Build AST to verify each violation is at statement level
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        skipped.extend(violations)
+        return list(lines), applied, skipped
+
+    # Collect lines that ARE bare Expr or Assign statements
+    stmt_call_lines: dict[int, str] = {}  # line → "expr" | "assign"
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Expr) and isinstance(node.value, ast.Call):
+            stmt_call_lines[node.lineno] = "expr"
+        elif isinstance(node, ast.Assign) and isinstance(node.value, ast.Call):
+            stmt_call_lines[node.lineno] = "assign"
+        elif isinstance(node, ast.AugAssign) and isinstance(node.value, ast.Call):
+            stmt_call_lines[node.lineno] = "assign"
 
     by_line: dict[int, list[FailureEvidence]] = {}
     for ev in violations:
@@ -159,14 +249,26 @@ def _fix_missing_await(
 
         for ev in evs:
             callee = ev.call.strip()
-            # Case 1: bare call statement — `callee(...)`
-            if re.match(rf"^{re.escape(callee)}\s*\(", stripped):
+            kind = stmt_call_lines.get(line_no)
+
+            # Skip if inside a coroutine consumer call (asyncio.run etc.)
+            # Check surrounding context lines for consumer patterns
+            context = "".join(lines[max(0, line_no - 3) : line_no + 1])
+            if _CORO_CONSUMERS_RE.search(context):
+                skipped.append(ev)
+                continue
+
+            if kind == "expr" and re.match(rf"^{re.escape(callee)}\s*\(", stripped):
                 result[line_no - 1] = indent + "await " + stripped
                 applied.append(ev)
-            # Case 2: assignment — `x = callee(...)` → `x = await callee(...)`
-            elif m := re.match(rf"^(\w+\s*=\s*)({re.escape(callee)}\s*\(.*)", stripped):
-                result[line_no - 1] = indent + m.group(1) + "await " + m.group(2)
-                applied.append(ev)
+            elif kind == "assign":
+                # `x = callee(...)` → `x = await callee(...)`
+                m = re.match(rf"^(\w+\s*=\s*)({re.escape(callee)}\s*\(.*)", stripped)
+                if m:
+                    result[line_no - 1] = indent + m.group(1) + "await " + m.group(2)
+                    applied.append(ev)
+                else:
+                    skipped.append(ev)
             else:
                 skipped.append(ev)
 
@@ -211,14 +313,14 @@ def fix_file(
     # Apply llm_response_unguarded fixes
     llm_evs = [v for v in fixable if _mode(v) == "llm_response_unguarded"]
     if llm_evs:
-        lines, applied, skipped = _fix_llm_unguarded(lines, llm_evs)
+        lines, applied, skipped = _fix_llm_unguarded(original, lines, llm_evs)
         all_applied.extend(applied)
         all_skipped.extend(skipped)
 
     # Apply missing_await fixes
     await_evs = [v for v in fixable if _mode(v) == "missing_await"]
     if await_evs:
-        lines, applied, skipped = _fix_missing_await(lines, await_evs)
+        lines, applied, skipped = _fix_missing_await(original, lines, await_evs)
         all_applied.extend(applied)
         all_skipped.extend(skipped)
 

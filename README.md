@@ -267,6 +267,7 @@ Design rationale is in [`docs/adr/`](docs/adr/). Key decisions:
 | [ADR-015](docs/adr/ADR-015-skip-github-dir.md) | Skip `.github/` directory — CI/repo metadata is not application code |
 | [ADR-016](docs/adr/ADR-016-defensive-import-probe-stmt.md) | `Import`/`ImportFrom` are probe statements — defensive imports in probe try blocks excluded |
 | [ADR-017](docs/adr/ADR-017-pact-fix-patch-generation.md) | `pact fix` — automated patch generation for `llm_response_unguarded` and `missing_await`; `save_without_update_fields` deferred (requires field mutation tracking) |
+| [ADR-018](docs/adr/ADR-018-ast-enclosing-stmt-guard-placement.md) | `_build_stmt_index` — AST-based enclosing-statement detection fixes guard placement for multi-line expressions; `_CORO_CONSUMERS_RE` skips `missing_await` in executor/asyncio.run contexts |
 | [ADR-036](docs/adr/ADR-036-pact-formal-analysis-toolkit.md) | Z3 Fixedpoint over traditional dataflow; TLA+ over property testing alone |
 
 ## Formal verification

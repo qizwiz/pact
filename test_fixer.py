@@ -168,6 +168,86 @@ def test_diff_text_unchanged():
 
 
 # ---------------------------------------------------------------------------
+# Regression: guard in multi-line call argument list (bug found on future-agi)
+# ---------------------------------------------------------------------------
+
+
+def test_llm_guard_not_inserted_inside_call_args(tmp_path):
+    """Guard must be before the with-statement, not inside its argument list."""
+    src = textwrap.dedent("""\
+        async def run(parent, response):
+            with parent.span(
+                output=response.choices[0].message.content,
+            ):
+                pass
+    """)
+    f = tmp_path / "ex.py"
+    f.write_text(src)
+    # Violation at line 3 (the output= line inside the with call)
+    ev = _ev("llm_response_unguarded", 3, "response.choices[0]", str(f))
+    result = fix_file(str(f), [ev])
+    assert result.changed
+    # Guard should be before the `with` statement (line 2), not inside it
+    lines = result.patched.splitlines()
+    guard_idx = next(i for i, l in enumerate(lines) if "if not response.choices" in l)
+    with_idx = next(i for i, l in enumerate(lines) if l.strip().startswith("with "))
+    assert guard_idx < with_idx, "guard must come before the with statement"
+    # Result must be syntactically valid
+    import ast as _ast
+
+    _ast.parse(result.patched)  # raises SyntaxError if broken
+
+
+def test_llm_guard_not_inserted_inside_append_call(tmp_path):
+    """Guard before the append() statement, not inside it."""
+    src = textwrap.dedent("""\
+        async def run(messages, response):
+            messages.append(
+                {"content": response.choices[0].message.content}
+            )
+    """)
+    f = tmp_path / "ex.py"
+    f.write_text(src)
+    ev = _ev("llm_response_unguarded", 3, "response.choices[0]", str(f))
+    result = fix_file(str(f), [ev])
+    assert result.changed
+    import ast as _ast
+
+    _ast.parse(result.patched)  # must be syntactically valid
+    assert "if not response.choices:" in result.patched
+    # Guard must appear before messages.append, not inside it
+    guard_idx = result.patched.index("if not response.choices:")
+    append_idx = result.patched.index("messages.append(")
+    assert guard_idx < append_idx
+
+
+# ---------------------------------------------------------------------------
+# Regression: missing_await inside coroutine consumer (bug found on future-agi)
+# ---------------------------------------------------------------------------
+
+
+def test_missing_await_skipped_inside_asyncio_run(tmp_path):
+    """Do not add await when call is already passed to asyncio.run()."""
+    src = textwrap.dedent("""\
+        import asyncio
+        from concurrent.futures import ThreadPoolExecutor
+
+        def run_in_thread(coro_fn):
+            with ThreadPoolExecutor() as executor:
+                future = executor.submit(
+                    asyncio.run,
+                    coro_fn(),
+                )
+    """)
+    f = tmp_path / "ex.py"
+    f.write_text(src)
+    ev = _ev("missing_await", 8, "coro_fn", str(f))
+    result = fix_file(str(f), [ev])
+    assert not result.changed
+    assert len(result.skipped) == 1
+
+
+# ---------------------------------------------------------------------------
 # FIX_MODES constant
 # ---------------------------------------------------------------------------
 
