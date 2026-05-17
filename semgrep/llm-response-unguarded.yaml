@@ -1,0 +1,43 @@
+rules:
+  - id: llm-response-unguarded-choices
+    patterns:
+      - pattern: $RESPONSE.choices[0]
+      - pattern-not-inside: |
+          if $RESPONSE.choices:
+            ...
+      - pattern-not-inside: |
+          if not $RESPONSE.choices:
+            ...
+      - pattern-not-inside: |
+          if len($RESPONSE.choices) > 0:
+            ...
+      - pattern-not-inside: |
+          if len($RESPONSE.choices) >= 1:
+            ...
+      - pattern-not-inside: |
+          $X = $RESPONSE.choices[0] if $RESPONSE.choices else ...
+      - pattern-not-inside: |
+          $X if $RESPONSE.choices else ...
+    message: |
+      `$RESPONSE.choices[0]` accessed without a length or None check.
+      LLM APIs (OpenAI-compatible) return `choices: []` with HTTP 200 on content
+      filtering, provider errors, or certain streaming edge cases — the SDK does
+      NOT raise an exception. This causes `IndexError: list index out of range`.
+      Gemini also returns `choices[0].message = None` on PROHIBITED_CONTENT,
+      causing `AttributeError`. The comprehensive guard:
+        if not $RESPONSE.choices or $RESPONSE.choices[0].message is None:
+            return  # handle empty / filtered response
+
+      **Known false positive**: if choices is guarded by an early-exit check on the
+      *preceding line* (`if not $RESPONSE.choices: return`), Semgrep will still flag
+      the access on the next line because the guard is a sibling statement, not a
+      parent block. Add `# nosemgrep: llm-response-unguarded-choices` to suppress.
+    languages: [python]
+    severity: WARNING
+    metadata:
+      category: correctness
+      technology: [openai, llm]
+      cwe: "CWE-129: Improper Validation of Array Index"
+      references:
+        - https://github.com/qizwiz/pact
+      confidence: MEDIUM
