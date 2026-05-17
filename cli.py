@@ -132,7 +132,7 @@ def _spec_cmd(argv) -> int:
 
 
 def _fix_cmd(argv) -> int:
-    """Entry point for `pact fix [DIR] [--apply] [--mode MODE]`."""
+    """Entry point for `pact fix [DIR] [--apply] [--mode MODE] [--write-tests]`."""
     from .fixer import FIX_MODES, apply_fixes, diff_text
     from .checker import check_codebase
 
@@ -161,6 +161,14 @@ def _fix_cmd(argv) -> int:
         default=None,
         help=(
             f"Only fix this violation mode (fixable modes: {', '.join(sorted(FIX_MODES))})"
+        ),
+    )
+    p.add_argument(
+        "--write-tests",
+        action="store_true",
+        help=(
+            "Generate a regression test file alongside each patched file "
+            "proving each guard fires correctly on empty LLM responses."
         ),
     )
     args = p.parse_args(argv)
@@ -199,6 +207,30 @@ def _fix_cmd(argv) -> int:
 
     for r in changed:
         print(diff_text(r.path, r.original, r.patched), end="")
+
+    if args.write_tests:
+        from .test_writer import generate_test_file
+
+        test_files_written: list[str] = []
+        for r in changed:
+            test_src = generate_test_file(r.path, r.applied, r.patched)
+            if not test_src:
+                continue
+            stem = Path(r.path).stem
+            test_path = Path(r.path).parent / f"test_pact_guards_{stem}.py"
+            if args.apply:
+                test_path.write_text(test_src, encoding="utf-8")
+                test_files_written.append(str(test_path))
+            else:
+                print(f"# --- would write {test_path} ---")
+                print(test_src)
+
+        if args.apply and test_files_written:
+            print(
+                f"✓  pact fix: wrote {len(test_files_written)} regression test file(s):"
+            )
+            for tf in test_files_written:
+                print(f"   {tf}")
 
     return 0
 
