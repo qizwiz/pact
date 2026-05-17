@@ -130,18 +130,18 @@ def generate_test_file(
 
         lines += [
             f"{decorator}{async_def} {test_name}():",
-            f'    """',
+            '    """',
             f"    pact regression: {rel}:{ev.line}",
             f"    Guard: if not {var}.{attr}: return",
             f"    Without guard: IndexError when LLM returns empty {attr} (content filter, rate limit, etc.)",
-            f'    """',
+            '    """',
         ]
         lines += [f"    {ln}" for ln in setup]
         lines += [
             f"    result = {call}",
-            f"    assert result is None, (",
+            "    assert result is None, (",
             f'        "Guard must return None on empty {attr}, not raise IndexError"',
-            f"    )",
+            "    )",
             "",
         ]
 
@@ -154,9 +154,9 @@ def generate_test_file(
 def _method_setup(ctx: _FuncContext, var: str, attr: str) -> list[str]:
     lines = [
         f"# Bypass __init__ — we only need to set {var}",
-        f"from importlib import import_module",
+        "from importlib import import_module",
         f"# instance = {ctx.class_name}.__new__({ctx.class_name})",
-        f"instance = MagicMock(spec_set=False)",
+        "instance = MagicMock(spec_set=False)",
         f"mock_{var} = MagicMock()",
         f"mock_{var}.{attr} = []",
         f"instance.{var} = mock_{var}",
@@ -173,7 +173,7 @@ def _func_setup(var: str, attr: str) -> list[str]:
 
 def _dummy_call_args(ctx: _FuncContext) -> str:
     params = [p for p in ctx.params if p not in ("self", "cls")]
-    return ", ".join(f"MagicMock()" for _ in params)
+    return ", ".join("MagicMock()" for _ in params)
 
 
 def _mode_name(ev) -> str:
