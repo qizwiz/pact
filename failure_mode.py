@@ -862,6 +862,11 @@ def _is_probe_stmt(stmt: object) -> bool:
             and all(_is_probe_stmt(s) for s in stmt.body)
             and all(_is_probe_stmt(s) for s in stmt.orelse)
         )
+    if isinstance(stmt, (_ast.Import, _ast.ImportFrom)):
+        # Defensive import inside a probe block: tests whether a module is
+        # available (raises ImportError if not). The except:pass silences the
+        # absence of an optional dependency — not a real error.
+        return True
     return False
 
 

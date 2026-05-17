@@ -256,6 +256,7 @@ Design rationale is in [`docs/adr/`](docs/adr/). Key decisions:
 | [ADR-013](docs/adr/ADR-013-attribute-access-probe-expr.md) | Attribute access is a pure probe expression; only constant returns (`True`/`False`/`None`) are probe statements |
 | [ADR-014](docs/adr/ADR-014-skip-backup-files.md) | Skip `*.backup.py` and `*_backup.py` — backup files are never production code |
 | [ADR-015](docs/adr/ADR-015-skip-github-dir.md) | Skip `.github/` directory — CI/repo metadata is not application code |
+| [ADR-016](docs/adr/ADR-016-defensive-import-probe-stmt.md) | `Import`/`ImportFrom` are probe statements — defensive imports in probe try blocks excluded |
 | [ADR-036](docs/adr/ADR-036-pact-formal-analysis-toolkit.md) | Z3 Fixedpoint over traditional dataflow; TLA+ over property testing alone |
 
 ## Formal verification
