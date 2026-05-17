@@ -45,7 +45,7 @@ def test_llm_guard_preserves_indentation(tmp_path):
     ev = _ev("llm_response_unguarded", 4, "response.choices[0]", str(f))
     result = fix_file(str(f), [ev])
     lines = result.patched.splitlines()
-    guard_line = next(l for l in lines if "if not response.choices" in l)
+    guard_line = next(ln for ln in lines if "if not response.choices" in ln)
     assert guard_line.startswith("        ")  # 8 spaces — same as original line 4
 
 
@@ -106,7 +106,7 @@ def test_missing_await_preserves_indentation(tmp_path):
     ev = _ev("missing_await", 3, "do_thing", str(f))
     result = fix_file(str(f), [ev])
     lines = result.patched.splitlines()
-    fixed = next(l for l in lines if "await do_thing" in l)
+    fixed = next(ln for ln in lines if "await do_thing" in ln)
     assert fixed.startswith("        ")  # 8 spaces
 
 
@@ -189,8 +189,8 @@ def test_llm_guard_not_inserted_inside_call_args(tmp_path):
     assert result.changed
     # Guard should be before the `with` statement (line 2), not inside it
     lines = result.patched.splitlines()
-    guard_idx = next(i for i, l in enumerate(lines) if "if not response.choices" in l)
-    with_idx = next(i for i, l in enumerate(lines) if l.strip().startswith("with "))
+    guard_idx = next(i for i, ln in enumerate(lines) if "if not response.choices" in ln)
+    with_idx = next(i for i, ln in enumerate(lines) if ln.strip().startswith("with "))
     assert guard_idx < with_idx, "guard must come before the with statement"
     # Result must be syntactically valid
     import ast as _ast
