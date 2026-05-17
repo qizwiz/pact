@@ -131,12 +131,86 @@ def _spec_cmd(argv) -> int:
     return 0
 
 
+def _fix_cmd(argv) -> int:
+    """Entry point for `pact fix [DIR] [--apply] [--mode MODE]`."""
+    from .fixer import FIX_MODES, apply_fixes, diff_text
+    from .checker import check_codebase
+
+    p = argparse.ArgumentParser(
+        prog="pact fix",
+        description=(
+            "Generate patches for fixable violations. "
+            "Prints unified diffs by default; use --apply to write files."
+        ),
+    )
+    p.add_argument(
+        "root",
+        nargs="?",
+        default=".",
+        metavar="DIR",
+        help="Root directory to analyze (default: current directory)",
+    )
+    p.add_argument(
+        "--apply",
+        action="store_true",
+        help="Write patches to files in-place (default: dry-run, print diffs)",
+    )
+    p.add_argument(
+        "--mode",
+        metavar="MODE",
+        default=None,
+        help=(
+            f"Only fix this violation mode (fixable modes: {', '.join(sorted(FIX_MODES))})"
+        ),
+    )
+    args = p.parse_args(argv)
+
+    root = Path(args.root).resolve()
+    if not root.is_dir():
+        print(f"error: {root} is not a directory", file=sys.stderr)
+        return 2
+
+    mode_filter = frozenset({args.mode}) if args.mode else None
+    if mode_filter and not mode_filter <= FIX_MODES:
+        unknown = mode_filter - FIX_MODES
+        print(
+            f"error: mode(s) not fixable by pact fix: {', '.join(unknown)}\n"
+            f"  fixable: {', '.join(sorted(FIX_MODES))}",
+            file=sys.stderr,
+        )
+        return 2
+
+    violations = check_codebase(root)
+    results = apply_fixes(violations, dry_run=not args.apply, mode_filter=mode_filter)
+
+    changed = [r for r in results if r.changed]
+    if not changed:
+        print("✓  pact fix: nothing to fix")
+        return 0
+
+    total_applied = sum(len(r.applied) for r in changed)
+    action = "Applied" if args.apply else "Would fix"
+    print(
+        f"{'✓' if args.apply else '⚡'}  pact fix: {action} {total_applied} violation(s)"
+        f" across {len(changed)} file(s)"
+        + (" (dry-run — use --apply to write)" if not args.apply else "")
+    )
+    print()
+
+    for r in changed:
+        print(diff_text(r.path, r.original, r.patched), end="")
+
+    return 0
+
+
 def main(argv=None) -> int:
-    # Top-level: if first arg is "spec", delegate to spec subcommand
+    # Top-level: if first arg is "spec" or "fix", delegate to subcommand
     if argv is None:
         argv = sys.argv[1:]
     if argv and argv[0] == "spec":
         return _spec_cmd(argv[1:])
+    if argv and argv[0] == "fix":
+        return _fix_cmd(argv[1:])
 
     p = argparse.ArgumentParser(
         prog="pact",

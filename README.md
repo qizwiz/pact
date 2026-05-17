@@ -108,6 +108,15 @@ pip install "pact-tool[llm]"
 # Scan your project
 pact path/to/project/
 
+# Fix violations automatically (dry-run: prints unified diff)
+pact fix path/to/project/
+
+# Fix and apply in-place
+pact fix path/to/project/ --apply
+
+# Fix only one mode
+pact fix . --mode llm_response_unguarded --apply
+
 # CI mode — only files changed since main
 pact . --incremental main --strict
 
@@ -257,6 +266,7 @@ Design rationale is in [`docs/adr/`](docs/adr/). Key decisions:
 | [ADR-014](docs/adr/ADR-014-skip-backup-files.md) | Skip `*.backup.py` and `*_backup.py` — backup files are never production code |
 | [ADR-015](docs/adr/ADR-015-skip-github-dir.md) | Skip `.github/` directory — CI/repo metadata is not application code |
 | [ADR-016](docs/adr/ADR-016-defensive-import-probe-stmt.md) | `Import`/`ImportFrom` are probe statements — defensive imports in probe try blocks excluded |
+| [ADR-017](docs/adr/ADR-017-pact-fix-patch-generation.md) | `pact fix` — automated patch generation for `llm_response_unguarded` and `missing_await`; `save_without_update_fields` deferred (requires field mutation tracking) |
 | [ADR-036](docs/adr/ADR-036-pact-formal-analysis-toolkit.md) | Z3 Fixedpoint over traditional dataflow; TLA+ over property testing alone |
 
 ## Formal verification
