@@ -372,6 +372,12 @@ def main(argv=None) -> int:
     p.add_argument(
         "--out", metavar="FILE", help="Write JSONL to FILE instead of stdout"
     )
+    p.add_argument(
+        "--seen-repos",
+        metavar="FILE",
+        help="Path to a file listing already-scanned repos (one OWNER/REPO per line). "
+        "Matching repos are skipped. After the scan, newly scanned repos are appended.",
+    )
     args = p.parse_args(argv)
 
     import os
@@ -380,6 +386,16 @@ def main(argv=None) -> int:
     if not token:
         print(
             "[pact] warning: no GitHub token — rate limited to 60 req/hr",
+            file=sys.stderr,
+        )
+
+    # Load seen-repos set to skip duplicates across batches
+    seen_repos: set[str] = set()
+    if args.seen_repos and os.path.exists(args.seen_repos):
+        with open(args.seen_repos) as _f:
+            seen_repos = {ln.strip() for ln in _f if ln.strip()}
+        print(
+            f"[pact] skipping {len(seen_repos)} already-scanned repo(s)",
             file=sys.stderr,
         )
 
@@ -401,11 +417,18 @@ def main(argv=None) -> int:
         else:
             repo_iter = search_repos(args.query, args.limit, session)
 
+        newly_scanned: list[str] = []
         for repo_meta in repo_iter:
             full_name = repo_meta["full_name"]
             if "/" not in full_name:
                 print(
                     f"[pact] skipping malformed repo name: {full_name!r}",
+                    file=sys.stderr,
+                )
+                continue
+            if full_name in seen_repos:
+                print(
+                    f"[pact] skipping {full_name} (already in seen-repos)",
                     file=sys.stderr,
                 )
                 continue
@@ -420,6 +443,7 @@ def main(argv=None) -> int:
                     if rec["file"] not in {r.get("file") for r in []}:
                         file_count += 1
                     _emit(rec)
+                newly_scanned.append(full_name)
             except Exception as exc:
                 print(f"[pact] error scanning {full_name}: {exc}", file=sys.stderr)
                 continue
@@ -432,6 +456,14 @@ def main(argv=None) -> int:
     finally:
         if args.out:
             out.close()
+        if args.seen_repos and newly_scanned:
+            with open(args.seen_repos, "a") as _f:
+                for repo in newly_scanned:
+                    _f.write(repo + "\n")
+            print(
+                f"[pact] appended {len(newly_scanned)} repo(s) to {args.seen_repos}",
+                file=sys.stderr,
+            )
 
     # Summary
     print("\n[pact] corpus scan complete", file=sys.stderr)

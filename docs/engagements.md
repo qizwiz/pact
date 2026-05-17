@@ -4,7 +4,7 @@ PRs filed against external repos using pact-detected violations. Tracks what we 
 
 | Date | Repo | PR | Mode | Stars | Status | Notes |
 |------|------|----|------|-------|--------|-------|
-| 2026-05-14 | [Arize-ai/phoenix](https://github.com/Arize-ai/phoenix) | [#13237](https://github.com/Arize-ai/phoenix/pull/13237) | `llm_response_unguarded` | 4.5k | **Merged** | First external merge; merged by @RogerHYang same day |
+| 2026-05-14 | [Arize-ai/phoenix](https://github.com/Arize-ai/phoenix) | [#13237](https://github.com/Arize-ai/phoenix/pull/13237) | `llm_response_unguarded` | 4.5k | **Merged 2026-05-15** | First external merge; merged by @RogerHYang same day; APPROVED |
 | 2026-05-14 | [comet-ml/opik](https://github.com/comet-ml/opik) | [#6700](https://github.com/comet-ml/opik/pull/6700) | `llm_response_unguarded` | 5k | Open | Bot requested streaming fix + test; streaming guard applied; replied explaining docs scripts have no test runner |
 | 2026-05-14 | [vibrantlabsai/ragas](https://github.com/vibrantlabsai/ragas) | [#2720](https://github.com/vibrantlabsai/ragas/pull/2720) | `llm_response_unguarded` | 8k | Open | 0 reviews |
 | 2026-05-14 | [microsoft/markitdown](https://github.com/microsoft/markitdown) | [#1876](https://github.com/microsoft/markitdown/pull/1876) | `llm_response_unguarded` | 52k | Open | 0 reviews; highest-star repo targeted so far |
