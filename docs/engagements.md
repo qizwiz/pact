@@ -45,3 +45,4 @@ Repos from the scan corpus that surfaced interesting patterns (not PRs, but lear
 | meta-llama/llama-cookbook | 12 llm_response_unguarded | Meta's official LLM examples; diverse files (RAG, groq templates, triage) — educational code that gets copied | **PR candidate** — high impact |
 | microsoft/generative-ai-for-beginners | 9 llm_response_unguarded | MS beginner course lesson 6; 9 scripts each with `response.choices[0]` unguarded — 61k stars, teaches unsafe pattern | **PR candidate** — 61k stars |
 | anthropics/skills | 19 bare_except | Office format unpack helpers silently swallow file-write errors (write_bytes/write_text) across docx/pptx/xlsx; same pattern copy-pasted 3× | **Dogfood PR** — Anthropic's own code |
+| lm-sys/FastChat | 3 llm_response_unguarded | `res.choices[0]`, `completion.choices[0]` unguarded in api_provider.py, label.py, criteria_labeling.py — production LLM serving + eval code | **PR candidate** — 39k stars |
