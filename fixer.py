@@ -183,7 +183,9 @@ def _fix_llm_unguarded(
                 continue
             seen_pairs.add(pair)
             guard_lines.append(f"{indent}if not {var}.{attr}:\n")
-            guard_lines.append(f"{indent}    return  # pact: guard empty {attr} list\n")
+            guard_lines.append(
+                f'{indent}    raise ValueError("LLM returned empty response")  # pact: guard empty {attr} list\n'
+            )
             applied.append(ev)
 
         if guard_lines:
