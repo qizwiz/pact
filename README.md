@@ -7,9 +7,13 @@
 
 **Formal analysis for the codebases AI builds.**
 
-LLM-generated code has a signature failure profile: unawaited coroutines, unguarded nullable dereferences, silent exception swallowing, race conditions in ORM writes, unguarded LLM response reads. Tests don't catch them — they only run the paths you thought of. pact encodes each failure mode as a Z3 constraint over your call graph and finds them all, then generates a TLA+ spec you can model-check.
+`response.choices[0].message.content` is `Optional[str]` in the OpenAI SDK. It returns `None` — silently — on content filtering or tool-call responses. Every unguarded access is a latent crash site.
 
-Python and Go supported. More languages follow the same pattern.
+pact found this bug in **[openai/openai-python](https://github.com/openai/openai-python)**, **[microsoft/generative-ai-for-beginners](https://github.com/microsoft/generative-ai-for-beginners)**, **[hiyouga/LlamaFactory](https://github.com/hiyouga/LlamaFactory)**, and 1,200+ other repositories. 12 PRs merged so far.
+
+It finds this class of bug — and others — by encoding each failure mode as a Z3 constraint over your call graph, not a regex. LLM-generated code has a signature failure profile: unawaited coroutines, unguarded nullable dereferences, silent exception swallowing, race conditions in ORM writes. Tests don't catch them — they only run the paths you thought of.
+
+Python, TypeScript, and Go supported.
 
 ```bash
 pip install pact-tool
@@ -57,6 +61,20 @@ Each failure mode is encoded as a Z3 constraint over your call graph, not a rege
 
 ## Real-world findings
 
+**[openai/openai-python](https://github.com/openai/openai-python)** — 31k stars, the official SDK:
+```
+$ pact /tmp/openai-python/
+  llm_response_unguarded   response.choices[0].message.content accessed without guard
+                           — returns None on content filtering, crashes downstream
+```
+
+**[hiyouga/LlamaFactory](https://github.com/hiyouga/LlamaFactory)** — 71k stars:
+```
+$ pact /tmp/LlamaFactory/
+  llm_response_unguarded   12 sites  response.choices[0] without len() guard
+  bare_except               6 sites  silent swallow in training loop error paths
+```
+
 **[home-assistant/core](https://github.com/home-assistant/core)** — 87k stars, 14,096 files:
 ```
 $ pact /tmp/ha-core/
@@ -72,8 +90,8 @@ $ pact /tmp/ha-core/
 $ pact /tmp/langchain/libs/
 ✗  pact: 438 violation(s)
 
-  missing_await    256   _astream() unawaited across every provider
-  llm_response_unguarded   4   response.content[0] without length guard — crashes on content-filtered responses
+  missing_await            256   _astream() unawaited across every provider
+  llm_response_unguarded     4   response.content[0] without length guard
 ```
 
 **[future-agi/future-agi](https://github.com/future-agi/future-agi)** — production AI platform:
@@ -88,6 +106,8 @@ $ pact futureagi/
   missing_await                 2   coroutines called without await
 ```
 See [`examples/future-agi/findings.md`](examples/future-agi/findings.md).
+
+pact has found violations in **14,148 unique sites across 1,254 repositories**. 12 PRs merged upstream.
 
 ---
 
@@ -274,7 +294,7 @@ Design rationale is in [`docs/adr/`](docs/adr/). Key decisions:
 | [ADR-018](docs/adr/ADR-018-ast-enclosing-stmt-guard-placement.md) | `_build_stmt_index` — AST-based enclosing-statement detection fixes guard placement for multi-line expressions; `_CORO_CONSUMERS_RE` skips `missing_await` in executor/asyncio.run contexts |
 | [ADR-019](docs/adr/ADR-019-write-tests-regression-generation.md) | `--write-tests` — generates falsifiable regression tests alongside `pact fix --apply`; MagicMock for all params (jedi/LSP upgrade deferred) |
 | [ADR-020](docs/adr/ADR-020-jedi-type-inference-test-writer.md) | Jedi `Script.infer()` for codebase-aware test generation — resolves `self` type, uses `__new__` over `MagicMock`; falls back on failure |
-| [ADR-021](docs/adr/ADR-021-corpus-deduplication.md) | Corpus deduplication on append — query overlap causes 4.5x overcount; unique `(repo,file,line,mode)` key; 13.5k unique violations / 759 repos |
+| [ADR-021](docs/adr/ADR-021-corpus-deduplication.md) | Corpus deduplication on append — query overlap causes 4.5x overcount; unique `(repo,file,line,mode)` key; 14.1k unique violations / 1,254 repos scanned |
 | [ADR-036](docs/adr/ADR-036-pact-formal-analysis-toolkit.md) | Z3 Fixedpoint over traditional dataflow; TLA+ over property testing alone |
 
 ## Formal verification
@@ -301,7 +321,7 @@ pact uses a five-layer verification approach:
 2. **ADRs (rationale)** — architectural decisions documented before implementation
 3. **Z3 (satisfiability)** — per-call-site constraint checking at analysis time
 4. **Hypothesis (property-based)** — `test_hypothesis_checkers.py` generates random Python fragments and asserts soundness/precision invariants for each checker
-5. **Integration probe** — `scan_github` corpus of 13.5k+ unique violations across 759 real repositories validates false-positive rates
+5. **Integration probe** — `scan_github` corpus of 14.1k+ unique violations across 1,254 real repositories validates false-positive rates
 
 The Hypothesis layer (step 4) has already found one real false negative: `def fn(x=set())` was not flagged because `set()` is an `ast.Call` node, not an `ast.Set` literal. Fixed and regressed in `test_checker.py`.
 
