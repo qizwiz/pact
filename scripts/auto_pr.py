@@ -107,6 +107,7 @@ def _pact_sheaf_h1(path: str) -> tuple[int, bool]:
     try:
         sys.path.insert(0, str(Path(__file__).parent.parent))
         from pact_sheaf import h1_rank_for_file, sheaf_summary
+
         h1 = h1_rank_for_file(path)
         s = sheaf_summary(path)
         return h1, s.get("using_z3", False)
@@ -180,7 +181,9 @@ def _manual_fix_choices(abs_path: str, viols: list[dict], changed: list, rel_pat
         sorted_viols = sorted(viols, key=lambda v: v["line"], reverse=True)
         modified = False
         for v in sorted_viols:
-            if "choices" not in v.get("call", "") and "choices" not in v.get("message", ""):
+            if "choices" not in v.get("call", "") and "choices" not in v.get(
+                "message", ""
+            ):
                 continue
             lineno = v["line"] - 1  # 0-indexed
             if lineno < 0 or lineno >= len(lines):
@@ -231,17 +234,22 @@ def process_one(target: dict, token: str) -> bool:
     # Fork
     print("Forking...")
     try:
-        _run(f"gh repo fork {repo} --clone=false",
-             env={"GITHUB_TOKEN": token, "GH_TOKEN": token})
+        _run(
+            f"gh repo fork {repo} --clone=false",
+            env={"GITHUB_TOKEN": token, "GH_TOKEN": token},
+        )
     except Exception as e:
         print(f"Fork failed (may already exist): {e}")
 
-    fork_owner = _run("gh api user --jq .login",
-                       env={"GITHUB_TOKEN": token, "GH_TOKEN": token})
+    fork_owner = _run(
+        "gh api user --jq .login", env={"GITHUB_TOKEN": token, "GH_TOKEN": token}
+    )
 
     with tempfile.TemporaryDirectory() as tmpdir:
         repo_name = repo.split("/")[1]
-        clone_url = f"https://{fork_owner}:{token}@github.com/{fork_owner}/{repo_name}.git"
+        clone_url = (
+            f"https://{fork_owner}:{token}@github.com/{fork_owner}/{repo_name}.git"
+        )
         upstream_url = f"https://github.com/{repo}.git"
 
         # Clone fork (shallow)
@@ -261,8 +269,10 @@ def process_one(target: dict, token: str) -> bool:
             # Fall back to local corpus
             corpus_path = Path.home() / "src/pact/corpus.jsonl"
         violations = [
-            json.loads(l) for l in open(corpus_path)
-            if json.loads(l).get("repo") == repo
+            d
+            for line in open(corpus_path)
+            for d in [json.loads(line)]
+            if d.get("repo") == repo
         ]
         print(f"Found {len(violations)} corpus violations for {repo}")
 
@@ -287,20 +297,21 @@ def process_one(target: dict, token: str) -> bool:
         _run("git config user.email 'jonathan.f.hill@gmail.com'", cwd=tmpdir)
         _run(f"git add {' '.join(changed)}", cwd=tmpdir)
 
-        n_viols = sum(
-            1 for v in violations if v["file"] in changed
-        )
+        n_viols = sum(1 for v in violations if v["file"] in changed)
         _run(
             f'git commit -m "fix: guard LLM response access against empty choices\\n\\n'
-            f'Fixes {n_viols} unguarded response.choices[0] accesses detected by pact\\n'
+            f"Fixes {n_viols} unguarded response.choices[0] accesses detected by pact\\n"
             f'(sheaf-cohomological checker, Z3 UNSAT certificate)."',
             cwd=tmpdir,
         )
 
         # Push
         print("Pushing...")
-        _run(f"git push origin {branch}", cwd=tmpdir,
-             env={"GITHUB_TOKEN": token, "GH_TOKEN": token})
+        _run(
+            f"git push origin {branch}",
+            cwd=tmpdir,
+            env={"GITHUB_TOKEN": token, "GH_TOKEN": token},
+        )
 
         # Build proof report
         proof = _proof_report(tmpdir, changed)
@@ -335,11 +346,11 @@ The checker was also used to verify the autogen streaming-None fix in [microsoft
 """
 
         pr_url = _run(
-            f'gh pr create --repo {repo} '
+            f"gh pr create --repo {repo} "
             f'--title "fix: guard LLM response against empty choices (fixes #{issue})" '
             f'--body "{pr_body.replace(chr(34), chr(39))}" '
             f'--head "{fork_owner}:{branch}" '
-            f'--base main',
+            f"--base main",
             cwd=tmpdir,
             env={"GITHUB_TOKEN": token, "GH_TOKEN": token},
         )

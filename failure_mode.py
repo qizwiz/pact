@@ -2032,9 +2032,11 @@ def _scan_file_llm_response_unguarded(path: str) -> list[FailureEvidence]:
                 spec_id = (
                     "openai-chat#choices-nonempty"
                     if obj.attr == "choices"
-                    else "anthropic-messages#content-nonempty"
-                    if obj.attr == "content"
-                    else None
+                    else (
+                        "anthropic-messages#content-nonempty"
+                        if obj.attr == "content"
+                        else None
+                    )
                 )
                 evidence.append(
                     FailureEvidence(
