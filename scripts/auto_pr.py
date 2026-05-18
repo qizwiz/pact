@@ -373,10 +373,19 @@ The checker was also used to verify the autogen streaming-None fix in [microsoft
 🤖 Generated with [Claude Code](https://claude.com/claude-code)
 """
 
+        # Write body to temp file to avoid shell escaping issues
+        import tempfile as _tf
+
+        with _tf.NamedTemporaryFile(
+            mode="w", suffix=".md", delete=False, encoding="utf-8"
+        ) as body_f:
+            body_f.write(pr_body)
+            body_path = body_f.name
+
         pr_url = _run(
             f"gh pr create --repo {repo} "
             f'--title "fix: guard LLM response against empty choices (fixes #{issue})" '
-            f'--body "{pr_body.replace(chr(34), chr(39))}" '
+            f"--body-file {body_path} "
             f'--head "{fork_owner}:{branch}" '
             f"--base main",
             cwd=tmpdir,
