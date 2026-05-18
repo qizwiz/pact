@@ -22,6 +22,7 @@ def _to_violation(e: FailureEvidence) -> Violation:
         call=e.call,
         missing=e.missing if e.missing else [e.message],
         context=e.mode_name,
+        spec_id=e.spec_id,
     )
 
 

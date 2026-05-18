@@ -40,9 +40,11 @@ class Violation:
     call: str
     missing: list[str]
     context: str  # failure mode name
+    spec_id: str | None = None
 
     def __str__(self) -> str:
-        return f"{self.file}:{self.line}  {self.call}()  missing: {', '.join(self.missing)}"
+        spec = f"  [spec: {self.spec_id}]" if self.spec_id else ""
+        return f"{self.file}:{self.line}  {self.call}()  missing: {', '.join(self.missing)}{spec}"
 
 
 # ---------------------------------------------------------------------------

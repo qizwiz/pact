@@ -49,9 +49,11 @@ class FailureEvidence:
     message: str
     missing: list[str] = field(default_factory=list)
     context: str = "failure_mode"
+    spec_id: str | None = None
 
     def __str__(self) -> str:
-        return f"{self.file}:{self.line}  [{self.mode_name}]  {self.call}  — {self.message}"
+        spec = f"  [spec: {self.spec_id}]" if self.spec_id else ""
+        return f"{self.file}:{self.line}  [{self.mode_name}]  {self.call}  — {self.message}{spec}"
 
 
 # ---------------------------------------------------------------------------
@@ -2027,6 +2029,13 @@ def _scan_file_llm_response_unguarded(path: str) -> list[FailureEvidence]:
                 and pair not in self._flagged
             ):
                 self._flagged.add(pair)
+                spec_id = (
+                    "openai-chat#choices-nonempty"
+                    if obj.attr == "choices"
+                    else "anthropic-messages#content-nonempty"
+                    if obj.attr == "content"
+                    else None
+                )
                 evidence.append(
                     FailureEvidence(
                         mode_name="llm_response_unguarded",
@@ -2037,6 +2046,7 @@ def _scan_file_llm_response_unguarded(path: str) -> list[FailureEvidence]:
                             f"'{var_name}.{obj.attr}[0]' without a length/None check — "
                             "LLM APIs can return empty lists on error, content filtering, or streaming edge cases"
                         ),
+                        spec_id=spec_id,
                     )
                 )
             self.generic_visit(node)
