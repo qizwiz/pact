@@ -406,12 +406,12 @@ The checker was also used to verify the autogen streaming-None fix in [microsoft
 def main():
     token = _get_token()
     state = _load_state()
-    already_filed = set(state["filed"])
+    already_done = set(state["filed"] + state["skipped"])
 
-    # Find next unprocessed, non-skipped target
+    # Find next unprocessed, non-disabled target
     target = None
     for t in sorted(QUEUE, key=lambda x: x["priority"]):
-        if t["repo"] not in already_filed and not t.get("skip"):
+        if t["repo"] not in already_done and not t.get("skip"):
             target = t
             break
 
