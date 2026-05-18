@@ -14,7 +14,7 @@ import json
 import os
 import re
 import time
-from collections import Counter, defaultdict
+from collections import Counter
 from pathlib import Path
 
 
@@ -156,7 +156,7 @@ def main():
             print(f"  [{i+1}/{len(unique_pairs)}] fetch_errors={fetch_errors}")
 
     print(f"\nDone. fetch_errors={fetch_errors}")
-    print(f"\nTop 50 packages imported by vulnerable files:")
+    print("\nTop 50 packages imported by vulnerable files:")
     print(f"{'Package':<35} {'Files':>8} {'% of corpus':>12}")
     print("-" * 60)
     total = len(unique_pairs)
@@ -166,7 +166,7 @@ def main():
 
     # Cross-reference: which corpus repos match these package names?
     pkg_to_repo = repo_to_package_hints(all_repos)
-    print(f"\nCorpus repos that appear as upstream imports:")
+    print("\nCorpus repos that appear as upstream imports:")
     print(f"{'Package':<25} {'Repo':<50} {'Downstream files':>16}")
     print("-" * 95)
     for pkg, count in package_counter.most_common(200):

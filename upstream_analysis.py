@@ -177,7 +177,7 @@ def main():
         )
 
     # Show which packages resolved to corpus repos
-    print(f"\nResolved package→repo mappings used:")
+    print("\nResolved package→repo mappings used:")
     for pkg, repo in sorted(pkg_resolution.items(), key=lambda x: x[0]):
         downstream_count = len(repo_downstream.get(repo, set()))
         if downstream_count > 0:
