@@ -344,3 +344,56 @@ def test_z3_interprocedural_synthetic_guard_propagates():
     for es in sg.error_sites():
         if es.func == "handler":
             assert result[es.id] is True, f"Z3 failed to propagate guard to {es.id}"
+
+
+# ---------------------------------------------------------------------------
+# Streaming chunk None-deref spec (openai-stream-chunk#null-deref)
+# Covers the autogen #7130 class of bugs
+# ---------------------------------------------------------------------------
+
+
+def test_stream_chunk_unguarded_fires():
+    viols = _check("""
+        async def create_stream(client):
+            chunks = client.chat.completions.create(stream=True)
+            async for chunk in chunks:
+                maybe_model = chunk.model
+                if len(chunk.choices) == 0:
+                    continue
+    """)
+    assert len(viols) == 1
+    assert viols[0].attr == "model"
+    assert viols[0].spec_id == "openai-stream-chunk#null-deref"
+
+
+def test_stream_chunk_guarded_clean():
+    viols = _check("""
+        async def create_stream(client):
+            chunks = client.chat.completions.create(stream=True)
+            async for chunk in chunks:
+                if chunk is None:
+                    continue
+                maybe_model = chunk.model
+                if len(chunk.choices) == 0:
+                    continue
+    """)
+    assert viols == []
+
+
+def test_stream_chunk_h1_before_after():
+    before = _rank("""
+        async def create_stream(client):
+            chunks = client.chat.completions.create(stream=True)
+            async for chunk in chunks:
+                maybe_model = chunk.model
+    """)
+    after = _rank("""
+        async def create_stream(client):
+            chunks = client.chat.completions.create(stream=True)
+            async for chunk in chunks:
+                if chunk is None:
+                    continue
+                maybe_model = chunk.model
+    """)
+    assert before > 0
+    assert after == 0

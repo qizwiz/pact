@@ -203,12 +203,20 @@ def _harvest_sites(path: str, source: str | None = None) -> SiteGraph:
             self._llm_vars: dict[str, str] = llm_vars or {}
             # var_name → BranchGuard site id (most recent guard)
             self._guards: dict[str, str] = {}
+            # vars that came from stream iteration (async for VAR in STREAM:) — can be None
+            self._stream_vars: set[str] = set()
 
         def _enter_func(self, func_name: str, params: list[str], lineno: int = 0):
-            saved = (self._func, dict(self._llm_vars), dict(self._guards))
+            saved = (
+                self._func,
+                dict(self._llm_vars),
+                dict(self._guards),
+                set(self._stream_vars),
+            )
             self._func = func_name
             self._llm_vars = {}
             self._guards = {}
+            self._stream_vars = set()
             # Register ALL parameters as potential LLM var carriers up front.
             # This ensures visit_If sees them in _llm_vars so BranchGuards fire.
             for p in params:
@@ -226,7 +234,7 @@ def _harvest_sites(path: str, source: str | None = None) -> SiteGraph:
             return saved
 
         def _exit_func(self, saved):
-            self._func, self._llm_vars, self._guards = saved
+            self._func, self._llm_vars, self._guards, self._stream_vars = saved
 
         def _param_names(self, node) -> list[str]:
             return [
@@ -287,6 +295,59 @@ def _harvest_sites(path: str, source: str | None = None) -> SiteGraph:
         def visit_IfExp(self, node):
             src = _ast.unparse(node.test) if hasattr(_ast, "unparse") else ""
             self._note_guard(src, node.lineno)
+            self.generic_visit(node)
+
+        def _visit_for_node(self, node):
+            # async for CHUNK in STREAM: — register CHUNK as a nullable stream var
+            if (
+                isinstance(node.iter, _ast.Name)
+                and node.iter.id in self._llm_vars
+                and isinstance(node.target, _ast.Name)
+            ):
+                var = node.target.id
+                site = Site(
+                    kind=SiteKind.CALL_RESULT,
+                    var_name=var,
+                    attr="",
+                    file=path,
+                    line=node.lineno,
+                    func=self._func,
+                )
+                self._llm_vars[var] = sg.add(site)
+                self._stream_vars.add(var)
+            self.generic_visit(node)
+
+        def visit_For(self, node):
+            self._visit_for_node(node)
+
+        def visit_AsyncFor(self, node):
+            self._visit_for_node(node)
+
+        def visit_Attribute(self, node):
+            # Detect unguarded attribute access on nullable stream vars (e.g. chunk.model).
+            # Skip when the attribute is just the receiver for a subscript already caught
+            # by visit_Subscript (e.g. chunk.choices[0] — obj is _ast.Subscript above us).
+            if not isinstance(node.ctx, _ast.Load):
+                self.generic_visit(node)
+                return
+            obj = node.value
+            var_name = obj.id if isinstance(obj, _ast.Name) else None
+            if var_name is None or var_name not in self._stream_vars:
+                self.generic_visit(node)
+                return
+            if var_name in self._guards:
+                self.generic_visit(node)
+                return
+            site = Site(
+                kind=SiteKind.ERROR_SITE,
+                var_name=var_name,
+                attr=node.attr,
+                file=path,
+                line=node.lineno,
+                func=self._func,
+            )
+            sid = sg.add(site)
+            sg.link(self._llm_vars[var_name], sid, "data_flow")
             self.generic_visit(node)
 
         def visit_Subscript(self, node):
@@ -957,10 +1018,29 @@ def check_file(
             for g in sg.guards_for(es.var_name)
         )
 
+        _stream_attrs = frozenset(
+            {
+                "model",
+                "choices",
+                "usage",
+                "id",
+                "created",
+                "object",
+                "system_fingerprint",
+            }
+        )
         spec_id = (
             "openai-chat#choices-nonempty"
             if es.attr == "choices"
-            else "anthropic-messages#content-nonempty" if es.attr == "content" else None
+            else (
+                "anthropic-messages#content-nonempty"
+                if es.attr == "content"
+                else (
+                    "openai-stream-chunk#null-deref"
+                    if es.attr in _stream_attrs
+                    else None
+                )
+            )
         )
 
         if not guarded:
