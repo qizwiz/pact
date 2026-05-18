@@ -4,6 +4,7 @@
   ],
   "skipped": [
     "google/adk-python",
-    "google/adk-python"
+    "google/adk-python",
+    "Aider-AI/aider"
   ]
 }
