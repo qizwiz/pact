@@ -73,6 +73,36 @@ def test_missing_required_field_flagged(tmp_path):
     assert any("name" in m for m in widget_v[0].missing)
 
 
+def test_model_constraint_z3_annotation(tmp_path):
+    """Z3 Fixedpoint confirmation stamps spec_id='z3:datalog' on confirmed violations."""
+    _write_src(
+        tmp_path,
+        "models.py",
+        """
+        from django.db import models
+        class Widget(models.Model):
+            name = models.CharField(max_length=64)
+            class Meta: app_label = 'x'
+    """,
+    )
+    _write_src(
+        tmp_path,
+        "views.py",
+        """
+        from .models import Widget
+        def create(org):
+            Widget.objects.create()
+    """,
+    )
+    violations = check_codebase(tmp_path)
+    mc = [v for v in violations if v.call == "Widget.objects.create"]
+    assert mc, "expected model_constraint violation"
+    # Z3 must have confirmed it — spec_id should be set
+    assert (
+        mc[0].spec_id == "z3:datalog"
+    ), f"model_constraint violation must be Z3-proved; got spec_id={mc[0].spec_id!r}"
+
+
 def test_pre_extracted_skips_double_parse(tmp_path):
     """Passing _extracted avoids a second extract_from_codebase call."""
     from .extractor import extract_from_codebase

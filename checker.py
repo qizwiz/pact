@@ -142,6 +142,47 @@ def check_codebase(
     except ImportError:
         pass
 
+    # Z3 Fixedpoint confirmation for model_constraint violations.
+    # PactEngine runs a Datalog proof over the same extracted facts; any
+    # violation it confirms gets spec_id="z3:datalog" as a proof certificate.
+    # Violations found only by Z3 (missed by AST) are added with that spec_id.
+    # If Z3 is unavailable or fails, all AST results are returned unchanged.
+    has_model_constraint = any(v.context == "model_constraint" for v in violations)
+    if has_model_constraint:
+        try:
+            from .z3_engine import PactEngine
+
+            engine = PactEngine()
+            engine.load(root)
+            z3_viols = engine.violations()
+            # Index Z3 results by (file, line) for O(1) lookup
+            z3_keys: set[tuple[str, int]] = {(zv.file, zv.line) for zv in z3_viols}
+            # Annotate AST violations confirmed by Z3
+            for v in violations:
+                if v.context == "model_constraint" and (v.file, v.line) in z3_keys:
+                    v.spec_id = "z3:datalog"
+            # Add Z3-exclusive violations (AST missed them)
+            ast_mc_keys: set[tuple[str, int]] = {
+                (v.file, v.line) for v in violations if v.context == "model_constraint"
+            }
+            for zv in z3_viols:
+                if (zv.file, zv.line) not in ast_mc_keys:
+                    key = (zv.file, zv.line, "model_constraint", zv.call)
+                    if key not in seen:
+                        seen.add(key)
+                        violations.append(
+                            Violation(
+                                file=zv.file,
+                                line=zv.line,
+                                call=zv.call,
+                                missing=zv.missing,
+                                context="model_constraint",
+                                spec_id="z3:datalog",
+                            )
+                        )
+        except Exception:
+            pass  # Z3 unavailable or proof failed — AST results stand
+
     return violations
 
 
