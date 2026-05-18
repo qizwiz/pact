@@ -40,7 +40,8 @@ class CallGraph:
             # Only index function nodes (graphify marks them with trailing "()")
             if label.endswith("()"):
                 fname = label[:-2]
-                self._func_index[(sf, fname)] = nid
+                sf_key = Path(sf).name if sf else sf
+                self._func_index[(sf_key, fname)] = nid
 
         id_meta = self._id_meta  # alias for readability below
 
