@@ -31,6 +31,7 @@ QUEUE = [
         "stars": 25912,
         "priority": 1,
         "notes": "EXACT match: None delta in streaming autolog → AttributeError on .choices",
+        "skip": True,  # violations only in tests/examples; requires DCO + complex PR template
     },
     {
         "repo": "google/adk-python",
@@ -325,7 +326,7 @@ def process_one(target: dict, token: str) -> bool:
 
         n_viols = sum(1 for v in violations if v["file"] in changed)
         _run(
-            f'git commit -m "fix: guard LLM response access against empty choices\\n\\n'
+            f'git commit -s -m "fix: guard LLM response access against empty choices\\n\\n'
             f"Fixes {n_viols} unguarded response.choices[0] accesses detected by pact\\n"
             f'(sheaf-cohomological checker, Z3 UNSAT certificate)."',
             cwd=tmpdir,
@@ -407,10 +408,10 @@ def main():
     state = _load_state()
     already_filed = set(state["filed"])
 
-    # Find next unprocessed target
+    # Find next unprocessed, non-skipped target
     target = None
     for t in sorted(QUEUE, key=lambda x: x["priority"]):
-        if t["repo"] not in already_filed:
+        if t["repo"] not in already_filed and not t.get("skip"):
             target = t
             break
 
