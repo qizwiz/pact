@@ -158,13 +158,15 @@ def _resolve_class(source: str, path: str, line: int) -> tuple[str, str] | None:
     """
     try:
         import jedi
-
+    except ImportError:
+        return None
+    try:
         script = jedi.Script(source=source, path=path)
         names = script.infer(line=line, column=8)
         for n in names:
             if n.module_name and n.name and n.type == "class":
                 return (n.module_name, n.name)
-    except Exception:
+    except Exception:  # noqa — jedi inference raises unpredictably on malformed source
         pass
     return None
 

@@ -118,7 +118,7 @@ def scan_branch(pr: dict, worktree_base: Path) -> dict:
                 cwd=REPO_ROOT,
                 capture_output=True,
             )
-        except Exception:
+        except (subprocess.CalledProcessError, OSError):
             pass
 
 
