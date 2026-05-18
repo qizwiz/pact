@@ -372,6 +372,10 @@ def main(argv=None) -> int:
         return _spec_cmd(argv[1:])
     if argv and argv[0] == "fix":
         return _fix_cmd(argv[1:])
+    if argv and argv[0] == "preflight":
+        from .preflight import main as _preflight_main
+
+        return _preflight_main(argv[1:])
 
     p = argparse.ArgumentParser(
         prog="pact",
