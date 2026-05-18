@@ -180,6 +180,22 @@ def _harvest_sites(path: str, source: str | None = None) -> SiteGraph:
     # func_name → list of return site ids that carry LLM vars
     _return_sites: dict[str, list[str]] = {}
 
+    # Pre-walk: collect line numbers of subscript[0] nodes that appear in
+    # assignment targets (write patterns like `r.choices[0].field = val`).
+    # These are false positives — the response object is being built, not read.
+    _write_target_lines: set[int] = set()
+    for node in _ast.walk(tree):
+        if isinstance(node, (_ast.Assign, _ast.AugAssign, _ast.AnnAssign)):
+            targets = node.targets if isinstance(node, _ast.Assign) else [node.target]
+            for tgt in targets:
+                for sub in _ast.walk(tgt):
+                    if (
+                        isinstance(sub, _ast.Subscript)
+                        and isinstance(sub.slice, _ast.Constant)
+                        and sub.slice.value == 0
+                    ):
+                        _write_target_lines.add(sub.lineno)
+
     class _Harvester(_ast.NodeVisitor):
         def __init__(self, func: str, llm_vars: dict[str, str] | None = None):
             self._func = func
@@ -275,6 +291,10 @@ def _harvest_sites(path: str, source: str | None = None) -> SiteGraph:
 
         def visit_Subscript(self, node):
             if not isinstance(node.slice, _ast.Constant) or node.slice.value != 0:
+                self.generic_visit(node)
+                return
+            # Skip write targets: choices[0].field = val is a build pattern, not a read
+            if node.lineno in _write_target_lines:
                 self.generic_visit(node)
                 return
             obj = node.value
