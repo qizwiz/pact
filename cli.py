@@ -603,10 +603,28 @@ def main(argv=None) -> int:
                 _cg = _CG.load(root)
             except Exception:
                 _cg = None
+            try:
+                from .ast_utils import find_enclosing_function_chain as _enc_chain
+            except Exception:
+                _enc_chain = None
             for v in violations:
                 print(f"  {v}")
                 if _cg:
-                    for caller in _cg.callers_of(v.call, v.file):
+                    callers = []
+                    # try enclosing function chain first (innermost → outermost)
+                    # so that violations whose v.call is an expression (not a name)
+                    # still get caller annotations via the actual function name
+                    if _enc_chain:
+                        chain = _enc_chain(v.file, v.line)
+                        for func in reversed(chain):
+                            bare = func.split(".")[-1]
+                            callers = _cg.callers_of(bare, v.file)
+                            if callers:
+                                break
+                    # fall back to v.call (works for llm_response_unguarded etc.)
+                    if not callers:
+                        callers = _cg.callers_of(v.call, v.file)
+                    for caller in callers:
                         print(f"    ↑ {caller}")
             print()
 

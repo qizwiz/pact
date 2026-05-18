@@ -26,7 +26,7 @@ class CallGraph:
 
     def __init__(self, nodes: list[dict], links: list[dict]) -> None:
         # node_id → {"label": str, "file": str, "loc": str}
-        id_meta: dict[str, dict] = {}
+        self._id_meta: dict[str, dict] = {}
         # (file_basename, func_label) → node_id  (for lookup by violation attrs)
         self._func_index: dict[tuple[str, str], str] = {}
 
@@ -35,15 +35,20 @@ class CallGraph:
             label = n.get("label", "")
             sf = n.get("source_file", "")
             loc = n.get("source_location", "")
-            id_meta[nid] = {"label": label, "file": sf, "loc": loc}
+            self._id_meta[nid] = {"label": label, "file": sf, "loc": loc}
 
             # Only index function nodes (graphify marks them with trailing "()")
             if label.endswith("()"):
                 fname = label[:-2]
                 self._func_index[(sf, fname)] = nid
 
+        id_meta = self._id_meta  # alias for readability below
+
         # callee node_id → list of caller metadata dicts
         self._callers: dict[str, list[dict]] = {}
+        # bidirectional edge indices for neighborhood BFS
+        self._out_edges: dict[str, set[str]] = {}  # caller_id → callee_ids
+        self._in_edges: dict[str, set[str]] = {}  # callee_id → caller_ids
         for link in links:
             if link.get("context") != "call":
                 continue
@@ -57,6 +62,8 @@ class CallGraph:
                     "loc": link.get("source_location", src_meta.get("loc", "")),
                 }
             )
+            self._out_edges.setdefault(src_id, set()).add(target)
+            self._in_edges.setdefault(target, set()).add(src_id)
 
     def callers_of(self, func_name: str, source_file: str = "") -> list[str]:
         """
