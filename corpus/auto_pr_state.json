@@ -1,1 +1,6 @@
-{"filed":[],"skipped":[]}
+{
+  "filed": [],
+  "skipped": [
+    "google/adk-python"
+  ]
+}
