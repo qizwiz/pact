@@ -427,6 +427,283 @@ def _apply_interprocedural_transport(
     _CallWalker().visit(tree)
 
 
+def _enclosing_func(tree: "_ast.Module", lineno: int) -> str:
+    """Return the innermost function name enclosing the given line."""
+    best, best_line = "<module>", 0
+    for node in _ast.walk(tree):
+        if isinstance(node, (_ast.FunctionDef, _ast.AsyncFunctionDef)):
+            end = getattr(node, "end_lineno", node.lineno + 9999)
+            if node.lineno <= lineno <= end and node.lineno > best_line:
+                best, best_line = node.name, node.lineno
+    return best
+
+
+def _apply_caller_to_callee_transport(
+    sg: SiteGraph,
+    path: str,
+    source: str,
+    tree: "_ast.Module",
+) -> None:
+    """
+    Reverse direction of interprocedural transport.
+
+    Phase 1 (existing): callee guards param → caller's CallResult is safe.
+    Phase 2 (this):     caller guards var before call → callee's ArgBoundary is safe.
+
+    For each function F that has unguarded ArgBoundary-sourced ErrorSites, find
+    callers of F in this file.  If the caller guards the variable before passing
+    it, inject a synthetic BranchGuard into F so the ErrorSites are no longer
+    unguarded.
+    """
+    # Collect (callee_func, param_name) pairs with unguarded ArgBoundary ErrorSites
+    needs: dict[tuple[str, str], list[str]] = {}
+    for es in sg.error_sites():
+        if any(es.id in sg.reachable_from(g.id) for g in sg.guards_for(es.var_name)):
+            continue  # already guarded
+        ab = next(
+            (
+                s
+                for s in sg.sites.values()
+                if s.kind == SiteKind.ARG_BOUNDARY
+                and s.var_name == es.var_name
+                and s.func == es.func
+            ),
+            None,
+        )
+        if ab:
+            needs.setdefault((es.func, es.var_name), []).append(es.id)
+
+    if not needs:
+        return
+
+    for (callee_func, param_name), es_ids in needs.items():
+        # Resolve parameter index in callee
+        callee_node = next(
+            (
+                n
+                for n in _ast.walk(tree)
+                if isinstance(n, (_ast.FunctionDef, _ast.AsyncFunctionDef))
+                and n.name == callee_func
+            ),
+            None,
+        )
+        if not callee_node:
+            continue
+        params = [a.arg for a in callee_node.args.args + callee_node.args.posonlyargs]
+        try:
+            param_idx = params.index(param_name)
+        except ValueError:
+            continue
+
+        # Find call sites for callee_func and check caller guards
+        for node in _ast.walk(tree):
+            if not isinstance(node, _ast.Call):
+                continue
+            callee_name = (
+                node.func.id
+                if isinstance(node.func, _ast.Name)
+                else node.func.attr if isinstance(node.func, _ast.Attribute) else None
+            )
+            if callee_name != callee_func or param_idx >= len(node.args):
+                continue
+            arg = node.args[param_idx]
+            caller_var = arg.id if isinstance(arg, _ast.Name) else None
+            if not caller_var:
+                continue
+
+            caller_func = _enclosing_func(tree, node.lineno)
+            # Guard must be in the same caller function and before this call
+            caller_guards = [
+                g
+                for g in sg.guards_for(caller_var)
+                if g.func == caller_func and g.line < node.lineno
+            ]
+            if not caller_guards:
+                continue
+
+            ab_site = next(
+                (
+                    s
+                    for s in sg.sites.values()
+                    if s.kind == SiteKind.ARG_BOUNDARY
+                    and s.var_name == param_name
+                    and s.func == callee_func
+                ),
+                None,
+            )
+            if not ab_site:
+                continue
+
+            synthetic = Site(
+                kind=SiteKind.BRANCH_GUARD,
+                var_name=param_name,
+                attr="",
+                file=path,
+                line=node.lineno,
+                func=f"<caller:{caller_func}>",
+            )
+            sid = sg.add(synthetic)
+            sg.link(ab_site.id, sid, "call")
+            for es_id in es_ids:
+                sg.link(sid, es_id, "call")
+
+
+def _apply_cross_file_transport(
+    sg: SiteGraph,
+    path: str,
+    call_graph: object,  # graphify_graph.CallGraph
+) -> None:
+    """
+    Cross-file interprocedural transport using the graphify call graph.
+
+    For each unguarded ArgBoundary-sourced ErrorSite in function F, look up
+    callers of F via graphify.  For each cross-file caller G (file Y), harvest
+    Y's site graph and check if G guards the argument before passing it to F.
+    If yes, inject a synthetic BranchGuard in F.
+
+    This extends _apply_caller_to_callee_transport to cross-file call edges.
+    """
+    try:
+        from pathlib import Path as _Path
+
+        cg = call_graph  # type: ignore[assignment]
+    except Exception:
+        return
+
+    # Collect unguarded ArgBoundary ErrorSites grouped by (func, param)
+    needs: dict[tuple[str, str], list[str]] = {}
+    for es in sg.error_sites():
+        if any(es.id in sg.reachable_from(g.id) for g in sg.guards_for(es.var_name)):
+            continue
+        ab = next(
+            (
+                s
+                for s in sg.sites.values()
+                if s.kind == SiteKind.ARG_BOUNDARY
+                and s.var_name == es.var_name
+                and s.func == es.func
+            ),
+            None,
+        )
+        if ab:
+            needs.setdefault((es.func, es.var_name), []).append(es.id)
+
+    if not needs:
+        return
+
+    for (callee_func, param_name), es_ids in needs.items():
+        # Get callers from graphify
+        caller_annotations = cg.callers_of(callee_func, path)
+        for annotation in caller_annotations:
+            # annotation: "file:loc  caller_name"
+            parts = annotation.split()
+            if not parts:
+                continue
+            caller_name = parts[-1]
+            addr = parts[0] if len(parts) > 1 else ""
+            caller_file = addr.split(":")[0] if ":" in addr else ""
+            if not caller_file or caller_file == path:
+                continue  # same-file handled by _apply_caller_to_callee_transport
+
+            try:
+                caller_sg = _harvest_sites(caller_file)
+            except Exception:
+                continue
+
+            # Find guards for any variable passed to callee_func at a call site
+            # in caller_file that corresponds to param_name
+            try:
+                caller_source = _Path(caller_file).read_text(
+                    encoding="utf-8", errors="replace"
+                )
+                caller_tree = _ast.parse(caller_source)
+            except (SyntaxError, OSError):
+                continue
+
+            # Find the param index in callee
+            callee_node = None
+            try:
+                callee_source = _Path(path).read_text(
+                    encoding="utf-8", errors="replace"
+                )
+                callee_tree = _ast.parse(callee_source)
+                callee_node = next(
+                    (
+                        n
+                        for n in _ast.walk(callee_tree)
+                        if isinstance(n, (_ast.FunctionDef, _ast.AsyncFunctionDef))
+                        and n.name == callee_func
+                    ),
+                    None,
+                )
+            except (SyntaxError, OSError):
+                pass
+
+            if not callee_node:
+                continue
+            params = [
+                a.arg for a in callee_node.args.args + callee_node.args.posonlyargs
+            ]
+            try:
+                param_idx = params.index(param_name)
+            except ValueError:
+                continue
+
+            for node in _ast.walk(caller_tree):
+                if not isinstance(node, _ast.Call):
+                    continue
+                cn = (
+                    node.func.id
+                    if isinstance(node.func, _ast.Name)
+                    else (
+                        node.func.attr
+                        if isinstance(node.func, _ast.Attribute)
+                        else None
+                    )
+                )
+                if cn != callee_func or param_idx >= len(node.args):
+                    continue
+                arg = node.args[param_idx]
+                caller_var = arg.id if isinstance(arg, _ast.Name) else None
+                if not caller_var:
+                    continue
+
+                enclosing = _enclosing_func(caller_tree, node.lineno)
+                cross_guards = [
+                    g
+                    for g in caller_sg.guards_for(caller_var)
+                    if g.func == enclosing and g.line < node.lineno
+                ]
+                if not cross_guards:
+                    continue
+
+                ab_site = next(
+                    (
+                        s
+                        for s in sg.sites.values()
+                        if s.kind == SiteKind.ARG_BOUNDARY
+                        and s.var_name == param_name
+                        and s.func == callee_func
+                    ),
+                    None,
+                )
+                if not ab_site:
+                    continue
+
+                synthetic = Site(
+                    kind=SiteKind.BRANCH_GUARD,
+                    var_name=param_name,
+                    attr="",
+                    file=caller_file,
+                    line=node.lineno,
+                    func=f"<cross-file:{caller_name}>",
+                )
+                sid = sg.add(synthetic)
+                sg.link(ab_site.id, sid, "call")
+                for es_id in es_ids:
+                    sg.link(sid, es_id, "call")
+
+
 # ---------------------------------------------------------------------------
 # Coboundary matrix and Ȟ¹ rank
 # ---------------------------------------------------------------------------
@@ -557,10 +834,17 @@ def check_file(
         If True, follow call edges for guard transport (default).
         Set False to get intra-procedural-only results (for comparison).
     """
-    sg = _harvest_sites(path)
+    try:
+        source = Path(path).read_text(encoding="utf-8", errors="replace")
+        tree = _ast.parse(source, filename=path)
+    except (SyntaxError, OSError):
+        return []
+
+    sg = _harvest_sites(path, source=source)
 
     if interprocedural:
         _apply_interprocedural_transport(sg, path)
+        _apply_caller_to_callee_transport(sg, path, source, tree)
 
     global_h1 = _h1_rank_semantic(sg)
 

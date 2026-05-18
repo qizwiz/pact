@@ -205,12 +205,12 @@ def test_caller_guards_before_passing():
         interprocedural=True,
     )
     # extract_content's ErrorSite has no local guard.
-    # Intra-procedurally this fires.
-    # With interprocedural transport off, this is a violation.
-    # (We don't yet transport *caller* guards into *callees* — that's phase 2)
-    # This test documents current behavior, not aspirational behavior.
-    # Just verify it doesn't crash.
-    assert isinstance(viols, list)
+    # Phase 2 (caller-to-callee transport): handler guards response before passing
+    # to extract_content, so the ArgBoundary receives a pre-guarded variable.
+    # Synthetic BranchGuard injected → Ȟ¹ = 0.
+    assert (
+        viols == []
+    ), f"Expected no violations (caller guards before passing), got: {viols}"
 
 
 # ---------------------------------------------------------------------------
