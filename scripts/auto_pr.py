@@ -69,6 +69,33 @@ QUEUE = [
         "priority": 5,
         "notes": "MODERATE: content=None in reasoning_content causes AttributeError",
     },
+    {
+        "repo": "langchain-ai/langchain",
+        "issue": 37058,
+        "issue_title": "Missing await in async similarity_search example",
+        "mode": "missing_await",
+        "stars": 123017,
+        "priority": 6,
+        "notes": "STRONG: 15 missing_await violations in langchain_core (callbacks, indexing, chat_models, llms)",
+    },
+    {
+        "repo": "infiniflow/ragflow",
+        "issue": 14711,
+        "issue_title": "Bug Report: GraphRAG calls async Dealer.get_vector() without await, causing empty entities/relations",
+        "mode": "missing_await",
+        "stars": 80433,
+        "priority": 7,
+        "notes": "EXACT match: missing await on async vector store call → silent data loss",
+    },
+    {
+        "repo": "Significant-Gravitas/AutoGPT",
+        "issue": 9741,
+        "issue_title": "Unhandled Runtime Error and Missing Agent Blocks",
+        "mode": "missing_await",
+        "stars": 184291,
+        "priority": 8,
+        "notes": "STRONG: 2 missing_await in webhook trigger handlers (integrations/router.py:596,600)",
+    },
 ]
 
 STATE_FILE = Path(__file__).parent.parent / "corpus" / "auto_pr_state.json"
