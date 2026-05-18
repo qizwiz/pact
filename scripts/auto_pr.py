@@ -102,6 +102,32 @@ def _get_token() -> str:
     return token
 
 
+def _scan_repo(repo_dir: str, repo_slug: str) -> list[dict]:
+    """Run pact checker on cloned repo; return violation dicts."""
+    sys.path.insert(0, str(Path(__file__).parent.parent))
+    try:
+        from pact.checker import check_codebase
+
+        raw = check_codebase(Path(repo_dir))
+        result = []
+        for ev in raw:
+            result.append(
+                {
+                    "repo": repo_slug,
+                    "file": str(Path(ev.file).relative_to(repo_dir)),
+                    "line": ev.line,
+                    "mode": ev.mode_name,
+                    "call": ev.call,
+                    "message": ev.message,
+                    "code_context": ev.code_context,
+                }
+            )
+        return result
+    except Exception as e:
+        print(f"  pact scan failed: {e}")
+        return []
+
+
 def _pact_sheaf_h1(path: str) -> tuple[int, bool]:
     """Return (h1_rank, using_z3) for a file."""
     try:
@@ -263,21 +289,13 @@ def process_one(target: dict, token: str) -> bool:
         branch = "fix/pact-llm-response-guards"
         _run(f"git checkout -b {branch}", cwd=tmpdir)
 
-        # Load corpus violations for this repo
-        corpus_path = Path(__file__).parent.parent / "corpus" / "corpus.jsonl"
-        if not corpus_path.exists():
-            # Fall back to local corpus
-            corpus_path = Path.home() / "src/pact/corpus.jsonl"
-        violations = [
-            d
-            for line in open(corpus_path)
-            for d in [json.loads(line)]
-            if d.get("repo") == repo
-        ]
-        print(f"Found {len(violations)} corpus violations for {repo}")
+        # Scan the cloned repo fresh with pact
+        print("Scanning with pact...")
+        violations = _scan_repo(tmpdir, repo)
+        print(f"Found {len(violations)} violations in {repo}")
 
         if not violations:
-            print("No violations in corpus — skipping")
+            print("No violations found — skipping")
             return False
 
         # Apply fixes
