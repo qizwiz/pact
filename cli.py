@@ -593,8 +593,17 @@ def main(argv=None) -> int:
         else:
             label = f"(diff vs {args.diff})" if args.diff else ""
             print(f"✗  pact: {len(violations)} violation(s) {label}\n".strip())
+            try:
+                from .graphify_graph import CallGraph as _CG
+
+                _cg = _CG.load(root)
+            except Exception:
+                _cg = None
             for v in violations:
                 print(f"  {v}")
+                if _cg:
+                    for caller in _cg.callers_of(v.call, v.file):
+                        print(f"    ↑ {caller}")
             print()
 
     suggestions: list = []
