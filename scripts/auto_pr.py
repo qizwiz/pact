@@ -111,15 +111,19 @@ def _scan_repo(repo_dir: str, repo_slug: str) -> list[dict]:
         raw = check_codebase(Path(repo_dir))
         result = []
         for ev in raw:
+            try:
+                rel_path = str(Path(ev.file).relative_to(repo_dir))
+            except ValueError:
+                rel_path = ev.file
             result.append(
                 {
                     "repo": repo_slug,
-                    "file": str(Path(ev.file).relative_to(repo_dir)),
+                    "file": rel_path,
                     "line": ev.line,
-                    "mode": ev.mode_name,
+                    "mode": getattr(ev, "context", getattr(ev, "mode_name", "unknown")),
                     "call": ev.call,
-                    "message": ev.message,
-                    "code_context": ev.code_context,
+                    "message": (ev.missing[0] if ev.missing else ""),
+                    "code_context": "",
                 }
             )
         return result
