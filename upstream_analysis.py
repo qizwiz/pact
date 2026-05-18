@@ -8,6 +8,7 @@ to produce a ranked list of high-leverage upstream fix targets.
 Usage:
     python upstream_analysis.py [--corpus PATH] [--cache-dir PATH] [--top N]
 """
+
 import argparse
 import json
 import math
@@ -15,23 +16,102 @@ import os
 from collections import Counter, defaultdict
 from pathlib import Path
 
-
 STDLIB = {
-    "os", "sys", "re", "json", "time", "datetime", "typing", "pathlib",
-    "collections", "itertools", "functools", "threading", "asyncio", "io",
-    "abc", "copy", "math", "random", "logging", "warnings", "contextlib",
-    "dataclasses", "enum", "inspect", "traceback", "hashlib", "base64",
-    "urllib", "http", "socket", "struct", "pickle", "string", "textwrap",
-    "tempfile", "shutil", "glob", "fnmatch", "subprocess", "signal",
-    "weakref", "gc", "types", "importlib", "builtins", "__future__",
-    "configparser", "argparse", "unittest", "pdb", "profile", "timeit",
-    "queue", "multiprocessing", "concurrent", "heapq", "bisect", "array",
-    "decimal", "fractions", "statistics", "uuid", "platform", "getpass",
-    "operator", "pprint", "reprlib", "codecs", "unicodedata", "csv",
-    "html", "xml", "email", "mimetypes", "shlex", "ast", "dis",
-    "contextvars", "atexit", "yaml", "toml", "dotenv", "pytest",
-    "secrets", "resource", "fcntl", "msvcrt", "difflib", "textwrap",
-    "tokenize", "cgi", "cgitb", "code", "codeop", "compileall",
+    "os",
+    "sys",
+    "re",
+    "json",
+    "time",
+    "datetime",
+    "typing",
+    "pathlib",
+    "collections",
+    "itertools",
+    "functools",
+    "threading",
+    "asyncio",
+    "io",
+    "abc",
+    "copy",
+    "math",
+    "random",
+    "logging",
+    "warnings",
+    "contextlib",
+    "dataclasses",
+    "enum",
+    "inspect",
+    "traceback",
+    "hashlib",
+    "base64",
+    "urllib",
+    "http",
+    "socket",
+    "struct",
+    "pickle",
+    "string",
+    "textwrap",
+    "tempfile",
+    "shutil",
+    "glob",
+    "fnmatch",
+    "subprocess",
+    "signal",
+    "weakref",
+    "gc",
+    "types",
+    "importlib",
+    "builtins",
+    "__future__",
+    "configparser",
+    "argparse",
+    "unittest",
+    "pdb",
+    "profile",
+    "timeit",
+    "queue",
+    "multiprocessing",
+    "concurrent",
+    "heapq",
+    "bisect",
+    "array",
+    "decimal",
+    "fractions",
+    "statistics",
+    "uuid",
+    "platform",
+    "getpass",
+    "operator",
+    "pprint",
+    "reprlib",
+    "codecs",
+    "unicodedata",
+    "csv",
+    "html",
+    "xml",
+    "email",
+    "mimetypes",
+    "shlex",
+    "ast",
+    "dis",
+    "contextvars",
+    "atexit",
+    "yaml",
+    "toml",
+    "dotenv",
+    "pytest",
+    "secrets",
+    "resource",
+    "fcntl",
+    "msvcrt",
+    "difflib",
+    "textwrap",
+    "tokenize",
+    "cgi",
+    "cgitb",
+    "code",
+    "codeop",
+    "compileall",
 }
 
 # Manually curated: package import name → GitHub repo
@@ -94,8 +174,12 @@ def heuristic_pkg_to_repo(pkg: str, corpus_repos: set[str]) -> str | None:
 
 def main():
     parser = argparse.ArgumentParser(description="Upstream leverage analysis")
-    parser.add_argument("--corpus", default=os.path.expanduser("~/src/pact/corpus.jsonl"))
-    parser.add_argument("--cache-dir", default=os.path.expanduser("~/src/pact/import_cache"))
+    parser.add_argument(
+        "--corpus", default=os.path.expanduser("~/src/pact/corpus.jsonl")
+    )
+    parser.add_argument(
+        "--cache-dir", default=os.path.expanduser("~/src/pact/import_cache")
+    )
     parser.add_argument("--top", type=int, default=30)
     args = parser.parse_args()
 
@@ -114,12 +198,16 @@ def main():
             repo_stars[repo] = d.get("stars", 0)
             repo_files[repo].add(d["file"])
     corpus_repos = set(repo_violations.keys())
-    print(f"  {sum(repo_violations.values())} violations across {len(corpus_repos)} repos")
+    print(
+        f"  {sum(repo_violations.values())} violations across {len(corpus_repos)} repos"
+    )
 
     # Load import cache
     cache_files = [
-        f for f in cache_dir.glob("*.json")
-        if f.name not in ("branches.json", "import_graph_results.json", "upstream_analysis.json")
+        f
+        for f in cache_dir.glob("*.json")
+        if f.name
+        not in ("branches.json", "import_graph_results.json", "upstream_analysis.json")
     ]
     print(f"  {len(cache_files)} cached file imports")
 
@@ -157,14 +245,16 @@ def main():
         if violations == 0:
             continue
         leverage = violations * math.log1p(stars) * (1 + downstream)
-        results.append({
-            "repo": repo,
-            "violations": violations,
-            "stars": stars,
-            "downstream_repos": downstream,
-            "leverage": leverage,
-            "downstream_list": sorted(repo_downstream.get(repo, set())),
-        })
+        results.append(
+            {
+                "repo": repo,
+                "violations": violations,
+                "stars": stars,
+                "downstream_repos": downstream,
+                "leverage": leverage,
+                "downstream_list": sorted(repo_downstream.get(repo, set())),
+            }
+        )
 
     results.sort(key=lambda x: -x["leverage"])
 

@@ -9,6 +9,7 @@ and ranks packages by downstream exposure (how many vulnerable files import them
 Usage:
     python import_graph.py [--limit N] [--corpus PATH] [--cache-dir PATH]
 """
+
 import argparse
 import json
 import os
@@ -20,13 +21,21 @@ from pathlib import Path
 
 def get_default_branch(repo: str, token: str, session) -> str:
     url = f"https://api.github.com/repos/{repo}"
-    r = session.get(url, headers={"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"})
+    r = session.get(
+        url,
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/vnd.github+json",
+        },
+    )
     if r.status_code == 200:
         return r.json().get("default_branch", "main")
     return "main"
 
 
-def fetch_file_head(repo: str, file_path: str, branch: str, token: str, session, n_lines: int = 60) -> list[str] | None:
+def fetch_file_head(
+    repo: str, file_path: str, branch: str, token: str, session, n_lines: int = 60
+) -> list[str] | None:
     """Fetch first n_lines of a file via raw GitHub content."""
     url = f"https://raw.githubusercontent.com/{repo}/{branch}/{file_path}"
     r = session.get(url, headers={"Authorization": f"Bearer {token}"}, timeout=10)
@@ -42,15 +51,15 @@ def extract_imports(lines: list[str]) -> list[str]:
     for line in lines:
         line = line.strip()
         # import foo, import foo.bar, import foo as bar
-        m = re.match(r'^import\s+([\w.]+)', line)
+        m = re.match(r"^import\s+([\w.]+)", line)
         if m:
-            pkg = m.group(1).split('.')[0]
+            pkg = m.group(1).split(".")[0]
             packages.append(pkg)
             continue
         # from foo import bar, from foo.bar import baz
-        m = re.match(r'^from\s+([\w.]+)\s+import', line)
+        m = re.match(r"^from\s+([\w.]+)\s+import", line)
         if m:
-            pkg = m.group(1).split('.')[0]
+            pkg = m.group(1).split(".")[0]
             packages.append(pkg)
     return packages
 
@@ -76,10 +85,21 @@ def repo_to_package_hints(repos: set[str]) -> dict[str, str]:
 
 def main():
     parser = argparse.ArgumentParser(description="Build import graph from pact corpus")
-    parser.add_argument("--limit", type=int, default=500, help="Max (repo,file) pairs to fetch (default 500)")
-    parser.add_argument("--corpus", default=os.path.expanduser("~/src/pact/corpus.jsonl"))
-    parser.add_argument("--cache-dir", default=os.path.expanduser("~/src/pact/import_cache"))
-    parser.add_argument("--rate-limit", type=float, default=3.0, help="Requests per second (default 3)")
+    parser.add_argument(
+        "--limit",
+        type=int,
+        default=500,
+        help="Max (repo,file) pairs to fetch (default 500)",
+    )
+    parser.add_argument(
+        "--corpus", default=os.path.expanduser("~/src/pact/corpus.jsonl")
+    )
+    parser.add_argument(
+        "--cache-dir", default=os.path.expanduser("~/src/pact/import_cache")
+    )
+    parser.add_argument(
+        "--rate-limit", type=float, default=3.0, help="Requests per second (default 3)"
+    )
     args = parser.parse_args()
 
     token = os.environ.get("GITHUB_TOKEN", "")
@@ -87,6 +107,7 @@ def main():
         raise SystemExit("GITHUB_TOKEN env var required")
 
     import requests
+
     session = requests.Session()
 
     cache_dir = Path(args.cache_dir)
@@ -103,7 +124,9 @@ def main():
             all_repos.add(d["repo"])
 
     unique_pairs = list(pairs.keys())
-    print(f"  {len(unique_pairs)} unique (repo, file) pairs across {len(all_repos)} repos")
+    print(
+        f"  {len(unique_pairs)} unique (repo, file) pairs across {len(all_repos)} repos"
+    )
 
     # Limit
     if args.limit and len(unique_pairs) > args.limit:
@@ -146,7 +169,9 @@ def main():
             else:
                 imports = extract_imports(lines)
 
-            cache_file.write_text(json.dumps({"repo": repo, "file": file_path, "imports": imports}))
+            cache_file.write_text(
+                json.dumps({"repo": repo, "file": file_path, "imports": imports})
+            )
 
         file_imports[(repo, file_path)] = imports
         for pkg in imports:
@@ -175,11 +200,16 @@ def main():
 
     # Save results
     results_path = cache_dir / "import_graph_results.json"
-    results_path.write_text(json.dumps({
-        "top_packages": package_counter.most_common(100),
-        "total_pairs": len(unique_pairs),
-        "fetch_errors": fetch_errors,
-    }, indent=2))
+    results_path.write_text(
+        json.dumps(
+            {
+                "top_packages": package_counter.most_common(100),
+                "total_pairs": len(unique_pairs),
+                "fetch_errors": fetch_errors,
+            },
+            indent=2,
+        )
+    )
     print(f"\nResults saved to {results_path}")
 
 
