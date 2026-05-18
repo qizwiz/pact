@@ -1939,6 +1939,9 @@ _LLM_RESPONSE_SOURCES = frozenset(
     }
 )
 _LLM_RESPONSE_ATTRS = frozenset({"choices", "content", "outputs", "candidates"})
+# Attributes on a choices[0] element that the API can return as None:
+# message (OpenAI content-filter / Gemini), delta (streaming).
+_LLM_ELEM_ATTRS = frozenset({"message", "delta"})
 
 
 @functools.lru_cache(maxsize=None)
@@ -1957,7 +1960,13 @@ def _scan_file_llm_response_unguarded(path: str) -> list[FailureEvidence]:
         def __init__(self):
             # All state is per-function-scope; module level is a scope too.
             self._llm_vars: dict[str, int] = {}  # var_name → assign line
-            self._guarded: set[str] = set()
+            # elem_var → list_attr: e.g. choice = response.choices[0] → "choices"
+            self._elem_vars: dict[str, str] = {}
+            self._guarded: set[str] = set()  # llm_vars with choices length check
+            self._elem_guarded: set[str] = set()  # elem_vars with None check
+            self._inline_msg_guarded: set[str] = (
+                set()
+            )  # llm_vars with inline .choices[0].message None check
             # (var_name, attr) pairs already flagged in this scope — one flag
             # per pair is enough; subsequent identical accesses would be fixed
             # by the same guard the developer adds for the first.
@@ -1966,16 +1975,29 @@ def _scan_file_llm_response_unguarded(path: str) -> list[FailureEvidence]:
         def _enter_scope(self):
             saved = (
                 dict(self._llm_vars),
+                dict(self._elem_vars),
                 set(self._guarded),
+                set(self._elem_guarded),
+                set(self._inline_msg_guarded),
                 set(self._flagged),
             )
             self._llm_vars = {}
+            self._elem_vars = {}
             self._guarded = set()
+            self._elem_guarded = set()
+            self._inline_msg_guarded = set()
             self._flagged = set()
             return saved
 
         def _exit_scope(self, saved):
-            self._llm_vars, self._guarded, self._flagged = saved
+            (
+                self._llm_vars,
+                self._elem_vars,
+                self._guarded,
+                self._elem_guarded,
+                self._inline_msg_guarded,
+                self._flagged,
+            ) = saved
 
         def visit_FunctionDef(self, node):
             saved = self._enter_scope()
@@ -1996,6 +2018,17 @@ def _scan_file_llm_response_unguarded(path: str) -> list[FailureEvidence]:
                     )
                     if attr and attr in _LLM_RESPONSE_SOURCES:
                         self._llm_vars[node.targets[0].id] = node.lineno
+                elif (
+                    isinstance(val, _ast.Subscript)
+                    and isinstance(val.slice, _ast.Constant)
+                    and val.slice.value == 0
+                    and isinstance(val.value, _ast.Attribute)
+                    and val.value.attr in _LLM_RESPONSE_ATTRS
+                    and isinstance(val.value.value, _ast.Name)
+                    and val.value.value.id in self._llm_vars
+                ):
+                    # choice = response.choices[0] — track for .message None check
+                    self._elem_vars[node.targets[0].id] = val.value.attr
             self.generic_visit(node)
 
         def visit_If(self, node):
@@ -2003,6 +2036,23 @@ def _scan_file_llm_response_unguarded(path: str) -> list[FailureEvidence]:
             for var in list(self._llm_vars):
                 if var in _test_names:
                     self._guarded.add(var)
+            for var in list(self._elem_vars):
+                if var in _test_names:
+                    self._elem_guarded.add(var)
+            # Detect inline: `if response.choices[0].message` / `if response.choices[0].message is not None`
+            for n in _ast.walk(node.test):
+                if (
+                    isinstance(n, _ast.Attribute)
+                    and n.attr in _LLM_ELEM_ATTRS
+                    and isinstance(n.value, _ast.Subscript)
+                    and isinstance(n.value.slice, _ast.Constant)
+                    and n.value.slice.value == 0
+                    and isinstance(n.value.value, _ast.Attribute)
+                    and n.value.value.attr in _LLM_RESPONSE_ATTRS
+                    and isinstance(n.value.value.value, _ast.Name)
+                    and n.value.value.value.id in self._llm_vars
+                ):
+                    self._inline_msg_guarded.add(n.value.value.value.id)
             self.generic_visit(node)
 
         def visit_IfExp(self, node):
@@ -2063,6 +2113,65 @@ def _scan_file_llm_response_unguarded(path: str) -> list[FailureEvidence]:
                         spec_id=spec_id,
                     )
                 )
+            self.generic_visit(node)
+
+        def visit_Attribute(self, node):
+            val = node.value
+            # Case 1 — inline: response.choices[0].message (val is Subscript)
+            if (
+                node.attr in _LLM_ELEM_ATTRS
+                and isinstance(val, _ast.Subscript)
+                and isinstance(val.slice, _ast.Constant)
+                and val.slice.value == 0
+                and isinstance(val.value, _ast.Attribute)
+                and val.value.attr in _LLM_RESPONSE_ATTRS
+                and isinstance(val.value.value, _ast.Name)
+            ):
+                var_name = val.value.value.id
+                list_attr = val.value.attr
+                pair = (var_name, f"{list_attr}[0].{node.attr}")
+                if (
+                    var_name in self._llm_vars
+                    and var_name not in self._inline_msg_guarded
+                    and pair not in self._flagged
+                ):
+                    self._flagged.add(pair)
+                    evidence.append(
+                        FailureEvidence(
+                            mode_name="llm_response_unguarded",
+                            file=path,
+                            line=node.lineno,
+                            call=f"{var_name}.{list_attr}[0].{node.attr}",
+                            message=(
+                                f"'{var_name}.{list_attr}[0].{node.attr}' accessed without None check — "
+                                f"LLM APIs can return None .{node.attr} on content filtering or streaming"
+                            ),
+                            spec_id="openai-chat#message-notnull",
+                        )
+                    )
+            # Case 2 — variable: choice.message where choice = response.choices[0]
+            elif (
+                node.attr in _LLM_ELEM_ATTRS
+                and isinstance(val, _ast.Name)
+                and val.id in self._elem_vars
+                and val.id not in self._elem_guarded
+            ):
+                pair = (val.id, node.attr)
+                if pair not in self._flagged:
+                    self._flagged.add(pair)
+                    evidence.append(
+                        FailureEvidence(
+                            mode_name="llm_response_unguarded",
+                            file=path,
+                            line=node.lineno,
+                            call=f"{val.id}.{node.attr}",
+                            message=(
+                                f"'{val.id}.{node.attr}' accessed without None check — "
+                                f"LLM APIs can return None .{node.attr} on content filtering or streaming"
+                            ),
+                            spec_id="openai-chat#message-notnull",
+                        )
+                    )
             self.generic_visit(node)
 
     evidence: list[FailureEvidence] = []

@@ -1620,12 +1620,12 @@ def test_llm_choices_guarded_not_flagged(tmp_path):
             )
             if not response.choices:
                 return None
-            return response.choices[0].message.content
+            return response.choices[0]
     """,
     )
     violations = check_codebase(tmp_path)
     v = [v for v in violations if v.context == "llm_response_unguarded"]
-    assert not v, "guarded choices access should not be flagged"
+    assert not v, "guarded choices[0] access (IndexError) should not be flagged"
 
 
 def test_llm_choices_ternary_guard_not_flagged(tmp_path):
@@ -1651,7 +1651,7 @@ def test_llm_choices_ternary_guard_not_flagged(tmp_path):
 
 
 def test_llm_response_repeated_access_flagged_once(tmp_path):
-    """Multiple response.choices[0] accesses in same function → only one flag."""
+    """Multiple response.choices[0].message accesses → one flag per violation kind (dedup)."""
     from .failure_mode import LLM_RESPONSE_UNGUARDED
 
     _write_src(
@@ -1667,14 +1667,21 @@ def test_llm_response_repeated_access_flagged_once(tmp_path):
         """,
     )
     results = check_codebase(tmp_path, modes=[LLM_RESPONSE_UNGUARDED])
-    assert len(results) == 1, (
-        "Repeated response.choices[0] in same function must produce exactly one flag. "
-        f"got {len(results)}: {[(r.line, r.call) for r in results]}"
-    )
+    calls = [r.call for r in results]
+    # Dedup: choices[0] IndexError and choices[0].message None — each flagged exactly once
+    assert (
+        calls.count("response.choices[0]") == 1
+    ), f"choices[0] must appear once; got {calls}"
+    assert (
+        calls.count("response.choices[0].message") == 1
+    ), f"choices[0].message must appear once; got {calls}"
+    assert (
+        len(results) == 2
+    ), f"Expected 2 flags (one per violation kind); got {len(results)}: {[(r.line, r.call) for r in results]}"
 
 
 def test_llm_response_separate_functions_each_flagged(tmp_path):
-    """Same var name in two separate functions → two flags (one per scope)."""
+    """Same var name in two separate functions → two flags per kind (one per scope, per violation type)."""
     from .failure_mode import LLM_RESPONSE_UNGUARDED
 
     _write_src(
@@ -1691,8 +1698,9 @@ def test_llm_response_separate_functions_each_flagged(tmp_path):
         """,
     )
     results = check_codebase(tmp_path, modes=[LLM_RESPONSE_UNGUARDED])
-    assert len(results) == 2, (
-        "One unguarded access per function scope must each be flagged. "
+    # 2 functions × 2 violation kinds (choices[0] + choices[0].message) = 4
+    assert len(results) == 4, (
+        "Two functions × two violation kinds must each be flagged. "
         f"got {len(results)}: {[(r.line, r.call) for r in results]}"
     )
 
@@ -1717,10 +1725,120 @@ def test_llm_guard_short_varname_not_falsely_guarded(tmp_path):
         """,
     )
     results = check_codebase(tmp_path, modes=[LLM_RESPONSE_UNGUARDED])
-    # 'r' must still be flagged — the if-test only mentions response_cache, not r
-    assert (
-        len(results) == 1
+    calls = [v.call for v in results]
+    # 'r' must appear in violations — the if-test only mentions response_cache, not r
+    assert any(
+        "r.choices[0]" in c for c in calls
     ), f"Short variable 'r' must be flagged as unguarded; got {[(x.line, x.call) for x in results]}"
+
+
+# ---------------------------------------------------------------------------
+# llm_response_unguarded — multi-level (choices[0].message None check)
+# ---------------------------------------------------------------------------
+
+
+def test_llm_message_attr_unguarded_flagged(tmp_path):
+    """response.choices[0].message must be flagged when .message can be None."""
+    from .failure_mode import LLM_RESPONSE_UNGUARDED
+
+    _write_src(
+        tmp_path,
+        "svc.py",
+        """\
+        def fn(client):
+            response = client.chat.completions.create(messages=[])
+            return response.choices[0].message.content
+        """,
+    )
+    results = check_codebase(tmp_path, modes=[LLM_RESPONSE_UNGUARDED])
+    calls = [v.call for v in results]
+    assert any(
+        "choices[0].message" in c for c in calls
+    ), f"choices[0].message must be flagged; got {calls}"
+    msg_viols = [v for v in results if "choices[0].message" in v.call]
+    assert msg_viols[0].spec_id == "openai-chat#message-notnull"
+
+
+def test_llm_message_attr_guarded_not_flagged(tmp_path):
+    """If choices[0].message is checked in an if-test, .message access is safe."""
+    from .failure_mode import LLM_RESPONSE_UNGUARDED
+
+    _write_src(
+        tmp_path,
+        "svc.py",
+        """\
+        def fn(client):
+            response = client.chat.completions.create(messages=[])
+            if response.choices and response.choices[0].message:
+                return response.choices[0].message.content
+        """,
+    )
+    results = check_codebase(tmp_path, modes=[LLM_RESPONSE_UNGUARDED])
+    assert not any(
+        "choices[0].message" in v.call for v in results
+    ), f"guarded .message access must not be flagged; got {[v.call for v in results]}"
+
+
+def test_llm_message_attr_elem_var_flagged(tmp_path):
+    """choice = response.choices[0]; choice.message must be flagged."""
+    from .failure_mode import LLM_RESPONSE_UNGUARDED
+
+    _write_src(
+        tmp_path,
+        "svc.py",
+        """\
+        def fn(client):
+            response = client.chat.completions.create(messages=[])
+            choice = response.choices[0]
+            return choice.message.content
+        """,
+    )
+    results = check_codebase(tmp_path, modes=[LLM_RESPONSE_UNGUARDED])
+    assert any(
+        v.call == "choice.message" for v in results
+    ), f"choice.message must be flagged; got {[v.call for v in results]}"
+
+
+def test_llm_message_attr_elem_var_guarded_not_flagged(tmp_path):
+    """choice = response.choices[0]; if choice: choice.message is safe."""
+    from .failure_mode import LLM_RESPONSE_UNGUARDED
+
+    _write_src(
+        tmp_path,
+        "svc.py",
+        """\
+        def fn(client):
+            response = client.chat.completions.create(messages=[])
+            choice = response.choices[0]
+            if choice:
+                return choice.message.content
+        """,
+    )
+    results = check_codebase(tmp_path, modes=[LLM_RESPONSE_UNGUARDED])
+    assert not any(
+        v.call == "choice.message" for v in results
+    ), f"guarded choice.message must not be flagged; got {[v.call for v in results]}"
+
+
+def test_llm_choices_guarded_message_still_flagged(tmp_path):
+    """Guarding choices length does NOT protect against choices[0].message being None."""
+    from .failure_mode import LLM_RESPONSE_UNGUARDED
+
+    _write_src(
+        tmp_path,
+        "svc.py",
+        """\
+        def fn(client):
+            response = client.chat.completions.create(messages=[])
+            if not response.choices:
+                raise ValueError("empty")
+            return response.choices[0].message.content
+        """,
+    )
+    results = check_codebase(tmp_path, modes=[LLM_RESPONSE_UNGUARDED])
+    assert any(
+        "choices[0].message" in v.call for v in results
+    ), f"choices length guard does not protect .message; got {[v.call for v in results]}"
 
 
 # ---------------------------------------------------------------------------
