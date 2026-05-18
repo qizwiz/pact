@@ -336,7 +336,7 @@ def process_one(target: dict, token: str) -> bool:
         # Push
         print("Pushing...")
         _run(
-            f"git push origin {branch}",
+            f"git push --force origin {branch}",
             cwd=tmpdir,
             env={"GITHUB_TOKEN": token, "GH_TOKEN": token},
         )
@@ -382,6 +382,7 @@ The checker was also used to verify the autogen streaming-None fix in [microsoft
             body_f.write(pr_body)
             body_path = body_f.name
 
+        gh_env = {"GITHUB_TOKEN": token, "GH_TOKEN": token}
         pr_url = _run(
             f"gh pr create --repo {repo} "
             f'--title "fix: guard LLM response against empty choices (fixes #{issue})" '
@@ -389,8 +390,21 @@ The checker was also used to verify the autogen streaming-None fix in [microsoft
             f'--head "{fork_owner}:{branch}" '
             f"--base main",
             cwd=tmpdir,
-            env={"GITHUB_TOKEN": token, "GH_TOKEN": token},
+            env=gh_env,
+            check=False,
         )
+        if not pr_url or "https://" not in pr_url:
+            # PR may already exist — try to get its URL
+            pr_url = _run(
+                f"gh pr view --repo {repo} "
+                f'--head "{fork_owner}:{branch}" --json url --jq .url',
+                cwd=tmpdir,
+                env=gh_env,
+                check=False,
+            )
+        if not pr_url or "https://" not in pr_url:
+            print(f"PR create failed; output: {pr_url!r}")
+            return False
         print(f"PR filed: {pr_url}")
         return True
 
