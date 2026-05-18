@@ -207,11 +207,15 @@ def _fix_llm_unguarded(
 # assignment — never when it's nested inside a larger expression.
 # ---------------------------------------------------------------------------
 
-# Coroutine consumers: callers that schedule the coroutine themselves
+# Coroutine consumers: callers that schedule the coroutine themselves.
+# Patterns here mean the coroutine is being *consumed* by an external
+# runner — adding await would be wrong.  Includes project-local sync
+# wrappers (_run_sync, run_sync, sync_run) found in the corpus.
 _CORO_CONSUMERS_RE = re.compile(
     r"\b(asyncio\.run|asyncio\.create_task|asyncio\.ensure_future"
     r"|loop\.run_until_complete|executor\.submit|ThreadPoolExecutor"
-    r"|ensure_future|create_task)\s*\("
+    r"|ensure_future|create_task"
+    r"|_run_sync|run_sync|sync_run|gevent\.spawn|eventlet\.spawn)\s*\("
 )
 
 
