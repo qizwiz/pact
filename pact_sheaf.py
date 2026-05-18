@@ -1010,3 +1010,101 @@ def check_file_full(path: str, project_root: str | None = None) -> list[SheafVio
             break
 
     return check_file(path, interprocedural=True, call_graph=call_graph)
+
+
+def sheaf_summary(path: str, *, call_graph: object = None) -> dict:
+    """
+    Topological + semantic profile of a file's LLM response site graph.
+
+    Returns a dict with:
+      h1_semantic    — Ȟ¹ rank of the data-flow presheaf (independent guards needed)
+      h1_topological — β₁ of the site graph as a plain graph (constant sheaf)
+      guard_deficit  — h1_semantic − h1_topological
+                       > 0: semantic violations beyond what pure topology predicts
+                       = 0: topology fully explains the guard structure
+                       < 0: topology over-predicts (cycles not associated with bugs)
+      n_error_sites  — total [0] accesses found
+      n_violations   — unguarded ErrorSites (actual bugs)
+      n_guarded      — guarded ErrorSites (confirmed safe)
+      using_z3       — True if Z3 UNSAT proofs were used (vs. BFS fallback)
+
+    Mathematical basis (Friedman arXiv:1104.2665):
+      For the constant sheaf k_G on a graph G, H¹(G; k_G) ≅ k^{β₁(G)}.
+      The data-flow presheaf F is non-constant (different stalks at each site),
+      so Ȟ¹(G; F) ≠ β₁(G) in general.
+
+      NOTE: h1_topological is β₁ of the SITE GRAPH, which is always a DAG
+      (morphisms only flow forward through execution), so h1_topological = 0
+      and guard_deficit = h1_semantic for all practical inputs.  For a
+      meaningful β₁ comparison, use pact_tda.TopoScore on the CALL GRAPH
+      neighborhood (graphify-backed) and compare to h1_semantic from here.
+    """
+    try:
+        source = Path(path).read_text(encoding="utf-8", errors="replace")
+        tree = _ast.parse(source, filename=path)
+    except (SyntaxError, OSError):
+        return {
+            "h1_semantic": 0,
+            "h1_topological": 0,
+            "guard_deficit": 0,
+            "n_error_sites": 0,
+            "n_violations": 0,
+            "n_guarded": 0,
+            "using_z3": _HAS_Z3,
+        }
+
+    sg = _harvest_sites(path, source=source)
+    _apply_interprocedural_transport(sg, path)
+    _apply_caller_to_callee_transport(sg, path, source, tree)
+    if call_graph is not None:
+        _apply_cross_file_transport(sg, path, call_graph)
+
+    guarded_map = _z3_check_guarded(sg)
+    h1_sem = _h1_rank_semantic(sg, guarded_map=guarded_map)
+
+    # Topological β₁: H¹(G; k_G) for the constant sheaf on the site graph
+    mat = _coboundary_matrix_f2(sg)
+    h1_topo = _h1_rank_f2(mat) if mat is not None else 0
+
+    n_error = len(sg.error_sites())
+    n_guarded = sum(1 for es in sg.error_sites() if guarded_map.get(es.id, False))
+
+    # TDA β₁ per violating function (call-graph neighborhood, via pact_tda)
+    # This is the MEANINGFUL β₁ comparison: call-graph cycles vs. sheaf violations
+    tda_scores: dict[str, dict] = {}
+    if call_graph is not None:
+        try:
+            from pact_tda import score_function  # type: ignore[import]
+
+            violating_funcs = {
+                es.func for es in sg.error_sites() if not guarded_map.get(es.id, False)
+            }
+            for func in violating_funcs:
+                ts = score_function(call_graph, func, path)
+                if ts is not None:
+                    tda_scores[func] = {
+                        "beta1": ts.beta1,
+                        "severity": ts.severity,
+                        "n_callers": ts.n_callers,
+                    }
+        except ImportError:
+            pass
+
+    # guard_deficit_callgraph: Ȟ¹(presheaf) − β₁(call graph).
+    # > 0: semantic violations beyond what call-graph topology predicts
+    # < 0: call graph has more cycles than guard violations (topology over-predicts)
+    # = 0: cyclomatic complexity perfectly accounts for all guard violations
+    max_tda_beta1 = max((v["beta1"] for v in tda_scores.values()), default=0)
+
+    return {
+        "h1_semantic": h1_sem,
+        "h1_topological": h1_topo,  # always 0 (site graph is a DAG)
+        "guard_deficit": h1_sem - h1_topo,
+        "guard_deficit_callgraph": h1_sem - max_tda_beta1,
+        "tda_beta1_max": max_tda_beta1,
+        "tda_scores": tda_scores,
+        "n_error_sites": n_error,
+        "n_violations": n_error - n_guarded,
+        "n_guarded": n_guarded,
+        "using_z3": _HAS_Z3,
+    }
