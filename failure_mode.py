@@ -190,6 +190,18 @@ def _body_has_early_exit(body: list) -> bool:
     return any(isinstance(stmt, _exits) for stmt in body)
 
 
+def _ast_name_ids(node) -> set[str]:
+    """Return the set of Name.id values that appear anywhere in node's AST subtree.
+
+    Used by guard-detection visitors instead of substring matching on unparsed
+    source, which can produce false positives for short variable names (e.g.
+    ``"r" in "response.choices"`` is True even though ``r`` is not guarded).
+    """
+    import ast as _ast
+
+    return {n.id for n in _ast.walk(node) if isinstance(n, _ast.Name)}
+
+
 def _vars_none_tested(test, optional_vars: dict) -> list:
     """Extract variable names from an if-test that are checked for None-ness.
 
@@ -550,9 +562,9 @@ def _scan_file_optional_deref(path: str) -> list[FailureEvidence]:
 
         def visit_If(self, node):
             # If the test references an optional var, mark it guarded
-            src = _ast.unparse(node.test) if hasattr(_ast, "unparse") else ""
+            _test_names = _ast_name_ids(node.test)
             for var in list(self.optional_vars):
-                if var in src:
+                if var in _test_names:
                     self.guarded.add(var)
             # Detect `if key in container:` — inside the body, container.get(key)
             # is non-optional because the membership check guarantees the key exists.
@@ -580,9 +592,9 @@ def _scan_file_optional_deref(path: str) -> list[FailureEvidence]:
 
         def visit_Assert(self, node):
             # `assert x is not None` — permanently guards x in this scope.
-            src = _ast.unparse(node.test) if hasattr(_ast, "unparse") else ""
+            _test_names = _ast_name_ids(node.test)
             for var in list(self.optional_vars):
-                if var in src:
+                if var in _test_names:
                     self.guarded.add(var)
             self.generic_visit(node)
 
@@ -1987,9 +1999,9 @@ def _scan_file_llm_response_unguarded(path: str) -> list[FailureEvidence]:
             self.generic_visit(node)
 
         def visit_If(self, node):
-            src = _ast.unparse(node.test) if hasattr(_ast, "unparse") else ""
+            _test_names = _ast_name_ids(node.test)
             for var in list(self._llm_vars):
-                if var in src:
+                if var in _test_names:
                     self._guarded.add(var)
             self.generic_visit(node)
 
@@ -1997,10 +2009,10 @@ def _scan_file_llm_response_unguarded(path: str) -> list[FailureEvidence]:
             # Ternary: body if test else orelse.
             # E.g. `response.choices[0] if response.choices else None` is safe.
             self.visit(node.test)
-            src = _ast.unparse(node.test) if hasattr(_ast, "unparse") else ""
+            _test_names = _ast_name_ids(node.test)
             newly_guarded: set[str] = set()
             for var in list(self._llm_vars):
-                if var in src and var not in self._guarded:
+                if var in _test_names and var not in self._guarded:
                     self._guarded.add(var)
                     newly_guarded.add(var)
             self.visit(node.body)

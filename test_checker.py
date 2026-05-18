@@ -1667,6 +1667,32 @@ def test_llm_response_separate_functions_each_flagged(tmp_path):
     )
 
 
+def test_llm_guard_short_varname_not_falsely_guarded(tmp_path):
+    """Guard on 'response' must not accidentally guard a short variable 'r'.
+
+    Regression: string-based `var in src` matched 'r' inside 'response.choices'
+    — AST-based name lookup fixes this.
+    """
+    from .failure_mode import LLM_RESPONSE_UNGUARDED
+
+    _write_src(
+        tmp_path,
+        "svc.py",
+        """\
+        def fn(client):
+            r = client.chat.completions.create(model="gpt-4", messages=[])
+            if not response_cache:
+                pass
+            return r.choices[0].message.content
+        """,
+    )
+    results = check_codebase(tmp_path, modes=[LLM_RESPONSE_UNGUARDED])
+    # 'r' must still be flagged — the if-test only mentions response_cache, not r
+    assert (
+        len(results) == 1
+    ), f"Short variable 'r' must be flagged as unguarded; got {[(x.line, x.call) for x in results]}"
+
+
 # ---------------------------------------------------------------------------
 # unvalidated_lookup_chain
 # ---------------------------------------------------------------------------
