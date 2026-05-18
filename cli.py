@@ -495,6 +495,15 @@ def main(argv=None) -> int:
         help="Print a full GitHub PR comment body (call graph + reduction sequence + test coverage)",
     )
     p.add_argument(
+        "--verify",
+        action="store_true",
+        help=(
+            "Run Z3 Fixedpoint proof for llm_response_unguarded. "
+            "UNSAT → formal certificate of absence; SAT → violation witnesses. "
+            "Requires z3-solver."
+        ),
+    )
+    p.add_argument(
         "--upstream",
         action="store_true",
         help=(
@@ -666,6 +675,29 @@ def main(argv=None) -> int:
 
     if args.pr_comment:
         print(format_pr_comment(suggestions, violations, functions, call_sites))
+
+    if args.verify and not args.json_mode:
+        try:
+            from .z3_engine import run_llm
+
+            proof = run_llm(root)
+            if proof.proved_safe:
+                print(
+                    f"✓  pact --verify: SAFE — Z3 proved llm_response_unguarded absent "
+                    f"({proof.scopes_analyzed} scope(s) analyzed)"
+                )
+            else:
+                print(
+                    f"⚡ pact --verify: UNSAFE — Z3 witness confirms "
+                    f"{len(proof.violations)} llm_response_unguarded violation(s)"
+                )
+                for v in proof.violations:
+                    print(f"  {v.file}  {v.call}")
+        except ImportError:
+            print(
+                "  pact --verify: z3-solver not installed; skipping proof",
+                file=sys.stderr,
+            )
 
     if args.upstream and not args.json_mode:
         imports = _extract_top_level_imports(root)

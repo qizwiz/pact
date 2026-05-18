@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 
 
-from .z3_engine import PactEngine
+from pact.z3_engine import LLMResponseEngine, PactEngine
 
 
 def _make_fixture(source: str) -> Path:
@@ -223,7 +223,7 @@ pytestmark_z3 = pytest.mark.skipif(not _HAS_Z3, reason="z3-solver not installed"
 @pytestmark_z3
 def test_llm_response_unguarded_proof():
     """Z3 must confirm: bug SAT (IndexError reachable), fix UNSAT (guard seals it)."""
-    from .prover import prove_llm_response_unguarded
+    from pact.prover import prove_llm_response_unguarded
 
     cert = prove_llm_response_unguarded()
     assert cert.bug_sat, "Bug scenario must be SAT — IndexError must be reachable"
@@ -233,7 +233,7 @@ def test_llm_response_unguarded_proof():
 
 @pytestmark_z3
 def test_save_without_update_fields_proof():
-    from .prover import prove_save_without_update_fields
+    from pact.prover import prove_save_without_update_fields
 
     cert = prove_save_without_update_fields()
     assert cert.bug_sat and cert.fix_unsat
@@ -241,7 +241,7 @@ def test_save_without_update_fields_proof():
 
 @pytestmark_z3
 def test_missing_await_proof():
-    from .prover import prove_missing_await
+    from pact.prover import prove_missing_await
 
     cert = prove_missing_await()
     assert cert.bug_sat and cert.fix_unsat
@@ -249,7 +249,7 @@ def test_missing_await_proof():
 
 @pytestmark_z3
 def test_optional_dereference_proof():
-    from .prover import prove_optional_dereference
+    from pact.prover import prove_optional_dereference
 
     cert = prove_optional_dereference()
     assert cert.bug_sat and cert.fix_unsat
@@ -258,7 +258,7 @@ def test_optional_dereference_proof():
 @pytestmark_z3
 def test_bare_except_proof():
     """Silent failure is SAT; specific catch makes it UNSAT."""
-    from .prover import prove_bare_except
+    from pact.prover import prove_bare_except
 
     cert = prove_bare_except()
     assert cert.bug_sat, "Bug: bare except swallowing real exception must be SAT"
@@ -269,7 +269,7 @@ def test_bare_except_proof():
 @pytestmark_z3
 def test_mutable_default_arg_proof():
     """State leakage across calls is SAT; None sentinel makes it UNSAT."""
-    from .prover import prove_mutable_default_arg
+    from pact.prover import prove_mutable_default_arg
 
     cert = prove_mutable_default_arg()
     assert cert.bug_sat, "Bug: shared mutable default leaking state must be SAT"
@@ -280,7 +280,7 @@ def test_mutable_default_arg_proof():
 @pytestmark_z3
 def test_required_arg_missing_proof():
     """TypeError from underprovision is SAT; providing all args makes it UNSAT."""
-    from .prover import prove_required_arg_missing
+    from pact.prover import prove_required_arg_missing
 
     cert = prove_required_arg_missing()
     assert cert.bug_sat, "Bug: provided < required must be SAT"
@@ -291,7 +291,7 @@ def test_required_arg_missing_proof():
 @pytestmark_z3
 def test_format_arg_mismatch_proof():
     """Format slot/arg count mismatch is SAT; matching counts makes it UNSAT."""
-    from .prover import prove_format_arg_mismatch
+    from pact.prover import prove_format_arg_mismatch
 
     cert = prove_format_arg_mismatch()
     assert cert.bug_sat, "Bug: slots != supplied must be SAT"
@@ -302,9 +302,77 @@ def test_format_arg_mismatch_proof():
 @pytestmark_z3
 def test_unvalidated_lookup_chain_proof():
     """KeyError from absent chain key is SAT; .get() with default makes it UNSAT."""
-    from .prover import prove_unvalidated_lookup_chain
+    from pact.prover import prove_unvalidated_lookup_chain
 
     cert = prove_unvalidated_lookup_chain()
     assert cert.bug_sat, "Bug: absent key in chain must be SAT"
     assert cert.fix_unsat, "Fix: .get() with default must make KeyError UNSAT"
     assert cert.witness, "Must have concrete witness (which key is absent)"
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# LLMResponseEngine — Datalog verifier for llm_response_unguarded
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+def _llm_run(source: str):
+    d = Path(tempfile.mkdtemp())
+    (d / "llm_code.py").write_text(textwrap.dedent(source))
+    engine = LLMResponseEngine()
+    engine.load(d)
+    return engine.result()
+
+
+def test_llm_engine_proved_safe_on_guarded_code():
+    result = _llm_run("""
+        def call_llm(client):
+            response = client.chat.completions.create(model="gpt-4o", messages=[])
+            if not response.choices:
+                return None
+            return response.choices[0].message.content
+    """)
+    assert result.proved_safe
+    assert result.violations == []
+    assert result.scopes_analyzed >= 1
+
+
+def test_llm_engine_unsafe_on_unguarded_code():
+    result = _llm_run("""
+        def bad(client):
+            response = client.completions.create(model="gpt-4o", messages=[])
+            return response.choices[0].message.content
+    """)
+    assert not result.proved_safe
+    assert len(result.violations) == 1
+    assert "choices[0]" in result.violations[0].call
+
+
+def test_llm_engine_safe_on_no_llm_calls():
+    result = _llm_run("""
+        def pure_math(x, y):
+            return x + y
+    """)
+    assert result.proved_safe
+    assert result.scopes_analyzed == 0
+
+
+def test_llm_engine_str_safe():
+    result = _llm_run("""
+        def ok(client):
+            response = client.messages.create(model="claude-3", messages=[])
+            if not response.choices or response.choices[0].message is None:
+                raise ValueError("empty response")
+            return response.choices[0].message.content
+    """)
+    assert result.proved_safe
+    assert "SAFE" in str(result)
+
+
+def test_llm_engine_str_unsafe():
+    result = _llm_run("""
+        def bad(client):
+            response = client.generate(prompt="hello")
+            return response.candidates[0].text
+    """)
+    assert not result.proved_safe
+    assert "UNSAFE" in str(result)
