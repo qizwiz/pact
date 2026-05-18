@@ -28,7 +28,7 @@ def test_llm_guard_inserted_before_subscript(tmp_path):
     result = fix_file(str(f), [ev])
     assert result.changed
     assert "if not response.choices:" in result.patched
-    assert "return  # pact: guard empty choices list" in result.patched
+    assert 'raise ValueError("LLM returned empty response")' in result.patched
     assert len(result.applied) == 1
     assert len(result.skipped) == 0
 
