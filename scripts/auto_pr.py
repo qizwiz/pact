@@ -102,15 +102,23 @@ def _get_token() -> str:
     return token
 
 
+_FIXABLE_MODES = frozenset({"llm_response_unguarded", "missing_await"})
+
+
 def _scan_repo(repo_dir: str, repo_slug: str) -> list[dict]:
-    """Run pact checker on cloned repo; return violation dicts."""
+    """Run pact checker on cloned repo; return fixable violation dicts only."""
     sys.path.insert(0, str(Path(__file__).parent.parent))
     try:
         from pact.checker import check_codebase
 
         raw = check_codebase(Path(repo_dir))
         result = []
+        mode_counts: dict[str, int] = {}
         for ev in raw:
+            mode = getattr(ev, "context", getattr(ev, "mode_name", "unknown"))
+            mode_counts[mode] = mode_counts.get(mode, 0) + 1
+            if mode not in _FIXABLE_MODES:
+                continue
             try:
                 rel_path = str(Path(ev.file).relative_to(repo_dir))
             except ValueError:
@@ -120,12 +128,12 @@ def _scan_repo(repo_dir: str, repo_slug: str) -> list[dict]:
                     "repo": repo_slug,
                     "file": rel_path,
                     "line": ev.line,
-                    "mode": getattr(ev, "context", getattr(ev, "mode_name", "unknown")),
+                    "mode": mode,
                     "call": ev.call,
                     "message": (ev.missing[0] if ev.missing else ""),
-                    "code_context": "",
                 }
             )
+        print(f"  mode breakdown: {mode_counts}")
         return result
     except Exception as e:
         print(f"  pact scan failed: {e}")
@@ -169,18 +177,16 @@ def _apply_pact_fix(repo_dir: str, violations: list[dict]) -> list[str]:
             from pact.fixer import fix_file
             from pact.failure_mode import FailureEvidence
 
-            # Convert corpus dicts to FailureEvidence
+            # Convert violation dicts to FailureEvidence
             evidences = []
             for v in file_viols:
                 try:
                     ev = FailureEvidence(
-                        repo=v["repo"],
+                        mode_name=v["mode"],
                         file=v["file"],
                         line=v["line"],
                         call=v.get("call", ""),
                         message=v.get("message", ""),
-                        code_context=v.get("code_context", ""),
-                        mode_name=v["mode"],
                     )
                     evidences.append(ev)
                 except Exception:
