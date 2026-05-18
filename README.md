@@ -128,6 +128,10 @@ pact . --reduce
 
 # JSON for downstream tooling
 pact . --json
+
+# Upstream dependency analysis: which of your imports have corpus violations?
+# Ranked by leverage score (violations × log(stars) × downstream fan-out)
+pact . --upstream
 ```
 
 ## Failure modes
@@ -270,7 +274,7 @@ Design rationale is in [`docs/adr/`](docs/adr/). Key decisions:
 | [ADR-018](docs/adr/ADR-018-ast-enclosing-stmt-guard-placement.md) | `_build_stmt_index` — AST-based enclosing-statement detection fixes guard placement for multi-line expressions; `_CORO_CONSUMERS_RE` skips `missing_await` in executor/asyncio.run contexts |
 | [ADR-019](docs/adr/ADR-019-write-tests-regression-generation.md) | `--write-tests` — generates falsifiable regression tests alongside `pact fix --apply`; MagicMock for all params (jedi/LSP upgrade deferred) |
 | [ADR-020](docs/adr/ADR-020-jedi-type-inference-test-writer.md) | Jedi `Script.infer()` for codebase-aware test generation — resolves `self` type, uses `__new__` over `MagicMock`; falls back on failure |
-| [ADR-021](docs/adr/ADR-021-corpus-deduplication.md) | Corpus deduplication on append — query overlap causes 4.5x overcount; unique `(repo,file,line,mode)` key; 13k unique violations / 703 repos |
+| [ADR-021](docs/adr/ADR-021-corpus-deduplication.md) | Corpus deduplication on append — query overlap causes 4.5x overcount; unique `(repo,file,line,mode)` key; 13.5k unique violations / 759 repos |
 | [ADR-036](docs/adr/ADR-036-pact-formal-analysis-toolkit.md) | Z3 Fixedpoint over traditional dataflow; TLA+ over property testing alone |
 
 ## Formal verification
@@ -297,7 +301,7 @@ pact uses a five-layer verification approach:
 2. **ADRs (rationale)** — architectural decisions documented before implementation
 3. **Z3 (satisfiability)** — per-call-site constraint checking at analysis time
 4. **Hypothesis (property-based)** — `test_hypothesis_checkers.py` generates random Python fragments and asserts soundness/precision invariants for each checker
-5. **Integration probe** — `scan_github` corpus of 13k+ unique violations across 700+ real repositories validates false-positive rates
+5. **Integration probe** — `scan_github` corpus of 13.5k+ unique violations across 759 real repositories validates false-positive rates
 
 The Hypothesis layer (step 4) has already found one real false negative: `def fn(x=set())` was not flagged because `set()` is an `ast.Call` node, not an `ast.Set` literal. Fixed and regressed in `test_checker.py`.
 
