@@ -1,0 +1,60 @@
+name: Claude Code Agent
+
+on:
+  issues:
+    types: [opened, labeled]
+  issue_comment:
+    types: [created]
+  pull_request_review_comment:
+    types: [created]
+
+jobs:
+  claude:
+    # Only run on issues/comments that mention @claude or have label 'pact-auto'
+    if: |
+      (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@claude')) ||
+      (github.event_name == 'issues' && contains(github.event.issue.labels.*.name, 'pact-auto')) ||
+      (github.event_name == 'pull_request_review_comment' && contains(github.event.comment.body, '@claude'))
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install pact dependencies
+        run: |
+          pip install z3-solver requests networkx black ruff hypothesis pytest
+          pip install -e .
+
+      - uses: anthropics/claude-code-action@beta
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          # Give Claude access to pact tools and gh CLI
+          allowed_tools: "Bash,Read,Edit,Write,Glob,Grep"
+          custom_instructions: |
+            You are an autonomous pact agent. Your tools:
+            - pact_sheaf.py: sheaf-cohomological LLM response checker (check_file, sheaf_summary)
+            - pact_cfg_proof.py: AST→CFG→Z3 proof engine (prove_loop_guard)
+            - pact_synth.py: synthesis pipeline (full_pipeline → fix + test + Z3 cert)
+            - failure_mode.py + fixer.py: original pact scanner and fixer
+
+            When asked to file a PR for an external repo:
+            1. Search corpus/corpus.jsonl for violations in that repo
+            2. Clone the repo to /tmp/<repo_name>
+            3. Run pact_sheaf.check_file() on violated files
+            4. Apply fixes using fixer.py or pact_synth.full_pipeline()
+            5. Run `ruff check --fix` then `black` on changed files
+            6. Fork, push, file PR referencing the issue
+            7. Report back with PR URL + Z3 proof status
+
+            ALWAYS: GITHUB_TOKEN=$(gh auth token) — never --token flag.
+            NEVER: Co-Authored-By: Claude in commits to external repos.
+          github_token: ${{ secrets.CORPUS_GITHUB_TOKEN }}
