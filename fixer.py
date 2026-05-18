@@ -33,7 +33,9 @@ from typing import NamedTuple
 from .failure_mode import FailureEvidence
 
 # Modes that this fixer can handle
-FIX_MODES = frozenset({"llm_response_unguarded", "missing_await"})
+FIX_MODES = frozenset(
+    {"llm_response_unguarded", "missing_await", "optional_dereference"}
+)
 
 
 def _mode(ev) -> str:
@@ -278,6 +280,66 @@ def _fix_missing_await(
 
 
 # ---------------------------------------------------------------------------
+# optional_dereference fix
+# ---------------------------------------------------------------------------
+# Violation: var used without None check where var was assigned from an
+# Optional source (dict.get(), nullable DB field, optional return type).
+# ev.call format: "var.attr"  (the dereference that triggered the flag)
+#
+# Fix: insert `if var is None:\n    raise ValueError("'var' is None")\n`
+# immediately before the enclosing statement.  Multiple dereferences of the
+# same var in the same statement produce only one guard.
+# ---------------------------------------------------------------------------
+
+_OPT_PAT = re.compile(r"^(\w+)\.\w+")
+
+
+def _fix_optional_dereference(
+    source: str,
+    lines: list[str],
+    violations: list[FailureEvidence],
+) -> tuple[list[str], list[FailureEvidence], list[FailureEvidence]]:
+    applied: list[FailureEvidence] = []
+    skipped: list[FailureEvidence] = []
+
+    stmt_index = _build_stmt_index(source)
+
+    by_insert_line: dict[int, list[tuple[str, FailureEvidence]]] = {}
+    for ev in violations:
+        m = _OPT_PAT.match(ev.call)
+        if not m:
+            skipped.append(ev)
+            continue
+        var = m.group(1)
+        insert_line = stmt_index.get(ev.line, ev.line)
+        by_insert_line.setdefault(insert_line, []).append((var, ev))
+
+    result = list(lines)
+    for insert_line in sorted(by_insert_line.keys(), reverse=True):
+        entries = by_insert_line[insert_line]
+        raw_line = result[insert_line - 1]
+        indent = " " * (len(raw_line) - len(raw_line.lstrip()))
+
+        guard_lines: list[str] = []
+        seen_vars: set[str] = set()
+        for var, ev in entries:
+            if var in seen_vars:
+                applied.append(ev)
+                continue
+            seen_vars.add(var)
+            guard_lines.append(f"{indent}if {var} is None:\n")
+            guard_lines.append(
+                f"{indent}    raise ValueError(f\"'{var}' is None\")  # pact: guard optional dereference\n"
+            )
+            applied.append(ev)
+
+        if guard_lines:
+            result[insert_line - 1 : insert_line - 1] = guard_lines
+
+    return result, applied, skipped
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -323,6 +385,13 @@ def fix_file(
     await_evs = [v for v in fixable if _mode(v) == "missing_await"]
     if await_evs:
         lines, applied, skipped = _fix_missing_await(original, lines, await_evs)
+        all_applied.extend(applied)
+        all_skipped.extend(skipped)
+
+    # Apply optional_dereference fixes
+    opt_evs = [v for v in fixable if _mode(v) == "optional_dereference"]
+    if opt_evs:
+        lines, applied, skipped = _fix_optional_dereference(original, lines, opt_evs)
         all_applied.extend(applied)
         all_skipped.extend(skipped)
 

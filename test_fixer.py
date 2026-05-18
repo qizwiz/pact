@@ -274,7 +274,106 @@ def test_missing_await_skipped_inside_custom_sync_runner(tmp_path):
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# optional_dereference
+# ---------------------------------------------------------------------------
+
+
+def test_optional_dereference_guard_inserted(tmp_path):
+    src = textwrap.dedent("""\
+        def call_api(client):
+            response = client.get("/endpoint")
+            return response.json()
+    """)
+    f = tmp_path / "ex.py"
+    f.write_text(src)
+    ev = _ev("optional_dereference", 3, "response.json", str(f))
+    result = fix_file(str(f), [ev])
+    assert result.changed
+    assert "if response is None:" in result.patched
+    assert "raise ValueError(f\"'response' is None\")" in result.patched
+    assert len(result.applied) == 1
+    assert len(result.skipped) == 0
+
+
+def test_optional_dereference_preserves_indentation(tmp_path):
+    src = textwrap.dedent("""\
+        def call_api(client):
+            if True:
+                data = client.get("/x")
+                return data.status_code
+    """)
+    f = tmp_path / "ex.py"
+    f.write_text(src)
+    ev = _ev("optional_dereference", 4, "data.status_code", str(f))
+    result = fix_file(str(f), [ev])
+    lines = result.patched.splitlines()
+    guard = next(ln for ln in lines if "if data is None" in ln)
+    assert guard.startswith("        ")  # 8 spaces — same as line 4
+
+
+def test_optional_dereference_multiple_attrs_same_var_one_guard(tmp_path):
+    src = textwrap.dedent("""\
+        def fn(resp):
+            x = resp.status_code
+            y = resp.json()
+    """)
+    f = tmp_path / "ex.py"
+    f.write_text(src)
+    evs = [
+        _ev("optional_dereference", 2, "resp.status_code", str(f)),
+        _ev("optional_dereference", 3, "resp.json", str(f)),
+    ]
+    result = fix_file(str(f), evs)
+    # Two separate statements → two guards
+    assert result.patched.count("if resp is None:") == 2
+    assert len(result.applied) == 2
+
+
+def test_optional_dereference_same_var_same_stmt_one_guard(tmp_path):
+    src = textwrap.dedent("""\
+        def fn(d):
+            return d.a + d.b
+    """)
+    f = tmp_path / "ex.py"
+    f.write_text(src)
+    evs = [
+        _ev("optional_dereference", 2, "d.a", str(f)),
+        _ev("optional_dereference", 2, "d.b", str(f)),
+    ]
+    result = fix_file(str(f), evs)
+    # Same statement → only one guard inserted
+    assert result.patched.count("if d is None:") == 1
+    assert len(result.applied) == 2
+
+
+def test_optional_dereference_malformed_call_skipped(tmp_path):
+    src = "x = something\n"
+    f = tmp_path / "ex.py"
+    f.write_text(src)
+    ev = _ev("optional_dereference", 1, "no-dot-here", str(f))
+    result = fix_file(str(f), [ev])
+    assert not result.changed
+    assert len(result.skipped) == 1
+
+
+def test_optional_dereference_syntactically_valid(tmp_path):
+    src = textwrap.dedent("""\
+        def process(result):
+            value = result.data["key"]
+    """)
+    f = tmp_path / "ex.py"
+    f.write_text(src)
+    ev = _ev("optional_dereference", 2, "result.data", str(f))
+    result = fix_file(str(f), [ev])
+    assert result.changed
+    import ast as _ast
+
+    _ast.parse(result.patched)  # must not raise SyntaxError
+
+
 def test_fix_modes_contains_expected():
     assert "llm_response_unguarded" in FIX_MODES
     assert "missing_await" in FIX_MODES
+    assert "optional_dereference" in FIX_MODES
     assert "save_without_update_fields" not in FIX_MODES
