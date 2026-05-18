@@ -267,19 +267,17 @@ def process_one(target: dict, token: str) -> bool:
     print(f"Processing: {repo} (issue #{issue})")
     print(f"{'='*60}")
 
+    gh_env = {"GITHUB_TOKEN": token, "GH_TOKEN": token}
+
     # Fork
     print("Forking...")
     try:
-        _run(
-            f"gh repo fork {repo} --clone=false",
-            env={"GITHUB_TOKEN": token, "GH_TOKEN": token},
-        )
+        _run(f"gh repo fork {repo} --clone=false", env=gh_env)
     except Exception as e:
         print(f"Fork failed (may already exist): {e}")
 
-    fork_owner = _run(
-        "gh api user --jq .login", env={"GITHUB_TOKEN": token, "GH_TOKEN": token}
-    )
+    fork_owner = _run("gh api user --jq .login", env=gh_env)
+    default_branch = _run(f"gh api repos/{repo} --jq .default_branch", env=gh_env)
 
     with tempfile.TemporaryDirectory() as tmpdir:
         repo_name = repo.split("/")[1]
@@ -335,11 +333,7 @@ def process_one(target: dict, token: str) -> bool:
 
         # Push
         print("Pushing...")
-        _run(
-            f"git push --force origin {branch}",
-            cwd=tmpdir,
-            env={"GITHUB_TOKEN": token, "GH_TOKEN": token},
-        )
+        _run(f"git push --force origin {branch}", cwd=tmpdir, env=gh_env)
 
         # Build proof report
         proof = _proof_report(tmpdir, changed)
@@ -382,13 +376,12 @@ The checker was also used to verify the autogen streaming-None fix in [microsoft
             body_f.write(pr_body)
             body_path = body_f.name
 
-        gh_env = {"GITHUB_TOKEN": token, "GH_TOKEN": token}
         pr_url = _run(
             f"gh pr create --repo {repo} "
             f'--title "fix: guard LLM response against empty choices (fixes #{issue})" '
             f"--body-file {body_path} "
             f'--head "{fork_owner}:{branch}" '
-            f"--base main",
+            f"--base {default_branch}",
             cwd=tmpdir,
             env=gh_env,
             check=False,
