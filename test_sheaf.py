@@ -11,7 +11,16 @@ Key cases:
 """
 
 import textwrap
-from pact_sheaf import check_file, h1_rank_for_file, _harvest_sites, SiteKind
+from pact_sheaf import (
+    check_file,
+    h1_rank_for_file,
+    _harvest_sites,
+    _z3_check_guarded,
+    SiteKind,
+    _HAS_Z3,
+)
+
+import pytest
 
 
 def _check(src: str, *, interprocedural: bool = True) -> list:
@@ -242,3 +251,96 @@ def test_site_graph_has_correct_kinds():
     assert SiteKind.BRANCH_GUARD in kinds
     assert SiteKind.ERROR_SITE in kinds
     assert len(sg.morphisms) >= 2  # CallResult→BranchGuard, BranchGuard→ErrorSite
+
+
+# ---------------------------------------------------------------------------
+# Z3 local theory solver
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.skipif(not _HAS_Z3, reason="z3 not installed")
+def test_z3_unguarded_is_sat():
+    """Unguarded ErrorSite: assume ¬P(es) must be SAT (not UNSAT) → not proven guarded."""
+    import tempfile
+    import os
+
+    src = textwrap.dedent("""
+        def fn(client):
+            r = client.chat.completions.create(messages=[])
+            return r.choices[0].message.content
+    """)
+    with tempfile.NamedTemporaryFile(suffix=".py", mode="w", delete=False) as f:
+        f.write(src)
+        name = f.name
+    try:
+        sg = _harvest_sites(name)
+        result = _z3_check_guarded(sg)
+    finally:
+        os.unlink(name)
+
+    error_sites = sg.error_sites()
+    assert len(error_sites) == 1
+    assert result[error_sites[0].id] is False  # SAT → not guarded → violation
+
+
+@pytest.mark.skipif(not _HAS_Z3, reason="z3 not installed")
+def test_z3_guarded_is_unsat():
+    """Guarded ErrorSite: assume ¬P(es) must be UNSAT → proven guarded."""
+    import tempfile
+    import os
+
+    src = textwrap.dedent("""
+        def fn(client):
+            r = client.chat.completions.create(messages=[])
+            if not r.choices:
+                raise ValueError
+            return r.choices[0].message.content
+    """)
+    with tempfile.NamedTemporaryFile(suffix=".py", mode="w", delete=False) as f:
+        f.write(src)
+        name = f.name
+    try:
+        sg = _harvest_sites(name)
+        result = _z3_check_guarded(sg)
+    finally:
+        os.unlink(name)
+
+    error_sites = sg.error_sites()
+    assert len(error_sites) == 1
+    assert result[error_sites[0].id] is True  # UNSAT → proven guarded → clean
+
+
+@pytest.mark.skipif(not _HAS_Z3, reason="z3 not installed")
+def test_z3_interprocedural_synthetic_guard_propagates():
+    """
+    After interprocedural transport, the synthetic BranchGuard forces
+    P(ErrorSite) = True via Z3 implication chain.
+    """
+    import tempfile
+    import os
+    from pact_sheaf import _apply_interprocedural_transport
+
+    src = textwrap.dedent("""
+        def safe_get(r):
+            if not r.choices:
+                raise ValueError
+            return r.choices[0].message.content
+
+        def handler(client):
+            response = client.chat.completions.create(messages=[])
+            return safe_get(response)
+    """)
+    with tempfile.NamedTemporaryFile(suffix=".py", mode="w", delete=False) as f:
+        f.write(src)
+        name = f.name
+    try:
+        sg = _harvest_sites(name)
+        _apply_interprocedural_transport(sg, name)
+        result = _z3_check_guarded(sg)
+    finally:
+        os.unlink(name)
+
+    # handler's ErrorSite (if any) should be guarded via the synthetic node
+    for es in sg.error_sites():
+        if es.func == "handler":
+            assert result[es.id] is True, f"Z3 failed to propagate guard to {es.id}"

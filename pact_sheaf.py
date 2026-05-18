@@ -54,6 +54,13 @@ try:
 except ImportError:
     _HAS_NUMPY = False
 
+try:
+    import z3 as _z3
+
+    _HAS_Z3 = True
+except ImportError:
+    _HAS_Z3 = False
+
 # ---------------------------------------------------------------------------
 # Site types
 # ---------------------------------------------------------------------------
@@ -751,7 +758,7 @@ def _h1_rank_f2(mat: "np.ndarray") -> int:
     return m - pivot_row  # dim C¹ − rk ∂₀
 
 
-def _h1_rank_semantic(sg: SiteGraph) -> int:
+def _h1_rank_semantic(sg: SiteGraph, guarded_map: dict[str, bool] | None = None) -> int:
     """
     Semantic Ȟ¹ rank: minimum number of independent fixes needed.
 
@@ -761,13 +768,15 @@ def _h1_rank_semantic(sg: SiteGraph) -> int:
     have at least one unguarded ErrorSite downstream.
 
     Concretely: rank 0 = clean; rank k = k independent guards needed.
+
+    guarded_map: pre-computed from _z3_check_guarded (avoids recomputation).
+                 If None, falls back to BFS reachability.
     """
+    if guarded_map is None:
+        guarded_map = _z3_check_guarded(sg)
     unguarded_sources: set[str] = set()
     for es in sg.error_sites():
-        guards = sg.guards_for(es.var_name)
-        guarded = any(es.id in sg.reachable_from(g.id) for g in guards)
-        if not guarded:
-            # Find the upstream source (CallResult or ArgBoundary)
+        if not guarded_map.get(es.id, False):
             source = next(
                 (
                     s
@@ -781,6 +790,67 @@ def _h1_rank_semantic(sg: SiteGraph) -> int:
             key = source.id if source else f"unknown:{es.func}:{es.var_name}"
             unguarded_sources.add(key)
     return len(unguarded_sources)
+
+
+# ---------------------------------------------------------------------------
+# Z3 local theory solver
+# ---------------------------------------------------------------------------
+
+
+def _z3_check_guarded(sg: SiteGraph) -> dict[str, bool]:
+    """
+    Use Z3 boolean constraint propagation to determine which ErrorSites are
+    proven guarded.  Returns {error_site_id: is_guarded}.
+
+    Viability predicate P(s): "LLM response is guaranteed non-empty at site s"
+      - CallResult:  P = False  (uncertain — API can return [] at HTTP 200)
+      - BranchGuard: P = True   (guard proves non-empty)
+      - ArgBoundary: unconstrained (free variable — caller transport may pin it)
+      - Morphism data_flow/call/return: Implies(P(source), P(target))
+
+    ErrorSite is proven guarded iff assuming P(es) = False is UNSAT given the
+    constraint system — Z3 proves the implication chain forces P(es) = True.
+    The UNSAT result is a proof certificate: the guard is reachable and the
+    predicate is forced True on every execution path.
+
+    Falls back to BFS reachability when z3 is not installed.
+    """
+    if not _HAS_Z3:
+        result = {}
+        for es in sg.error_sites():
+            guards = sg.guards_for(es.var_name)
+            result[es.id] = any(es.id in sg.reachable_from(g.id) for g in guards)
+        return result
+
+    site_ids = list(sg.sites)
+    z3_vars: dict[str, "_z3.BoolRef"] = {
+        sid: _z3.Bool(f"p{i}") for i, sid in enumerate(site_ids)
+    }
+
+    # Base constraints: pin CallResult (False) and BranchGuard (True)
+    base: list = []
+    for sid, site in sg.sites.items():
+        if site.kind == SiteKind.CALL_RESULT:
+            base.append(_z3.Not(z3_vars[sid]))  # P(CallResult) = False
+        elif site.kind == SiteKind.BRANCH_GUARD:
+            base.append(z3_vars[sid])  # P(BranchGuard) = True
+
+    # Propagation: viability predicate flows along every morphism
+    for m in sg.morphisms:
+        src_v = z3_vars.get(m.source_id)
+        tgt_v = z3_vars.get(m.target_id)
+        if src_v is not None and tgt_v is not None:
+            base.append(_z3.Implies(src_v, tgt_v))
+
+    result: dict[str, bool] = {}
+    for es in sg.error_sites():
+        solver = _z3.Solver()
+        solver.add(base)
+        solver.add(_z3.Not(z3_vars[es.id]))  # assume NOT guarded
+        # UNSAT → every model forces P(es) = True → proven guarded
+        result[es.id] = solver.check() == _z3.unsat
+
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -819,6 +889,7 @@ def check_file(
     path: str,
     *,
     interprocedural: bool = True,
+    call_graph: object = None,
 ) -> list[SheafViolation]:
     """
     Run the sheaf-cohomological check on a Python file.
@@ -831,8 +902,12 @@ def check_file(
     path:
         Python source file to analyse.
     interprocedural:
-        If True, follow call edges for guard transport (default).
+        If True, follow same-file call edges for guard transport (default).
         Set False to get intra-procedural-only results (for comparison).
+    call_graph:
+        graphify_graph.CallGraph instance (optional).  When provided,
+        _apply_cross_file_transport uses it to propagate guards across file
+        boundaries.  Load via CallGraph.load(project_root).
     """
     try:
         source = Path(path).read_text(encoding="utf-8", errors="replace")
@@ -845,19 +920,21 @@ def check_file(
     if interprocedural:
         _apply_interprocedural_transport(sg, path)
         _apply_caller_to_callee_transport(sg, path, source, tree)
+        if call_graph is not None:
+            _apply_cross_file_transport(sg, path, call_graph)
 
-    global_h1 = _h1_rank_semantic(sg)
+    # Z3 constraint propagation (falls back to BFS when z3 not installed)
+    guarded_map = _z3_check_guarded(sg)
+    global_h1 = _h1_rank_semantic(sg, guarded_map=guarded_map)
 
     violations: list[SheafViolation] = []
     for es in sg.error_sites():
-        # Is this ErrorSite reachable from a BranchGuard?
-        guards = sg.guards_for(es.var_name)
-        guarded = any(es.id in sg.reachable_from(g.id) for g in guards)
+        guarded = guarded_map.get(es.id, False)
 
+        # Detect whether the guard came via an interprocedural call edge
         interprocedural_guard = guarded and any(
-            g.func.startswith("<via ")
-            for g in guards
-            if es.id in sg.reachable_from(g.id)
+            g.func.startswith("<via ") or g.func.startswith("<caller:")
+            for g in sg.guards_for(es.var_name)
         )
 
         spec_id = (
@@ -880,19 +957,56 @@ def check_file(
                     spec_id=spec_id,
                 )
             )
-        # guarded=True sites are not violations — but we could report them
-        # as "confirmed safe" for --verbose mode
 
     return violations
 
 
-def h1_rank_for_file(path: str) -> int:
+def h1_rank_for_file(path: str, *, call_graph: object = None) -> int:
     """
     Return the semantic Ȟ¹ rank for a file's LLM response site graph.
 
     0 → all accesses are guarded (or no LLM accesses exist)
     k → k independent guards are needed (one per independent CallResult source)
     """
-    sg = _harvest_sites(path)
+    try:
+        source = Path(path).read_text(encoding="utf-8", errors="replace")
+        tree = _ast.parse(source, filename=path)
+    except (SyntaxError, OSError):
+        return 0
+    sg = _harvest_sites(path, source=source)
     _apply_interprocedural_transport(sg, path)
+    _apply_caller_to_callee_transport(sg, path, source, tree)
+    if call_graph is not None:
+        _apply_cross_file_transport(sg, path, call_graph)
     return _h1_rank_semantic(sg)
+
+
+def check_file_full(path: str, project_root: str | None = None) -> list[SheafViolation]:
+    """
+    Full-pipeline check: interprocedural + cross-file transport via graphify.
+
+    Automatically loads graphify-out/graph.json from project_root (or the
+    directory containing path if project_root is None).  Runs all transport
+    passes and uses Z3 for guard verification.
+    """
+    from pathlib import Path as _Path
+
+    if project_root is None:
+        root = _Path(path).parent
+    else:
+        root = _Path(project_root)
+
+    # Try walking up to find graphify-out/
+    call_graph = None
+    for candidate in [root, root.parent, root.parent.parent]:
+        gpath = candidate / "graphify-out" / "graph.json"
+        if gpath.exists():
+            try:
+                from graphify_graph import CallGraph
+
+                call_graph = CallGraph.load(candidate)
+            except ImportError:
+                pass
+            break
+
+    return check_file(path, interprocedural=True, call_graph=call_graph)
