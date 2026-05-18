@@ -235,6 +235,135 @@ def _fix_cmd(argv) -> int:
     return 0
 
 
+# Corpus-derived leverage data: packages imported by corpus repos that themselves have violations.
+# Sorted by leverage score (violations × log1p(stars) × (1 + downstream_repos)).
+KNOWN_UPSTREAM_VIOLATIONS: dict[str, dict] = {
+    "openai": {
+        "repo": "openai/openai-python",
+        "violations": 114,
+        "stars": 30767,
+        "downstream_repos": 75,
+        "leverage": 89535,
+    },
+    "langchain": {
+        "repo": "langchain-ai/langchain",
+        "violations": 17,
+        "stars": 136637,
+        "downstream_repos": 48,
+        "leverage": 9850,
+    },
+    "langchain_core": {
+        "repo": "langchain-ai/langchain",
+        "violations": 17,
+        "stars": 136637,
+        "downstream_repos": 48,
+        "leverage": 9850,
+    },
+    "langchain_community": {
+        "repo": "langchain-ai/langchain",
+        "violations": 17,
+        "stars": 136637,
+        "downstream_repos": 48,
+        "leverage": 9850,
+    },
+    "langchain_openai": {
+        "repo": "langchain-ai/langchain",
+        "violations": 17,
+        "stars": 136637,
+        "downstream_repos": 48,
+        "leverage": 9850,
+    },
+    "langchain_anthropic": {
+        "repo": "langchain-ai/langchain",
+        "violations": 17,
+        "stars": 136637,
+        "downstream_repos": 48,
+        "leverage": 9850,
+    },
+    "langchain_google_genai": {
+        "repo": "langchain-ai/langchain",
+        "violations": 17,
+        "stars": 136637,
+        "downstream_repos": 48,
+        "leverage": 9850,
+    },
+    "langgraph": {
+        "repo": "langchain-ai/langgraph",
+        "violations": 60,
+        "stars": 32219,
+        "downstream_repos": 9,
+        "leverage": 6228,
+    },
+    "litellm": {
+        "repo": "BerriAI/litellm",
+        "violations": 19,
+        "stars": 46818,
+        "downstream_repos": 6,
+        "leverage": 1430,
+    },
+    "llama_index": {
+        "repo": "run-llama/llama_index",
+        "violations": 12,
+        "stars": 41180,
+        "downstream_repos": 11,
+        "leverage": 1416,
+    },
+    "crewai": {
+        "repo": "crewAIInc/crewAI",
+        "violations": 8,
+        "stars": 30231,
+        "downstream_repos": 4,
+        "leverage": 514,
+    },
+    "agentops": {
+        "repo": "AgentOps-AI/agentops",
+        "violations": 6,
+        "stars": 3205,
+        "downstream_repos": 3,
+        "leverage": 98,
+    },
+    "dspy": {
+        "repo": "stanfordnlp/dspy",
+        "violations": 5,
+        "stars": 24009,
+        "downstream_repos": 2,
+        "leverage": 93,
+    },
+    "anthropic": {
+        "repo": "anthropics/anthropic-sdk-python",
+        "violations": 3,
+        "stars": 3640,
+        "downstream_repos": 1,
+        "leverage": 24,
+    },
+}
+
+
+def _extract_top_level_imports(root: Path) -> dict[str, str]:
+    """Return {package_name: first_file_that_imports_it} for all .py files under root."""
+    import ast as _ast
+
+    found: dict[str, str] = {}
+    for py_file in sorted(root.rglob("*.py")):
+        try:
+            source = py_file.read_text(encoding="utf-8", errors="ignore")
+            tree = _ast.parse(source, filename=str(py_file))
+        except (SyntaxError, OSError):
+            continue
+        for node in _ast.walk(tree):
+            if isinstance(node, _ast.Import):
+                for alias in node.names:
+                    pkg = alias.name.split(".")[0]
+                    if pkg not in found:
+                        found[pkg] = str(py_file.relative_to(root))
+            elif isinstance(node, _ast.ImportFrom):
+                if node.module and node.level == 0:
+                    pkg = node.module.split(".")[0]
+                    if pkg not in found:
+                        found[pkg] = str(py_file.relative_to(root))
+    return found
+
+
 def main(argv=None) -> int:
     # Top-level: if first arg is "spec" or "fix", delegate to subcommand
     if argv is None:
@@ -364,6 +493,14 @@ def main(argv=None) -> int:
         "--pr-comment",
         action="store_true",
         help="Print a full GitHub PR comment body (call graph + reduction sequence + test coverage)",
+    )
+    p.add_argument(
+        "--upstream",
+        action="store_true",
+        help=(
+            "Show which of your imported packages have known violations in the pact corpus. "
+            "Ranked by leverage score (violations × log(stars) × downstream fan-out)."
+        ),
     )
     args = p.parse_args(argv)
 
@@ -529,6 +666,42 @@ def main(argv=None) -> int:
 
     if args.pr_comment:
         print(format_pr_comment(suggestions, violations, functions, call_sites))
+
+    if args.upstream and not args.json_mode:
+        imports = _extract_top_level_imports(root)
+        hits = []
+        seen_repos: set[str] = set()
+        for pkg, info in KNOWN_UPSTREAM_VIOLATIONS.items():
+            repo = info["repo"]
+            if pkg in imports and repo not in seen_repos:
+                seen_repos.add(repo)
+                hits.append((pkg, info, imports[pkg]))
+        hits.sort(key=lambda x: -x[1]["leverage"])
+        if not hits:
+            print(
+                "\n✓  pact --upstream: none of your imports match the corpus violation list"
+            )
+        else:
+            print(
+                f"\n⬡ pact --upstream: {len(hits)} imported package(s) with corpus violations\n"
+            )
+            for pkg, info, first_file in hits:
+                repo = info["repo"]
+                viol = info["violations"]
+                stars = info["stars"]
+                dnstrm = info["downstream_repos"]
+                lev = info["leverage"]
+                print(
+                    f"  import {pkg:<28}  → {repo:<40}"
+                    f"  {viol:>4} violations  {stars:>7,}★  {dnstrm:>3} downstream  leverage {lev:>8,.0f}"
+                )
+                print(f"    first seen: {first_file}")
+            print()
+            print("  Fixing upstream = propagating the fix to all downstream users.")
+            print(
+                "  Run `pact <path/to/site-packages/PACKAGE>` to check your local copy."
+            )
+            print()
 
     return 1 if (violations and args.strict) else 0
 
