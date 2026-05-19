@@ -47,6 +47,7 @@ FIX_MODES = frozenset(
         "asyncio_run_in_async",
         "subprocess_exit_code_unchecked",
         "falsy_or_zero_elision",
+        "prompt_injection_risk",
     }
 )
 
@@ -889,6 +890,55 @@ def _fix_falsy_or_zero_elision(
     return result, applied, skipped
 
 
+# prompt_injection_risk fix
+# ---------------------------------------------------------------------------
+
+_PROMPT_INJECTION_VAR_RE = re.compile(r"\{([A-Za-z_][A-Za-z0-9_]*)\}")
+
+
+def _fix_prompt_injection_risk(
+    source: str,  # noqa: ARG001
+    lines: list[str],
+    violations: list[FailureEvidence],
+) -> tuple[list[str], list[FailureEvidence], list[FailureEvidence]]:
+    """Inline newline sanitization into f-string vars passed to LLM content.
+
+    Rewrites `{varname}` → `{varname.replace(chr(10), " ")}` for simple bare
+    variable names extracted from ev.call.  Skips if the variable already has
+    attribute access or if the call-site line can't be located.
+    """
+    result = list(lines)
+    applied: list[FailureEvidence] = []
+    skipped: list[FailureEvidence] = []
+
+    for ev in sorted(violations, key=lambda e: e.line, reverse=True):
+        line_idx = ev.line - 1
+        if line_idx < 0 or line_idx >= len(result):
+            skipped.append(ev)
+            continue
+
+        call = getattr(ev, "call", "") or ""
+        m = _PROMPT_INJECTION_VAR_RE.search(call)
+        if not m:
+            skipped.append(ev)
+            continue
+
+        varname = m.group(1)
+        # Match bare {varname} not followed by '.' or '[' (skip attribute/subscript)
+        bare_re = re.compile(r"\{" + re.escape(varname) + r"\}(?![.\[])")
+        raw = result[line_idx]
+        if not bare_re.search(raw):
+            skipped.append(ev)
+            continue
+
+        replacement = "{" + varname + '.replace(chr(10), " ")}'
+        result[line_idx] = bare_re.sub(replacement, raw)
+        applied.append(ev)
+
+    return result, applied, skipped
+
+
+# ---------------------------------------------------------------------------
 _SUBPROCESS_RUN_RE = re.compile(r"\bsubprocess\.(run|call|Popen)\s*\(")
 
 
@@ -1050,6 +1100,15 @@ def fix_file(
     if subproc_evs:
         lines, applied, skipped = _fix_subprocess_exit_code(
             original, lines, subproc_evs
+        )
+        all_applied.extend(applied)
+        all_skipped.extend(skipped)
+
+    # Apply prompt_injection_risk fixes ({var} → {var.replace(chr(10), " ")})
+    inject_evs = [v for v in fixable if _mode(v) == "prompt_injection_risk"]
+    if inject_evs:
+        lines, applied, skipped = _fix_prompt_injection_risk(
+            original, lines, inject_evs
         )
         all_applied.extend(applied)
         all_skipped.extend(skipped)

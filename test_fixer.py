@@ -1015,3 +1015,74 @@ def test_falsy_or_zero_in_assignment_context(tmp_path):
     assert result.changed
     assert "score if score is not None else 0" in result.patched
     ast.parse(result.patched)
+
+
+# ---------------------------------------------------------------------------
+# prompt_injection_risk fixer
+# ---------------------------------------------------------------------------
+
+
+def test_fix_modes_contains_prompt_injection_risk():
+    assert "prompt_injection_risk" in FIX_MODES
+
+
+def test_prompt_injection_bare_var_sanitized(tmp_path):
+    """{user_input} → {user_input.replace(chr(10), " ")} inside content f-string."""
+    src = 'content = f"Answer: {user_input}"\n'
+    f = tmp_path / "a.py"
+    f.write_text(src)
+    ev = _ev("prompt_injection_risk", 1, 'f"...{user_input}..."', str(f))
+    result = fix_file(str(f), [ev])
+    assert result.changed
+    assert 'user_input.replace(chr(10), " ")' in result.patched
+    ast.parse(result.patched)
+
+
+def test_prompt_injection_attribute_access_skipped(tmp_path):
+    """{obj.attr} is not a bare name — fixer must skip it."""
+    src = 'content = f"Answer: {obj.user_input}"\n'
+    f = tmp_path / "a.py"
+    f.write_text(src)
+    ev = _ev("prompt_injection_risk", 1, 'f"...{obj}..."', str(f))
+    result = fix_file(str(f), [ev])
+    assert not result.changed
+
+
+def test_prompt_injection_subscript_and_bare_mixed(tmp_path):
+    """{message} is a bare name in a line that also has subscript access."""
+    src = 'content = f"Hello {data["user"]}: {message}"\n'
+    f = tmp_path / "a.py"
+    f.write_text(src)
+    ev = _ev("prompt_injection_risk", 1, 'f"...{message}..."', str(f))
+    result = fix_file(str(f), [ev])
+    assert result.changed
+    assert 'message.replace(chr(10), " ")' in result.patched
+    ast.parse(result.patched)
+
+
+def test_prompt_injection_no_matching_var_skipped(tmp_path):
+    """If ev.call names a var not in the line, fixer skips cleanly."""
+    src = 'content = f"Answer: {query}"\n'
+    f = tmp_path / "a.py"
+    f.write_text(src)
+    ev = _ev("prompt_injection_risk", 1, 'f"...{user_input}..."', str(f))
+    result = fix_file(str(f), [ev])
+    assert not result.changed
+
+
+def test_prompt_injection_result_is_valid_python(tmp_path):
+    """The patched file must always parse as valid Python."""
+    src = textwrap.dedent("""\
+        def handle(request, user_query):
+            resp = client.chat.create(
+                messages=[{"role": "user", "content": f"Q: {user_query}"}]
+            )
+            return resp
+    """)
+    f = tmp_path / "a.py"
+    f.write_text(src)
+    ev = _ev("prompt_injection_risk", 3, 'f"...{user_query}..."', str(f))
+    result = fix_file(str(f), [ev])
+    assert result.changed
+    assert 'user_query.replace(chr(10), " ")' in result.patched
+    ast.parse(result.patched)
