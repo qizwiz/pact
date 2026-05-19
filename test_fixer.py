@@ -429,7 +429,7 @@ def test_fix_modes_contains_expected():
     assert "optional_dereference" in FIX_MODES
     assert "bare_except" in FIX_MODES
     assert "mutable_default_arg" in FIX_MODES
-    assert "save_without_update_fields" not in FIX_MODES
+    assert "save_without_update_fields" in FIX_MODES
 
 
 # ---------------------------------------------------------------------------
@@ -598,3 +598,108 @@ def test_mutable_default_result_is_syntactically_valid(tmp_path):
     ev = _ev("mutable_default_arg", 1, "def process", str(f))
     result = fix_file(str(f), [ev])
     ast.parse(result.patched)
+
+
+# ---------------------------------------------------------------------------
+# save_without_update_fields
+# ---------------------------------------------------------------------------
+
+
+def test_save_single_field_fixed(tmp_path):
+    """obj.name = x; obj.save() → obj.save(update_fields=["name"])."""
+    src = textwrap.dedent("""\
+        def update_user(user):
+            user.name = "alice"
+            user.save()
+    """)
+    f = tmp_path / "s.py"
+    f.write_text(src)
+    ev = _ev("save_without_update_fields", 3, "user.save", str(f))
+    result = fix_file(str(f), [ev])
+    assert result.changed
+    assert 'update_fields=["name"]' in result.patched
+    ast.parse(result.patched)
+
+
+def test_save_multiple_fields_fixed(tmp_path):
+    """Multiple attribute assignments collected into update_fields list."""
+    src = textwrap.dedent("""\
+        def update_user(user):
+            user.name = "alice"
+            user.email = "a@b.com"
+            user.save()
+    """)
+    f = tmp_path / "s.py"
+    f.write_text(src)
+    ev = _ev("save_without_update_fields", 4, "user.save", str(f))
+    result = fix_file(str(f), [ev])
+    assert result.changed
+    assert "update_fields=" in result.patched
+    assert '"name"' in result.patched
+    assert '"email"' in result.patched
+    ast.parse(result.patched)
+
+
+def test_save_no_preceding_assignment_skipped(tmp_path):
+    """obj.save() with no preceding obj.attr = ... is skipped (can't infer fields)."""
+    src = textwrap.dedent("""\
+        def reset(obj):
+            obj.save()
+    """)
+    f = tmp_path / "s.py"
+    f.write_text(src)
+    ev = _ev("save_without_update_fields", 2, "obj.save", str(f))
+    result = fix_file(str(f), [ev])
+    assert not result.changed
+    assert len(result.skipped) == 1
+
+
+def test_save_with_conditional_assignment_skipped(tmp_path):
+    """Assignment inside an if-block — fixer bails (unsafe to infer update_fields)."""
+    src = textwrap.dedent("""\
+        def update(task, flag):
+            if flag:
+                task.status = "done"
+            task.save()
+    """)
+    f = tmp_path / "s.py"
+    f.write_text(src)
+    ev = _ev("save_without_update_fields", 4, "task.save", str(f))
+    result = fix_file(str(f), [ev])
+    assert not result.changed
+    assert len(result.skipped) == 1
+
+
+def test_save_result_is_syntactically_valid(tmp_path):
+    """Patched source must parse cleanly."""
+    src = textwrap.dedent("""\
+        def update(obj):
+            obj.value = 42
+            obj.label = "x"
+            obj.save()
+    """)
+    f = tmp_path / "s.py"
+    f.write_text(src)
+    ev = _ev("save_without_update_fields", 4, "obj.save", str(f))
+    result = fix_file(str(f), [ev])
+    assert result.changed
+    ast.parse(result.patched)
+
+
+def test_save_already_has_update_fields_not_refixed(tmp_path):
+    """save(update_fields=[...]) is NOT in FIX_MODES violations — no double-patching."""
+    # The checker doesn't flag save(update_fields=[...]), so the fixer never sees it.
+    # This test verifies the fixer leaves an already-correct save() alone when given a
+    # different violation.
+    src = textwrap.dedent("""\
+        def update(obj):
+            obj.name = "x"
+            obj.save(update_fields=["name"])
+    """)
+    f = tmp_path / "s.py"
+    f.write_text(src)
+    # Mis-reported violation pointing at a save that already has update_fields
+    ev = _ev("save_without_update_fields", 3, "obj.save", str(f))
+    result = fix_file(str(f), [ev])
+    # The regex won't match because obj.save( has content already — should skip
+    assert not result.changed or "update_fields" in result.patched

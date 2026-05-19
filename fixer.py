@@ -4,12 +4,12 @@ pact fixer — automated patch generation for fixable violation modes.
 Produces unified diffs (or applies in-place) for violations where the
 correct fix is mechanically derivable from the AST. Modes supported:
 
-  llm_response_unguarded  Insert `if not var.attr: return` guard
-  missing_await           Prepend `await` to the unawaited call
-
-save_without_update_fields is intentionally excluded: the correct
-update_fields list requires tracking which fields were mutated before
-the .save() call — a deeper analysis than line-level patching supports.
+  llm_response_unguarded       Insert `if not var.attr: raise ValueError(...)` guard
+  missing_await                Prepend `await` to the unawaited call
+  optional_dereference         Insert None guard before nullable dereference
+  bare_except                  Replace bare `except:` with `except Exception:`
+  mutable_default_arg          Replace mutable default with `None` + if-None guard
+  save_without_update_fields   Add `update_fields=[...]` to bare `.save()` calls
 
 Usage
 -----
@@ -40,6 +40,7 @@ FIX_MODES = frozenset(
         "optional_dereference",
         "bare_except",
         "mutable_default_arg",
+        "save_without_update_fields",
     }
 )
 
@@ -496,6 +497,175 @@ def _fix_mutable_default_arg(
 
 
 # ---------------------------------------------------------------------------
+# save_without_update_fields fix
+# ---------------------------------------------------------------------------
+
+_AST_NAME_ID = re.compile(r"^Name\(id='([^']+)'")
+
+
+def _obj_name(node: ast.expr) -> str | None:
+    """Return the simple name of an AST expression, or None for complex exprs."""
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        return _obj_name(node.value)
+    return None
+
+
+def _collect_preceding_assignments(
+    func_body: list[ast.stmt],
+    save_lineno: int,
+    obj_name: str,
+) -> list[str] | None:
+    """
+    Walk func_body statements BEFORE save_lineno.
+    Return the list of attrs set on obj_name (e.g. ["name", "email"]),
+    or None if any assignment is conditional/complex (unsafe to infer update_fields).
+
+    Conservative rules:
+    - Only count simple `obj.attr = value` at top level (not inside if/for/with).
+    - Stop collecting once we pass the most recent binding of obj_name
+      (i.e., `obj = SomeModel(...)` or `obj = get_object_or_404(...)` resets the window).
+    - Return None (skip) if zero assignments found or if any are in a branch.
+    """
+    attrs: list[str] = []
+    for stmt in reversed(func_body):
+        if stmt.lineno >= save_lineno:
+            continue
+
+        # Top-level obj.attr = value
+        if (
+            isinstance(stmt, ast.Assign)
+            and len(stmt.targets) == 1
+            and isinstance(stmt.targets[0], ast.Attribute)
+            and isinstance(stmt.targets[0].ctx, ast.Store)
+            and _obj_name(stmt.targets[0].value) == obj_name
+        ):
+            attr = stmt.targets[0].attr
+            if attr not in attrs:
+                attrs.append(attr)
+            continue
+
+        # Top-level augmented assign (obj.attr += 1)
+        if (
+            isinstance(stmt, ast.AugAssign)
+            and isinstance(stmt.target, ast.Attribute)
+            and isinstance(stmt.target.ctx, ast.Store)
+            and _obj_name(stmt.target.value) == obj_name
+        ):
+            attr = stmt.target.attr
+            if attr not in attrs:
+                attrs.append(attr)
+            continue
+
+        # Rebinding of obj (e.g. obj = Model(...)) — stop collecting here
+        if isinstance(stmt, (ast.Assign, ast.AugAssign)):
+            tgts = stmt.targets if isinstance(stmt, ast.Assign) else [stmt.target]
+            for tgt in tgts:
+                if isinstance(tgt, ast.Name) and tgt.id == obj_name:
+                    # Everything above this rebinding is irrelevant — stop.
+                    return attrs or None  # type: ignore[return-value]
+
+        # Any branching control flow (if/for/while/with/try) — bail for safety
+        if isinstance(stmt, (ast.If, ast.For, ast.While, ast.With, ast.Try)):
+            return None
+
+    return attrs or None
+
+
+def _fix_save_without_update_fields(
+    source: str,
+    lines: list[str],
+    violations: list[FailureEvidence],
+) -> tuple[list[str], list[FailureEvidence], list[FailureEvidence]]:
+    """
+    obj.save() → obj.save(update_fields=["field1", "field2"])
+
+    Only fixes when we can statically determine the complete set of modified
+    fields from unconditional attribute assignments that precede the save() call.
+    Skips violations where assignments are inside branches or where no preceding
+    attribute assignment is found.
+    """
+    applied: list[FailureEvidence] = []
+    skipped: list[FailureEvidence] = []
+
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        skipped.extend(violations)
+        return list(lines), applied, skipped
+
+    # Build map: save_lineno → enclosing function body
+    save_line_to_func: dict[int, list[ast.stmt]] = {}
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        for stmt in ast.walk(node):
+            if not isinstance(stmt, ast.Expr):
+                continue
+            call = stmt.value
+            if not isinstance(call, ast.Call):
+                continue
+            func = call.func
+            if not (isinstance(func, ast.Attribute) and func.attr == "save"):
+                continue
+            has_uf = any(
+                (isinstance(kw.arg, str) and kw.arg == "update_fields")
+                for kw in call.keywords
+            )
+            if not has_uf:
+                save_line_to_func[stmt.lineno] = node.body
+
+    result = list(lines)
+    for ev in sorted(violations, key=lambda e: e.line, reverse=True):
+        if ev.line not in save_line_to_func:
+            skipped.append(ev)
+            continue
+
+        func_body = save_line_to_func[ev.line]
+
+        # ev.call is like "obj.save" or "self.task.save"
+        # The object name is everything before the last ".save"
+        call_str = ev.call  # e.g. "user.save" or "self.obj.save"
+        if not call_str.endswith(".save"):
+            skipped.append(ev)
+            continue
+        obj_expr = call_str[: -len(".save")]
+        # Only handle simple names (e.g. "user", "task") — not chained attrs
+        if "." in obj_expr:
+            # Use the last segment for attr tracking (e.g. "self.user" → "user")
+            obj_name = obj_expr.split(".")[-1]
+        else:
+            obj_name = obj_expr
+
+        attrs = _collect_preceding_assignments(func_body, ev.line, obj_name)
+        if not attrs:
+            skipped.append(ev)
+            continue
+
+        # Build `update_fields=[...]` argument string
+        fields_list = "[" + ", ".join(f'"{a}"' for a in reversed(attrs)) + "]"
+
+        # Patch the save() line
+        line_idx = ev.line - 1
+        raw = result[line_idx]
+        # Find `.save()` in the line and insert `update_fields=` before the `)`
+        # Handle both `obj.save()` and `obj.save(  )` with whitespace
+        save_call_re = re.compile(r"(\.save\()\s*(\))")
+        new_raw, n = save_call_re.subn(
+            rf"\1update_fields={fields_list}\2", raw, count=1
+        )
+        if n == 0:
+            skipped.append(ev)
+            continue
+
+        result[line_idx] = new_raw
+        applied.append(ev)
+
+    return result, applied, skipped
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -562,6 +732,15 @@ def fix_file(
     mut_evs = [v for v in fixable if _mode(v) == "mutable_default_arg"]
     if mut_evs:
         lines, applied, skipped = _fix_mutable_default_arg(original, lines, mut_evs)
+        all_applied.extend(applied)
+        all_skipped.extend(skipped)
+
+    # Apply save_without_update_fields fixes (obj.save() → obj.save(update_fields=[...]))
+    save_evs = [v for v in fixable if _mode(v) == "save_without_update_fields"]
+    if save_evs:
+        lines, applied, skipped = _fix_save_without_update_fields(
+            original, lines, save_evs
+        )
         all_applied.extend(applied)
         all_skipped.extend(skipped)
 
