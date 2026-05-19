@@ -340,13 +340,10 @@ def process_one(target: dict, token: str) -> bool:
             print("No files changed — skipping")
             return False
 
-        # Lint
-        for f in changed:
-            abs_f = os.path.join(tmpdir, f)
-            _run(f"ruff check --fix {abs_f}", check=False)
-            _run(f"black {abs_f}", check=False)
-
         # Commit (no Co-Authored-By: Claude for external repos)
+        # NOTE: Do NOT run black/ruff on external files here. Style-reformatting
+        # external repos creates 1000-line diffs that obscure the surgical fix
+        # and kill merge probability (e.g. ragflow#14988 size:XXL).
         _run("git config user.name 'Jonathan Hill'", cwd=tmpdir)
         _run("git config user.email 'jonathan.f.hill@gmail.com'", cwd=tmpdir)
         _run(f"git add {' '.join(changed)}", cwd=tmpdir)
