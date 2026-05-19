@@ -1,7 +1,8 @@
 {
   "filed": [
     "vllm-project/vllm",
-    "run-llama/llama_index"
+    "run-llama/llama_index",
+    "langchain-ai/langchain"
   ],
   "skipped": [
     "google/adk-python",
