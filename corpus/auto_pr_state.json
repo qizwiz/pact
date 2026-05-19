@@ -2,7 +2,8 @@
   "filed": [
     "vllm-project/vllm",
     "run-llama/llama_index",
-    "langchain-ai/langchain"
+    "langchain-ai/langchain",
+    "infiniflow/ragflow"
   ],
   "skipped": [
     "google/adk-python",
