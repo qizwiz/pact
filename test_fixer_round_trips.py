@@ -17,11 +17,13 @@ from .failure_mode import (
     _scan_file_eager_any_guard,
     _scan_file_falsy_or_zero_elision,
     _scan_file_json_loads_unguarded,
+    _scan_file_llm_response_unguarded,
     _scan_file_missing_await,
     _scan_file_mutable_defaults,
     _scan_file_optional_deref,
     _scan_file_subprocess_exit_code,
     _scan_file_timeout_not_set,
+    _scan_file_unvalidated_lookup_chain,
 )
 from .fixer import fix_file
 
@@ -193,3 +195,37 @@ def test_eager_any_guard_round_trip(tmp_path):
     )
     assert initial >= 1
     assert remaining == 0, f"eager_any_guard: {remaining} violations remain after fix"
+
+
+def test_unvalidated_lookup_chain_round_trip(tmp_path):
+    src = """\
+        def process(mapping, data):
+            idx = data.get("current_index")
+            return mapping[idx]
+    """
+    initial, remaining = _round_trip(
+        tmp_path, src, _scan_file_unvalidated_lookup_chain, "unvalidated_lookup_chain"
+    )
+    assert initial >= 1
+    assert (
+        remaining == 0
+    ), f"unvalidated_lookup_chain: {remaining} violations remain after fix"
+
+
+def test_llm_response_unguarded_round_trip(tmp_path):
+    # Use .finish_reason (not in _LLM_ELEM_ATTRS) to avoid the separate
+    # message-is-None violation which the fixer does not yet address.
+    src = """\
+        def chat(client):
+            response = client.chat.completions.create(
+                model="gpt-4", messages=[{"role": "user", "content": "hi"}]
+            )
+            return response.choices[0].finish_reason
+    """
+    initial, remaining = _round_trip(
+        tmp_path, src, _scan_file_llm_response_unguarded, "llm_response_unguarded"
+    )
+    assert initial >= 1
+    assert (
+        remaining == 0
+    ), f"llm_response_unguarded: {remaining} violations remain after fix"
