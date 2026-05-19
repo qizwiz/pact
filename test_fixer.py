@@ -1,5 +1,6 @@
 """Tests for pact.fixer — automated patch generation."""
 
+import ast
 import textwrap
 
 from .fixer import FIX_MODES, fix_file, diff_text
@@ -427,6 +428,7 @@ def test_fix_modes_contains_expected():
     assert "missing_await" in FIX_MODES
     assert "optional_dereference" in FIX_MODES
     assert "bare_except" in FIX_MODES
+    assert "mutable_default_arg" in FIX_MODES
     assert "save_without_update_fields" not in FIX_MODES
 
 
@@ -509,3 +511,90 @@ def test_bare_except_syntactically_valid(tmp_path):
     import ast as _ast
 
     _ast.parse(result.patched)  # must not raise SyntaxError
+
+
+# ---------------------------------------------------------------------------
+# mutable_default_arg
+# ---------------------------------------------------------------------------
+
+
+def test_mutable_default_list_fixed(tmp_path):
+    """def fn(x=[]) → def fn(x=None) with if x is None: x = [] guard."""
+    src = textwrap.dedent("""\
+        def fn(x=[]):
+            return x
+    """)
+    f = tmp_path / "m.py"
+    f.write_text(src)
+    ev = _ev("mutable_default_arg", 1, "def fn", str(f))
+    result = fix_file(str(f), [ev])
+    assert result.changed
+    assert "x=None" in result.patched or "x = None" in result.patched
+    assert "if x is None:" in result.patched
+    assert "x = []" in result.patched
+    ast.parse(result.patched)
+
+
+def test_mutable_default_dict_fixed(tmp_path):
+    """def fn(x={}) → def fn(x=None) with if-None guard using {}."""
+    src = textwrap.dedent("""\
+        def fn(x={}):
+            return x
+    """)
+    f = tmp_path / "m.py"
+    f.write_text(src)
+    ev = _ev("mutable_default_arg", 1, "def fn", str(f))
+    result = fix_file(str(f), [ev])
+    assert result.changed
+    assert "if x is None:" in result.patched
+    assert "x = {}" in result.patched
+    ast.parse(result.patched)
+
+
+def test_mutable_default_indentation_preserved(tmp_path):
+    """Indentation of the function body guard matches the existing body indent."""
+    src = textwrap.dedent("""\
+        class C:
+            def fn(self, x=[]):
+                return x
+    """)
+    f = tmp_path / "m.py"
+    f.write_text(src)
+    ev = _ev("mutable_default_arg", 2, "def fn", str(f))
+    result = fix_file(str(f), [ev])
+    assert result.changed
+    assert "        if x is None:" in result.patched
+    ast.parse(result.patched)
+
+
+def test_mutable_default_skips_docstring(tmp_path):
+    """if-None guard is inserted AFTER an existing docstring, not before it."""
+    src = textwrap.dedent("""\
+        def fn(x=[]):
+            \"\"\"Do something.\"\"\"
+            return x
+    """)
+    f = tmp_path / "m.py"
+    f.write_text(src)
+    ev = _ev("mutable_default_arg", 1, "def fn", str(f))
+    result = fix_file(str(f), [ev])
+    assert result.changed
+    lines = result.patched.splitlines()
+    doc_idx = next(i for i, ln in enumerate(lines) if '"""' in ln)
+    guard_idx = next(i for i, ln in enumerate(lines) if "if x is None:" in ln)
+    assert guard_idx > doc_idx, "guard should come after docstring"
+    ast.parse(result.patched)
+
+
+def test_mutable_default_result_is_syntactically_valid(tmp_path):
+    """After patching, the file must parse cleanly as Python."""
+    src = textwrap.dedent("""\
+        def process(items=[]):
+            items.append(1)
+            return items
+    """)
+    f = tmp_path / "m.py"
+    f.write_text(src)
+    ev = _ev("mutable_default_arg", 1, "def process", str(f))
+    result = fix_file(str(f), [ev])
+    ast.parse(result.patched)

@@ -34,7 +34,13 @@ from .failure_mode import FailureEvidence
 
 # Modes that this fixer can handle
 FIX_MODES = frozenset(
-    {"llm_response_unguarded", "missing_await", "optional_dereference", "bare_except"}
+    {
+        "llm_response_unguarded",
+        "missing_await",
+        "optional_dereference",
+        "bare_except",
+        "mutable_default_arg",
+    }
 )
 
 
@@ -386,6 +392,110 @@ def _fix_bare_except(
 
 
 # ---------------------------------------------------------------------------
+# mutable_default_arg fix
+# ---------------------------------------------------------------------------
+# Violation: def fn(x=[], y={}):  — mutable default shared across calls.
+# ev.call format: "def function_name"
+# ev.line: line of the mutable default expression
+#
+# Fix:
+#   1. Replace the mutable default with `None` (using exact column offsets).
+#   2. Insert `if param is None:\n    param = <original>` at the top of the
+#      function body (after any docstring).
+#
+# Processes violations in reverse line order so insertions below don't shift
+# the line numbers of defaults above.
+# ---------------------------------------------------------------------------
+
+
+def _fix_mutable_default_arg(
+    source: str,
+    lines: list[str],
+    violations: list[FailureEvidence],
+) -> tuple[list[str], list[FailureEvidence], list[FailureEvidence]]:
+    """Return (patched_lines, applied, skipped)."""
+    applied: list[FailureEvidence] = []
+    skipped: list[FailureEvidence] = []
+
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        skipped.extend(violations)
+        return list(lines), applied, skipped
+
+    # Build lookup: (call_str, default_line) → (func_node, param_name, default_node)
+    func_map: dict[tuple[str, int], tuple[ast.AST, str, ast.expr]] = {}
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        call_str = f"def {node.name}"
+        all_args = node.args.args + node.args.posonlyargs
+        n_defaults = len(node.args.defaults)
+        n_args = len(all_args)
+        for i, default in enumerate(node.args.defaults):
+            param = all_args[n_args - n_defaults + i].arg
+            func_map[(call_str, default.lineno)] = (node, param, default)
+        for kwarg, kw_default in zip(node.args.kwonlyargs, node.args.kw_defaults or []):
+            if kw_default is not None:
+                func_map[(call_str, kw_default.lineno)] = (node, kwarg.arg, kw_default)
+
+    result = list(lines)
+    for ev in sorted(violations, key=lambda e: e.line, reverse=True):
+        key = (ev.call, ev.line)
+        if key not in func_map:
+            skipped.append(ev)
+            continue
+        func_node, param_name, default_node = func_map[key]
+
+        # Get the original mutable default text via source segment
+        try:
+            default_text = ast.get_source_segment(source, default_node)
+        except Exception:
+            default_text = None
+        if not default_text:
+            skipped.append(ev)
+            continue
+
+        # Step 1: Replace the default value with None using exact column offsets.
+        # ev.line is 1-indexed; default may be on the same line as `def`.
+        def_line_idx = ev.line - 1
+        raw = result[def_line_idx]
+        col_s = default_node.col_offset
+        col_e = default_node.end_col_offset
+        if len(raw.rstrip("\n")) < col_e:
+            skipped.append(ev)
+            continue
+        result[def_line_idx] = raw[:col_s] + "None" + raw[col_e:]
+
+        # Step 2: Find insertion point at start of function body (skip docstring).
+        first_stmt = func_node.body[0]
+        if (
+            isinstance(first_stmt, ast.Expr)
+            and isinstance(first_stmt.value, ast.Constant)
+            and isinstance(first_stmt.value.value, str)
+        ):
+            insert_idx = (
+                first_stmt.end_lineno
+            )  # after docstring (1-indexed end → 0-indexed next)
+        else:
+            insert_idx = first_stmt.lineno - 1  # before first real statement
+
+        # Determine body indentation from the first statement line.
+        first_line = result[first_stmt.lineno - 1]
+        body_indent = " " * (len(first_line) - len(first_line.lstrip()))
+
+        # Insert the if-None guard (two lines) at insert_idx.
+        none_check = [
+            f"{body_indent}if {param_name} is None:\n",
+            f"{body_indent}    {param_name} = {default_text}\n",
+        ]
+        result[insert_idx:insert_idx] = none_check
+        applied.append(ev)
+
+    return result, applied, skipped
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -445,6 +555,13 @@ def fix_file(
     bare_evs = [v for v in fixable if _mode(v) == "bare_except"]
     if bare_evs:
         lines, applied, skipped = _fix_bare_except(original, lines, bare_evs)
+        all_applied.extend(applied)
+        all_skipped.extend(skipped)
+
+    # Apply mutable_default_arg fixes (mutable defaults → None + if-None guard)
+    mut_evs = [v for v in fixable if _mode(v) == "mutable_default_arg"]
+    if mut_evs:
+        lines, applied, skipped = _fix_mutable_default_arg(original, lines, mut_evs)
         all_applied.extend(applied)
         all_skipped.extend(skipped)
 
