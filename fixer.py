@@ -53,6 +53,7 @@ FIX_MODES = frozenset(
         "prompt_injection_risk",
         "json_loads_unguarded",
         "required_arg_missing",
+        "timeout_not_set",
     }
 )
 
@@ -1141,6 +1142,82 @@ def _fix_required_arg_missing(
 
 
 # ---------------------------------------------------------------------------
+# timeout_not_set fix — add timeout=30 to requests/httpx calls
+# ---------------------------------------------------------------------------
+
+_HTTP_CALL_RE = re.compile(
+    r"\b(requests|httpx)\.(get|post|put|delete|patch|head|request)\s*\("
+)
+_DEFAULT_TIMEOUT = 30
+
+
+def _fix_timeout_not_set(
+    source: str,
+    lines: list[str],
+    violations: list[FailureEvidence],
+) -> tuple[list[str], list[FailureEvidence], list[FailureEvidence]]:
+    """Add timeout=30 to requests/httpx calls missing a timeout kwarg.
+
+    Before:  response = requests.get(url, headers=hdrs)
+    After:   response = requests.get(url, headers=hdrs, timeout=30)  # pact: adjust timeout
+
+    Skips multi-line calls and chained calls for safety.
+    """
+    result = list(lines)
+    applied: list[FailureEvidence] = []
+    skipped: list[FailureEvidence] = []
+
+    by_line: dict[int, list[FailureEvidence]] = {}
+    for ev in violations:
+        by_line.setdefault(ev.line, []).append(ev)
+
+    for line_num in sorted(by_line.keys(), reverse=True):
+        evs = by_line[line_num]
+        line_idx = line_num - 1
+        if line_idx < 0 or line_idx >= len(result):
+            skipped.extend(evs)
+            continue
+
+        raw = result[line_idx]
+
+        # Already has timeout (shouldn't happen since checker filters these, but be safe)
+        if "timeout" in raw:
+            skipped.extend(evs)
+            continue
+
+        m = _HTTP_CALL_RE.search(raw)
+        if not m:
+            skipped.extend(evs)
+            continue
+
+        open_pos = m.end()  # just after '('
+        close_pos = _find_matching_close(raw, open_pos)
+        if close_pos is None:
+            skipped.extend(evs)
+            continue
+
+        # Skip if non-comment content follows closing )
+        after = raw[close_pos:].rstrip()
+        if after and not after.startswith("#"):
+            skipped.extend(evs)
+            continue
+
+        close_idx = close_pos - 1
+        inside = raw[open_pos:close_idx].strip().rstrip(",").strip()
+        sep = ", " if inside else ""
+
+        result[line_idx] = (
+            raw[:close_idx]
+            + sep
+            + f"timeout={_DEFAULT_TIMEOUT}"
+            + ")  # pact: adjust timeout\n"
+        )
+        applied.extend(evs)
+
+    return result, applied, skipped
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -1277,6 +1354,13 @@ def fix_file(
     req_evs = [v for v in fixable if _mode(v) == "required_arg_missing"]
     if req_evs:
         lines, applied, skipped = _fix_required_arg_missing(original, lines, req_evs)
+        all_applied.extend(applied)
+        all_skipped.extend(skipped)
+
+    # Apply timeout_not_set fixes (add timeout=30 to HTTP calls)
+    timeout_evs = [v for v in fixable if _mode(v) == "timeout_not_set"]
+    if timeout_evs:
+        lines, applied, skipped = _fix_timeout_not_set(original, lines, timeout_evs)
         all_applied.extend(applied)
         all_skipped.extend(skipped)
 

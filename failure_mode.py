@@ -3187,6 +3187,93 @@ JSON_LOADS_UNGUARDED = FailureMode(
 
 
 # ---------------------------------------------------------------------------
+# Failure mode: timeout_not_set
+#
+# Detects: requests.get/post/put/delete/patch/head/request() and the httpx
+# equivalents called without a `timeout` keyword argument.
+#
+# Without timeout the call blocks indefinitely when the server is slow, down,
+# or rate-limiting — a common reliability bug in AI/LLM code that calls
+# external APIs.  The fix is adding `timeout=<seconds>`.
+# ---------------------------------------------------------------------------
+
+
+@functools.lru_cache(maxsize=None)
+def _scan_file_timeout_not_set(path: str) -> list[FailureEvidence]:
+    try:
+        with open(path, encoding="utf-8", errors="ignore") as fh:
+            source = fh.read()
+    except OSError:
+        return []
+
+    # Fast pre-check — most files won't import requests or httpx
+    if "requests." not in source and "httpx." not in source:
+        return []
+
+    try:
+        tree = pyast.parse(source, filename=path)
+    except SyntaxError:
+        return []
+
+    _HTTP_LIBS = frozenset({"requests", "httpx"})
+    _HTTP_METHODS = frozenset(
+        {"get", "post", "put", "delete", "patch", "head", "request"}
+    )
+
+    results: list[FailureEvidence] = []
+    for node in pyast.walk(tree):
+        if not isinstance(node, pyast.Call):
+            continue
+        func = node.func
+        if not isinstance(func, pyast.Attribute):
+            continue
+        if func.attr not in _HTTP_METHODS:
+            continue
+        if not isinstance(func.value, pyast.Name):
+            continue
+        if func.value.id not in _HTTP_LIBS:
+            continue
+        # Skip if a timeout keyword is already present
+        if any(kw.arg == "timeout" for kw in node.keywords):
+            continue
+        lib = func.value.id
+        method = func.attr
+        results.append(
+            FailureEvidence(
+                mode_name="timeout_not_set",
+                file=path,
+                line=node.lineno,
+                call=f"{lib}.{method}",
+                message=(
+                    f"{lib}.{method}() called without timeout — "
+                    "blocks indefinitely on slow/unresponsive servers"
+                ),
+            )
+        )
+    return results
+
+
+def _check_timeout_not_set(
+    call: CallSite,
+    models: dict[str, ModelManifest],
+    functions: dict[str, FunctionManifest],
+) -> list[FailureEvidence]:
+    return _scan_file_timeout_not_set(call.file)
+
+
+TIMEOUT_NOT_SET = FailureMode(
+    name="timeout_not_set",
+    description=(
+        "requests.* or httpx.* HTTP call without a timeout keyword argument. "
+        "Hangs indefinitely when the server is slow or unreachable. "
+        "Fix: add timeout=<seconds> (e.g. timeout=30)."
+    ),
+    check=_check_timeout_not_set,
+    file_check=_scan_file_timeout_not_set,
+)
+
+
+# ---------------------------------------------------------------------------
 # Registry — all active failure modes
 # ---------------------------------------------------------------------------
 
@@ -3207,4 +3294,5 @@ DEFAULT_MODES: list[FailureMode] = [
     SUBPROCESS_EXIT_CODE_UNCHECKED,
     SHEAF_LLM_UNGUARDED,
     JSON_LOADS_UNGUARDED,
+    TIMEOUT_NOT_SET,
 ]

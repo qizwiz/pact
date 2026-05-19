@@ -1253,3 +1253,55 @@ def test_required_arg_missing_callee_not_found_skipped(tmp_path):
     ev = _ev_req(1, "some_func", ["arg"], str(f))
     result = fix_file(str(f), [ev])
     assert not result.changed
+
+
+# ---------------------------------------------------------------------------
+# timeout_not_set
+# ---------------------------------------------------------------------------
+
+
+def test_timeout_not_set_in_fix_modes():
+    assert "timeout_not_set" in FIX_MODES
+
+
+def test_timeout_not_set_adds_timeout_kwarg(tmp_path):
+    """requests.get(url) → requests.get(url, timeout=30)"""
+    f = tmp_path / "a.py"
+    f.write_text("import requests\nresponse = requests.get(url)\n")
+    ev = _ev("timeout_not_set", 2, "requests.get", str(f))
+    result = fix_file(str(f), [ev])
+    assert result.changed
+    assert "timeout=30" in result.patched
+    assert "# pact: adjust timeout" in result.patched
+    import ast as _ast
+
+    _ast.parse(result.patched)  # valid Python
+
+
+def test_timeout_not_set_with_existing_kwargs(tmp_path):
+    """requests.post(url, json=d) → requests.post(url, json=d, timeout=30)"""
+    f = tmp_path / "a.py"
+    f.write_text("import requests\nr = requests.post(url, json=payload)\n")
+    ev = _ev("timeout_not_set", 2, "requests.post", str(f))
+    result = fix_file(str(f), [ev])
+    assert result.changed
+    assert "requests.post(url, json=payload, timeout=30)" in result.patched
+
+
+def test_timeout_already_set_skipped(tmp_path):
+    """If timeout already in line, skip (shouldn't happen but be safe)."""
+    f = tmp_path / "a.py"
+    f.write_text("import requests\nr = requests.get(url, timeout=10)\n")
+    ev = _ev("timeout_not_set", 2, "requests.get", str(f))
+    result = fix_file(str(f), [ev])
+    assert not result.changed
+
+
+def test_timeout_httpx_fixed(tmp_path):
+    """httpx.get(url) → httpx.get(url, timeout=30)"""
+    f = tmp_path / "a.py"
+    f.write_text("import httpx\nresp = httpx.get(url)\n")
+    ev = _ev("timeout_not_set", 2, "httpx.get", str(f))
+    result = fix_file(str(f), [ev])
+    assert result.changed
+    assert "httpx.get(url, timeout=30)" in result.patched

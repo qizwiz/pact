@@ -4819,3 +4819,60 @@ def test_json_loads_in_exception_handler_not_flagged(tmp_path):
     assert any(
         r.context == "json_loads_unguarded" for r in results
     ), "json.loads() in bare except body should be flagged"
+
+
+# ---------------------------------------------------------------------------
+# timeout_not_set
+# ---------------------------------------------------------------------------
+
+
+def test_timeout_not_set_flagged(tmp_path):
+    """requests.get without timeout is flagged."""
+    from .failure_mode import TIMEOUT_NOT_SET
+
+    (tmp_path / "a.py").write_text("import requests\nresponse = requests.get(url)\n")
+    results = check_codebase(tmp_path, modes=[TIMEOUT_NOT_SET])
+    assert any(r.context == "timeout_not_set" for r in results)
+
+
+def test_timeout_set_not_flagged(tmp_path):
+    """requests.get with timeout kwarg is NOT flagged."""
+    from .failure_mode import TIMEOUT_NOT_SET
+
+    (tmp_path / "a.py").write_text(
+        "import requests\nresponse = requests.get(url, timeout=30)\n"
+    )
+    results = check_codebase(tmp_path, modes=[TIMEOUT_NOT_SET])
+    assert not any(r.context == "timeout_not_set" for r in results)
+
+
+def test_timeout_httpx_flagged(tmp_path):
+    """httpx.post without timeout is flagged."""
+    from .failure_mode import TIMEOUT_NOT_SET
+
+    (tmp_path / "a.py").write_text(
+        "import httpx\nresponse = httpx.post(url, json=data)\n"
+    )
+    results = check_codebase(tmp_path, modes=[TIMEOUT_NOT_SET])
+    assert any(r.context == "timeout_not_set" for r in results)
+
+
+def test_timeout_no_requests_fast_path(tmp_path):
+    """Files without requests. or httpx. are skipped quickly."""
+    from .failure_mode import TIMEOUT_NOT_SET
+
+    (tmp_path / "a.py").write_text("import json\ndata = json.loads(text)\n")
+    results = check_codebase(tmp_path, modes=[TIMEOUT_NOT_SET])
+    assert not any(r.context == "timeout_not_set" for r in results)
+
+
+def test_timeout_session_not_flagged(tmp_path):
+    """session.get() is not flagged — session may have a default timeout."""
+    from .failure_mode import TIMEOUT_NOT_SET
+
+    (tmp_path / "a.py").write_text(
+        "import requests\nsession = requests.Session()\nresponse = session.get(url)\n"
+    )
+    results = check_codebase(tmp_path, modes=[TIMEOUT_NOT_SET])
+    # session.get: func.value is Name("session"), not Name("requests") — not flagged
+    assert not any(r.context == "timeout_not_set" for r in results)
