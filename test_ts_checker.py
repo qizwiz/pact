@@ -153,6 +153,52 @@ def test_js_catch_with_body_not_flagged(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# missing_await — false-positive regressions
+# ---------------------------------------------------------------------------
+
+
+@needs_js
+def test_settimeout_not_flagged_as_missing_await(tmp_path):
+    """setTimeout is NOT async (returns timer ID) — must not be flagged."""
+    src = """\
+        async function poll(id) {
+          timerRef.current = setTimeout(() => poll(id), 1000);
+        }
+    """
+    viols = _write_and_check(tmp_path, "poll.js", src)
+    ma = [v for v in viols if v.context == "missing_await"]
+    assert not ma, f"setTimeout falsely flagged: {ma}"
+
+
+@needs_js
+def test_string_trim_not_flagged_as_missing_await(tmp_path):
+    """query.trim() on a string must not be flagged as missing_await."""
+    src = """\
+        async function search(query) {
+          const q = query.trim();
+          return q;
+        }
+    """
+    viols = _write_and_check(tmp_path, "search.js", src)
+    ma = [v for v in viols if v.context == "missing_await"]
+    assert not ma, f"query.trim() falsely flagged: {ma}"
+
+
+@needs_js
+def test_axios_get_flagged_as_missing_await(tmp_path):
+    """axios.get() inside an async function must still be flagged."""
+    src = """\
+        async function load(url) {
+          const result = axios.get(url);
+          return result;
+        }
+    """
+    viols = _write_and_check(tmp_path, "load.js", src)
+    ma = [v for v in viols if v.context == "missing_await"]
+    assert ma, "axios.get() should be flagged as missing_await"
+
+
+# ---------------------------------------------------------------------------
 # Skip-dir filtering
 # ---------------------------------------------------------------------------
 

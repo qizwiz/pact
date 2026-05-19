@@ -60,11 +60,12 @@ _SKIP_DIRS = frozenset(
 # Web / Node APIs that always return Promises
 _KNOWN_ASYNC_APIS: frozenset[str] = frozenset(
     {
+        # HTTP client libraries — very specific, rarely used as variable names
         "fetch",
         "axios",
         "got",
         "superagent",
-        "request",
+        # Node.js fs functions (destructured import form: `const { readFile } = fs`)
         "readFile",
         "writeFile",
         "readdir",
@@ -73,28 +74,14 @@ _KNOWN_ASYNC_APIS: frozenset[str] = frozenset(
         "unlink",
         "rename",
         "copyFile",
-        "setTimeout",
-        "setInterval",
-        "connect",
-        "disconnect",
-        "query",
-        "execute",
-        "transaction",
-        "save",
-        "find",
-        "findOne",
-        "findAll",
-        "create",
-        "update",
-        "delete",
-        "destroy",
-        "upsert",
-        "count",
-        "bulkCreate",
-        "bulkUpdate",
-        "bulkDelete",
     }
 )
+# NOTE: removed from _KNOWN_ASYNC_APIS:
+#   setTimeout/setInterval — return timer IDs, NOT Promises
+#   request — too ambiguous (Express req object, common param name)
+#   query/execute/transaction/save/find/create/update/delete/etc. — too generic;
+#     these match as ORM *methods* via _KNOWN_ASYNC_METHODS when called on objects,
+#     but as root names they produce false positives (e.g. query.trim())
 
 # Method names (on any object) that always return Promises
 _KNOWN_ASYNC_METHODS: frozenset[str] = frozenset(
