@@ -486,15 +486,51 @@ def test_bare_except_preserves_trailing_comment(tmp_path):
     assert "except Exception:  # legacy" in result.patched
 
 
-def test_bare_except_silent_swallow_skipped(tmp_path):
-    """except Exception: pass variant is left to the developer (needs logging/re-raise decision)."""
-    src = "try:\n    pass\nexcept Exception:\n    pass\n"
+def test_bare_except_silent_swallow_replaced_with_raise(tmp_path):
+    """except Exception: pass → except Exception: raise (re-raise instead of swallow)."""
+    src = "try:\n    risky()\nexcept Exception:\n    pass\n"
+    f = tmp_path / "ex.py"
+    f.write_text(src)
+    ev = _ev("bare_except", 3, "except Exception: pass", str(f))
+    result = fix_file(str(f), [ev])
+    assert result.changed
+    assert "raise" in result.patched
+    assert "    pass\n" not in result.patched
+
+
+def test_bare_except_silent_swallow_indentation_preserved(tmp_path):
+    """Indentation of the pass body is preserved after replacement."""
+    src = "def fn():\n    try:\n        risky()\n    except Exception:\n        pass\n"
+    f = tmp_path / "ex.py"
+    f.write_text(src)
+    ev = _ev("bare_except", 4, "except Exception: pass", str(f))
+    result = fix_file(str(f), [ev])
+    assert result.changed
+    assert "        raise" in result.patched
+
+
+def test_bare_except_inline_pass_skipped(tmp_path):
+    """Single-line inline form 'except Exception: pass' is skipped (not black-formatted)."""
+    src = "try:\n    risky()\nexcept Exception: pass\n"
     f = tmp_path / "ex.py"
     f.write_text(src)
     ev = _ev("bare_except", 3, "except Exception: pass", str(f))
     result = fix_file(str(f), [ev])
     assert not result.changed
     assert len(result.skipped) == 1
+
+
+def test_bare_except_silent_swallow_syntactically_valid(tmp_path):
+    """Patched result must parse without SyntaxError."""
+    src = "try:\n    risky()\nexcept Exception:\n    pass\n"
+    f = tmp_path / "ex.py"
+    f.write_text(src)
+    ev = _ev("bare_except", 3, "except Exception: pass", str(f))
+    result = fix_file(str(f), [ev])
+    assert result.changed
+    import ast as _ast
+
+    _ast.parse(result.patched)
 
 
 def test_bare_except_syntactically_valid(tmp_path):

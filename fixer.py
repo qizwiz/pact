@@ -367,15 +367,20 @@ def _fix_optional_dereference(
 # ---------------------------------------------------------------------------
 # bare_except fix
 # ---------------------------------------------------------------------------
-# Violation: bare `except:` catches KeyboardInterrupt and SystemExit.
-# ev.call format: "except:"  (only this variant is fixable; "except Exception: pass"
-#                 requires deciding on logging/re-raise — left to the developer)
+# Variant 1: bare `except:` catches KeyboardInterrupt and SystemExit.
+#   ev.call == "except:"
+#   Fix: replace `except:` with `except Exception:` on the same line.
 #
-# Fix: replace `except:` with `except Exception:` on the same line, preserving
-# indentation and any trailing comment.
+# Variant 2: `except Exception: pass` — silent swallow.
+#   ev.call == "except Exception: pass"
+#   Fix: find the `pass` statement in the body and replace with `raise`
+#        so the exception propagates instead of being silently discarded.
+#        Skips single-line inline form ("except Exception: pass") and cases
+#        where the body line is not literally `pass`.
 # ---------------------------------------------------------------------------
 
 _BARE_EXCEPT_PAT = re.compile(r"^(\s*)except(\s*)(:.*)$")
+_EXCEPT_EXCEPTION_PAT = re.compile(r"^(\s*)except\s+Exception(\s+as\s+\w+)?\s*:\s*$")
 
 
 def _fix_bare_except(
@@ -389,18 +394,45 @@ def _fix_bare_except(
 
     result = list(lines)
     for ev in sorted(violations, key=lambda e: e.line, reverse=True):
-        # Only handle bare `except:` — the silent-swallow variant needs human judgment
-        if ev.call != "except:":
+        if ev.call == "except:":
+            raw = result[ev.line - 1]
+            m = _BARE_EXCEPT_PAT.match(raw.rstrip("\n"))
+            if not m:
+                skipped.append(ev)
+                continue
+            indent, _space, rest = m.groups()
+            result[ev.line - 1] = f"{indent}except Exception{rest}\n"
+            applied.append(ev)
+
+        elif ev.call == "except Exception: pass":
+            # The except handler is at ev.line (1-indexed).
+            # Require the except line to be on its own line (not inline).
+            except_idx = ev.line - 1
+            raw_except = result[except_idx]
+            if not _EXCEPT_EXCEPTION_PAT.match(raw_except.rstrip("\n")):
+                skipped.append(ev)
+                continue
+            # Find the `pass` body — scan forward up to 5 lines
+            found = False
+            for i in range(except_idx + 1, min(except_idx + 6, len(result))):
+                raw_body = result[i]
+                stripped = raw_body.strip()
+                if not stripped or stripped.startswith("#"):
+                    continue
+                if stripped == "pass":
+                    body_indent = raw_body[: len(raw_body) - len(raw_body.lstrip())]
+                    result[i] = (
+                        f"{body_indent}raise"
+                        "  # pact: was pass; verify exception should be swallowed\n"
+                    )
+                    applied.append(ev)
+                    found = True
+                break
+            if not found:
+                skipped.append(ev)
+
+        else:
             skipped.append(ev)
-            continue
-        raw = result[ev.line - 1]
-        m = _BARE_EXCEPT_PAT.match(raw.rstrip("\n"))
-        if not m:
-            skipped.append(ev)
-            continue
-        indent, _space, rest = m.groups()
-        result[ev.line - 1] = f"{indent}except Exception{rest}\n"
-        applied.append(ev)
 
     return result, applied, skipped
 
