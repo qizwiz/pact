@@ -6,6 +6,7 @@ correct fix is mechanically derivable from the AST. Modes supported:
 
   llm_response_unguarded       Insert `if not var.attr: raise ValueError(...)` guard
   sheaf_llm_unguarded          Same guard — interprocedural case found by sheaf checker
+  json_loads_unguarded         Wrap `json.loads(expr)` in try/except json.JSONDecodeError
   missing_await                Prepend `await` to the unawaited call
   optional_dereference         Insert None guard before nullable dereference
   bare_except                  Replace bare `except:` with `except Exception:`
@@ -50,6 +51,7 @@ FIX_MODES = frozenset(
         "subprocess_exit_code_unchecked",
         "falsy_or_zero_elision",
         "prompt_injection_risk",
+        "json_loads_unguarded",
     }
 )
 
@@ -942,6 +944,67 @@ def _fix_prompt_injection_risk(
 
 
 # ---------------------------------------------------------------------------
+# json_loads_unguarded fix
+# ---------------------------------------------------------------------------
+# Violation: json.loads(expr) outside a try/except that catches JSONDecodeError.
+# ev.call format: "json.loads(expr)"
+#
+# Fix: wrap the enclosing statement in try/except json.JSONDecodeError.
+# Only applied to single-line statements where the violation line equals the
+# statement start (multi-line expressions are skipped to avoid corruption).
+# ---------------------------------------------------------------------------
+
+_JSON_LOADS_RE = re.compile(r"\bjson\.loads\s*\(")
+
+
+def _fix_json_loads_unguarded(
+    source: str,
+    lines: list[str],
+    violations: list[FailureEvidence],
+) -> tuple[list[str], list[FailureEvidence], list[FailureEvidence]]:
+    """Return (patched_lines, applied, skipped)."""
+    applied: list[FailureEvidence] = []
+    skipped: list[FailureEvidence] = []
+
+    stmt_index = _build_stmt_index(source)
+
+    # Group violations by statement start line (descending to avoid index shifts)
+    by_stmt: dict[int, list[FailureEvidence]] = {}
+    for ev in violations:
+        if not _JSON_LOADS_RE.search(ev.call):
+            skipped.append(ev)
+            continue
+        stmt_line = stmt_index.get(ev.line, ev.line)
+        by_stmt.setdefault(stmt_line, []).append(ev)
+
+    result = list(lines)
+    for stmt_line in sorted(by_stmt.keys(), reverse=True):
+        evs = by_stmt[stmt_line]
+        raw = result[stmt_line - 1]
+        indent = " " * (len(raw) - len(raw.lstrip()))
+        inner = indent + "    "
+
+        # Skip multi-line statements: if next line is more indented, it's a continuation
+        if stmt_line < len(result):
+            nxt = result[stmt_line]
+            if nxt.strip() and len(nxt) - len(nxt.lstrip()) > len(indent):
+                skipped.extend(evs)
+                continue
+
+        # Build try/except wrapper
+        wrapped = [
+            f"{indent}try:\n",
+            f"{inner}{raw.lstrip()}",
+            f"{indent}except json.JSONDecodeError as exc:\n",
+            f'{inner}raise ValueError(f"Invalid JSON: {{exc}}") from exc\n',
+        ]
+        result[stmt_line - 1 : stmt_line] = wrapped
+        applied.extend(evs)
+
+    return result, applied, skipped
+
+
+# ---------------------------------------------------------------------------
 _SUBPROCESS_RUN_RE = re.compile(r"\bsubprocess\.(run|call|Popen)\s*\(")
 
 
@@ -1117,6 +1180,13 @@ def fix_file(
         lines, applied, skipped = _fix_prompt_injection_risk(
             original, lines, inject_evs
         )
+        all_applied.extend(applied)
+        all_skipped.extend(skipped)
+
+    # Apply json_loads_unguarded fixes (wrap in try/except json.JSONDecodeError)
+    json_evs = [v for v in fixable if _mode(v) == "json_loads_unguarded"]
+    if json_evs:
+        lines, applied, skipped = _fix_json_loads_unguarded(original, lines, json_evs)
         all_applied.extend(applied)
         all_skipped.extend(skipped)
 

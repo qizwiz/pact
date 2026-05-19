@@ -1118,3 +1118,64 @@ def test_sheaf_llm_unguarded_invalid_call_skipped(tmp_path):
     ev = _ev("sheaf_llm_unguarded", 2, "not-a-valid-call", str(f))
     result = fix_file(str(f), [ev])
     assert not result.changed, "unparseable call text must be skipped"
+
+
+# json_loads_unguarded fixer
+def test_json_loads_unguarded_in_fix_modes():
+    assert "json_loads_unguarded" in FIX_MODES
+
+
+def test_json_loads_wrap_assignment(tmp_path):
+    """json.loads() in assignment statement is wrapped in try/except."""
+    f = tmp_path / "a.py"
+    f.write_text(
+        "import json\ndef parse(text):\n    data = json.loads(text)\n    return data\n"
+    )
+    ev = _ev("json_loads_unguarded", 3, "json.loads(text)", str(f))
+    result = fix_file(str(f), [ev])
+    assert result.changed
+    assert "try:" in result.patched
+    assert "except json.JSONDecodeError as exc:" in result.patched
+    assert "raise ValueError" in result.patched
+    import ast as _ast
+
+    _ast.parse(result.patched)
+
+
+def test_json_loads_wrap_return(tmp_path):
+    """json.loads() in return statement is wrapped in try/except."""
+    f = tmp_path / "a.py"
+    f.write_text("import json\ndef parse(text):\n    return json.loads(text)\n")
+    ev = _ev("json_loads_unguarded", 3, "json.loads(text)", str(f))
+    result = fix_file(str(f), [ev])
+    assert result.changed
+    assert "try:" in result.patched
+    assert "except json.JSONDecodeError" in result.patched
+    import ast as _ast
+
+    _ast.parse(result.patched)
+
+
+def test_json_loads_indentation_preserved(tmp_path):
+    """Wrapped try/except preserves surrounding indentation."""
+    f = tmp_path / "a.py"
+    f.write_text(
+        "import json\n"
+        "def parse(text):\n"
+        "    if text:\n"
+        "        data = json.loads(text)\n"
+    )
+    ev = _ev("json_loads_unguarded", 4, "json.loads(text)", str(f))
+    result = fix_file(str(f), [ev])
+    lines = result.patched.splitlines()
+    try_line = next(ln for ln in lines if "try:" in ln)
+    assert try_line.startswith("        "), "try: must be at 8-space indent level"
+
+
+def test_json_loads_not_json_loads_skipped(tmp_path):
+    """Violation with call text not matching json.loads is skipped."""
+    f = tmp_path / "a.py"
+    f.write_text("import json\nx = json.loads(text)\n")
+    ev = _ev("json_loads_unguarded", 2, "some_other_call(text)", str(f))
+    result = fix_file(str(f), [ev])
+    assert not result.changed
