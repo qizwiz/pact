@@ -6,6 +6,7 @@ correct fix is mechanically derivable from the source. Modes supported:
 
   empty_catch    Insert `console.error(e);` into empty catch blocks
                  (truly empty only; comment-only bodies are skipped)
+  missing_await  Prepend `await` to unawaited async calls inside async functions
 
 Usage
 -----
@@ -22,7 +23,7 @@ from pathlib import Path
 from typing import NamedTuple
 
 # Modes this fixer can handle
-TS_FIX_MODES = frozenset({"empty_catch"})
+TS_FIX_MODES = frozenset({"empty_catch", "missing_await"})
 
 # Matches: catch (varName)
 _CATCH_WITH_PARAM_RE = re.compile(r"\bcatch\s*\(\s*(\w+)\s*\)")
@@ -249,6 +250,66 @@ def _fix_empty_catch(
 
 
 # ---------------------------------------------------------------------------
+# missing_await fix
+# ---------------------------------------------------------------------------
+# Violation: async call inside an async function with no `await`.
+# ev.line: 1-indexed line of the call_expression.
+# ev.call: text of the call_expression node, truncated at 60 chars.
+#
+# Fix:
+#   const result = axios.get(url);   →  const result = await axios.get(url);
+#   fetch("/api");                   →  await fetch("/api");
+#
+# The call text is used to locate the exact position in the source line.
+# For truncated call text (>60 chars), a 20-char prefix is used.
+# Already-awaited calls are skipped (shouldn't appear but checked for safety).
+# ---------------------------------------------------------------------------
+
+
+def _fix_missing_await(
+    source: str,  # noqa: ARG001 — unused but kept for API consistency with _fix_empty_catch
+    lines: list[str],
+    violations: list,
+) -> tuple[list[str], list, list]:
+    """Prepend `await` to unawaited async call expressions."""
+    result = list(lines)
+    applied: list = []
+    skipped: list = []
+
+    for ev in sorted(violations, key=lambda e: e.line, reverse=True):
+        line_idx = ev.line - 1
+        if line_idx < 0 or line_idx >= len(result):
+            skipped.append(ev)
+            continue
+
+        raw = result[line_idx]
+        call_text: str = getattr(ev, "call", "")
+        if not call_text:
+            skipped.append(ev)
+            continue
+
+        # Find the call's start position in the line
+        pos = raw.find(call_text)
+        if pos < 0 and len(call_text) >= 20:
+            # Truncated call — match on the first 20 chars as a prefix
+            pos = raw.find(call_text[:20])
+        if pos < 0:
+            skipped.append(ev)
+            continue
+
+        # Guard: don't double-insert if `await` already precedes this position
+        before = raw[:pos]
+        if before.rstrip().endswith("await"):
+            skipped.append(ev)
+            continue
+
+        result[line_idx] = before + "await " + raw[pos:]
+        applied.append(ev)
+
+    return result, applied, skipped
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -284,6 +345,12 @@ def fix_ts_file(
     catch_evs = [v for v in fixable if _mode(v) == "empty_catch"]
     if catch_evs:
         lines, applied, skipped = _fix_empty_catch(original, lines, catch_evs)
+        all_applied.extend(applied)
+        all_skipped.extend(skipped)
+
+    await_evs = [v for v in fixable if _mode(v) == "missing_await"]
+    if await_evs:
+        lines, applied, skipped = _fix_missing_await(original, lines, await_evs)
         all_applied.extend(applied)
         all_skipped.extend(skipped)
 

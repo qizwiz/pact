@@ -1,12 +1,18 @@
 """
 Tests for ts_fixer.py — JavaScript/TypeScript automated patch generation.
 
-Focuses on the empty_catch fixer:
-  - Truly empty catch (e) {} → inserts console.error(e)
-  - Truly empty catch {} → inserts console.error(e) and adds binding
-  - Comment-only bodies are skipped (intentional suppression)
-  - Multi-line empty bodies are patched
-  - TS_FIX_MODES contains expected entries
+Covers:
+  empty_catch fixer:
+    - Truly empty catch (e) {} → inserts console.error(e)
+    - Truly empty catch {} → inserts console.error(e) and adds binding
+    - Comment-only bodies are skipped (intentional suppression)
+    - Multi-line empty bodies are patched
+  missing_await fixer:
+    - axios.get() without await → adds await
+    - fetch() without await → adds await
+    - standalone unawaited call → adds await
+    - Call not found in line → skipped
+  TS_FIX_MODES contains expected entries
 """
 
 from __future__ import annotations
@@ -45,6 +51,10 @@ def _fix(tmp_path: Path, filename: str, src: str, violations: list) -> TsFileRes
 
 def test_fix_modes_contains_empty_catch():
     assert "empty_catch" in TS_FIX_MODES
+
+
+def test_fix_modes_contains_missing_await():
+    assert "missing_await" in TS_FIX_MODES
 
 
 # ---------------------------------------------------------------------------
@@ -171,3 +181,81 @@ def test_unknown_mode_skipped(tmp_path):
     result = _fix(tmp_path, "h.js", src, [v])
     assert not result.changed
     assert len(result.skipped) == 1
+
+
+# ---------------------------------------------------------------------------
+# missing_await fixer
+# ---------------------------------------------------------------------------
+
+
+def _await_viol(line: int, call: str) -> object:
+    return SimpleNamespace(
+        line=line,
+        call=call,
+        missing=["async call without await — Promise never resolved"],
+        context="missing_await",
+    )
+
+
+def test_missing_await_axios_get(tmp_path):
+    """axios.get() inside async function gets await prepended."""
+    src = """\
+        async function load(url) {
+          const result = axios.get(url);
+          return result;
+        }
+    """
+    result = _fix(tmp_path, "load.js", src, [_await_viol(2, "axios.get(url)")])
+    assert result.changed
+    assert len(result.applied) == 1
+    assert "await axios.get(url)" in result.patched
+
+
+def test_missing_await_fetch(tmp_path):
+    """fetch() inside async function gets await prepended."""
+    src = """\
+        async function getData() {
+          const resp = fetch("/api/data");
+        }
+    """
+    result = _fix(tmp_path, "data.js", src, [_await_viol(2, 'fetch("/api/data")')])
+    assert result.changed
+    assert "await fetch" in result.patched
+
+
+def test_missing_await_standalone_call(tmp_path):
+    """Standalone unawaited call gets await prepended."""
+    src = """\
+        async function save(data) {
+          axios.post("/save", data);
+        }
+    """
+    result = _fix(
+        tmp_path, "save.js", src, [_await_viol(2, 'axios.post("/save", data')]
+    )
+    assert result.changed
+    assert "await axios.post" in result.patched
+
+
+def test_missing_await_call_not_found_skipped(tmp_path):
+    """If the call text can't be found in the line, skip rather than corrupt."""
+    src = "async function x() { unknownFn(); }\n"
+    result = _fix(tmp_path, "x.js", src, [_await_viol(1, "notInLine()")])
+    assert not result.changed
+    assert len(result.skipped) == 1
+
+
+def test_missing_await_multiple_on_different_lines(tmp_path):
+    """Two unawaited calls on different lines are both fixed."""
+    src = """\
+        async function multi() {
+          const a = axios.get("/a");
+          const b = fetch("/b");
+        }
+    """
+    viols = [_await_viol(2, 'axios.get("/a")'), _await_viol(3, 'fetch("/b")')]
+    result = _fix(tmp_path, "multi.js", src, viols)
+    assert result.changed
+    assert len(result.applied) == 2
+    assert "await axios.get" in result.patched
+    assert "await fetch" in result.patched
