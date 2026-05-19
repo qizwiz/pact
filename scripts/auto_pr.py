@@ -152,14 +152,20 @@ def _get_token() -> str:
 
 _FIXABLE_MODES = frozenset(
     {
+        # Python modes
         "llm_response_unguarded",
         "sheaf_llm_unguarded",
         "missing_await",
         "json_loads_unguarded",
         "optional_dereference",
         "unvalidated_lookup_chain",
+        # TypeScript/JavaScript modes
+        "empty_catch",
     }
 )
+
+_TS_MODES = frozenset({"empty_catch"})
+_TS_EXTENSIONS = frozenset({".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"})
 
 _BRANCH_NAMES = {
     "llm_response_unguarded": "fix/pact-llm-response-guards",
@@ -168,6 +174,7 @@ _BRANCH_NAMES = {
     "json_loads_unguarded": "fix/pact-json-loads-guards",
     "optional_dereference": "fix/pact-optional-dereference",
     "unvalidated_lookup_chain": "fix/pact-lookup-guards",
+    "empty_catch": "fix/pact-empty-catch",
 }
 
 
@@ -325,6 +332,56 @@ checker for Python LLM and AI code. The `json_loads_unguarded` mode flags
 """
         return title, commit, body
 
+    if mode == "empty_catch":
+        title = f"fix: log swallowed exceptions in empty catch blocks (fixes #{issue})"
+        commit = (
+            f"fix: add console.error logging to {n_viols} empty catch block(s)\n\n"
+            f"Empty catch blocks suppress errors silently, hiding bugs in production.\n"
+            f"Detected by pact (open-source TypeScript/JavaScript static analysis tool)."
+        )
+        body = f"""## What this fixes
+
+Resolves #{issue}: empty `catch` blocks suppress all errors silently — the
+exception is lost, nothing is logged, and the code path appears to succeed even
+when it failed.
+
+This PR adds `console.error(e)` to each of the {n_viols} empty catch block(s):
+
+```typescript
+// Before
+try {{
+  doSomething();
+}} catch (e) {{}}
+
+// After
+try {{
+  doSomething();
+}} catch (e) {{
+  console.error(e);
+}}
+```
+
+**Files changed:**
+{files_str}
+
+## Why it causes hard-to-debug failures
+
+Silent catch blocks are common in TypeScript when a developer adds a catch to
+satisfy TypeScript's `strict` error handling, but forgets to handle the error.
+In production this causes operations to silently fail — the error disappears,
+no stack trace is recorded, and no alert fires.
+
+## How this was found
+
+Detected by [pact](https://github.com/qizwiz/pact), an open-source static
+checker for TypeScript/JavaScript code.
+
+## Test plan
+- [ ] Existing test suite passes
+- [ ] Verify the catch block now surfaces errors to monitoring/logs
+"""
+        return title, commit, body
+
     if mode == "missing_await":
         title = (
             f"fix: await async call to prevent coroutine-never-run bug (fixes #{issue})"
@@ -418,12 +475,14 @@ projects including microsoft/autogen, crewai, and langchain.
 
 
 def _scan_repo(repo_dir: str, repo_slug: str) -> list[dict]:
-    """Run pact checker on cloned repo; return fixable violation dicts only."""
+    """Run pact checker (Python + TS/JS) on cloned repo; return fixable violations."""
     sys.path.insert(0, str(Path(__file__).parent.parent))
     try:
         from pact.checker import check_codebase
+        from pact.ts_checker import check_ts_files
 
-        raw = check_codebase(Path(repo_dir))
+        raw = list(check_codebase(Path(repo_dir)))
+        raw += list(check_ts_files(Path(repo_dir)))
         result = []
         mode_counts: dict[str, int] = {}
         for ev in raw:
@@ -441,8 +500,8 @@ def _scan_repo(repo_dir: str, repo_slug: str) -> list[dict]:
                     "file": rel_path,
                     "line": ev.line,
                     "mode": mode,
-                    "call": ev.call,
-                    "message": (ev.missing[0] if ev.missing else ""),
+                    "call": getattr(ev, "call", ""),
+                    "message": (ev.missing[0] if getattr(ev, "missing", None) else ""),
                 }
             )
         print(f"  mode breakdown: {mode_counts}")
@@ -483,13 +542,10 @@ def _apply_pact_fix(repo_dir: str, violations: list[dict]) -> list[str]:
         if not os.path.exists(abs_path):
             continue
 
-        # Use pact's fixer module
+        is_ts = Path(rel_path).suffix in _TS_EXTENSIONS
         try:
-            # Import pact package (it's installed or on path)
-            from pact.fixer import fix_file
             from pact.failure_mode import FailureEvidence
 
-            # Convert violation dicts to FailureEvidence
             evidences = []
             for v in file_viols:
                 try:
@@ -507,15 +563,24 @@ def _apply_pact_fix(repo_dir: str, violations: list[dict]) -> list[str]:
             if not evidences:
                 continue
 
-            result = fix_file(abs_path, evidences)
+            if is_ts:
+                from pact.ts_fixer import fix_ts_file
+
+                result = fix_ts_file(abs_path, evidences)
+            else:
+                from pact.fixer import fix_file
+
+                result = fix_file(abs_path, evidences)
+
             if result.changed:
                 Path(abs_path).write_text(result.patched, encoding="utf-8")
                 changed.append(rel_path)
                 print(f"  Fixed {rel_path} ({len(result.applied)} violations)")
         except Exception as e:
             print(f"  fixer failed for {rel_path}: {e}")
-            # Fallback: manual guard insertion for llm_response_unguarded
-            _manual_fix_choices(abs_path, file_viols, changed, rel_path)
+            if not is_ts:
+                # Fallback: manual guard insertion for llm_response_unguarded
+                _manual_fix_choices(abs_path, file_viols, changed, rel_path)
 
     return changed
 
