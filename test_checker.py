@@ -4682,14 +4682,18 @@ def test_subprocess_run_returncode_checked_not_flagged(tmp_path):
         "    raise RuntimeError('build failed')\n"
     )
     results = check_codebase(tmp_path, modes=[SUBPROCESS_EXIT_CODE_UNCHECKED])
-    assert not results, "subprocess.run() with subsequent .returncode check must not be flagged"
+    assert (
+        not results
+    ), "subprocess.run() with subsequent .returncode check must not be flagged"
 
 
 def test_subprocess_call_bare_flagged(tmp_path):
     """subprocess.call() without check is also flagged."""
     from .failure_mode import SUBPROCESS_EXIT_CODE_UNCHECKED
 
-    (tmp_path / "a.py").write_text("import subprocess\nsubprocess.call(['git', 'pull'])\n")
+    (tmp_path / "a.py").write_text(
+        "import subprocess\nsubprocess.call(['git', 'pull'])\n"
+    )
     results = check_codebase(tmp_path, modes=[SUBPROCESS_EXIT_CODE_UNCHECKED])
     assert any(
         r.context == "subprocess_exit_code_unchecked" for r in results
