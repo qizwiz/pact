@@ -1944,6 +1944,39 @@ _LLM_RESPONSE_ATTRS = frozenset({"choices", "content", "outputs", "candidates"})
 _LLM_ELEM_ATTRS = frozenset({"message", "delta"})
 
 
+def _find_llm_guard_functions(tree, _ast) -> dict[str, set[int]]:
+    """
+    Return {func_name: {param_indices}} for functions in this module that
+    raise when a parameter's LLM response list is empty.
+
+    A function qualifies if it contains an if-statement whose test mentions a
+    parameter name AND whose body contains a `raise` statement.  The param
+    index records which positional argument acts as the guard.
+    """
+    guards: dict[str, set[int]] = {}
+    for node in _ast.walk(tree):
+        if not isinstance(node, (_ast.FunctionDef, _ast.AsyncFunctionDef)):
+            continue
+        params = [
+            a.arg for a in node.args.posonlyargs + node.args.args + node.args.kwonlyargs
+        ]
+        if node.args.vararg:
+            params.append(node.args.vararg.arg)
+        guarded_indices: set[int] = set()
+        for stmt in _ast.walk(node):
+            if not isinstance(stmt, _ast.If):
+                continue
+            test_names = _ast_name_ids(stmt.test)
+            for param in params:
+                if param not in test_names:
+                    continue
+                if any(isinstance(s, _ast.Raise) for s in stmt.body):
+                    guarded_indices.add(params.index(param))
+        if guarded_indices:
+            guards[node.name] = guarded_indices
+    return guards
+
+
 @functools.lru_cache(maxsize=None)
 def _scan_file_llm_response_unguarded(path: str) -> list[FailureEvidence]:
     """File-level scan for unguarded [0] index on LLM response list attributes."""
@@ -1955,6 +1988,9 @@ def _scan_file_llm_response_unguarded(path: str) -> list[FailureEvidence]:
         tree = _ast.parse(source, filename=path)
     except (SyntaxError, OSError):
         return []
+
+    # Pre-scan: find functions in this file that raise on empty choices.
+    _guard_funcs = _find_llm_guard_functions(tree, _ast)
 
     class _Visitor(_ast.NodeVisitor):
         def __init__(self):
@@ -2053,6 +2089,23 @@ def _scan_file_llm_response_unguarded(path: str) -> list[FailureEvidence]:
                     and n.value.value.value.id in self._llm_vars
                 ):
                     self._inline_msg_guarded.add(n.value.value.value.id)
+            self.generic_visit(node)
+
+        def visit_Expr(self, node):
+            # Detect calls to guard functions: _require_choices(response) → guard response.
+            call = node.value
+            if isinstance(call, _ast.Call):
+                func_name = None
+                if isinstance(call.func, _ast.Name):
+                    func_name = call.func.id
+                if func_name and func_name in _guard_funcs:
+                    for idx in _guard_funcs[func_name]:
+                        if idx < len(call.args) and isinstance(
+                            call.args[idx], _ast.Name
+                        ):
+                            arg_name = call.args[idx].id
+                            if arg_name in self._llm_vars:
+                                self._guarded.add(arg_name)
             self.generic_visit(node)
 
         def visit_IfExp(self, node):

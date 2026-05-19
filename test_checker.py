@@ -1842,6 +1842,87 @@ def test_llm_choices_guarded_message_still_flagged(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# interprocedural guard detection
+# ---------------------------------------------------------------------------
+
+
+def test_llm_guard_function_suppresses_violation(tmp_path):
+    """A helper that raises on empty choices suppresses the choices[0] subscript violation."""
+    from .failure_mode import LLM_RESPONSE_UNGUARDED
+
+    _write_src(
+        tmp_path,
+        "svc.py",
+        """\
+        def _require_choices(resp):
+            if not resp.choices:
+                raise ValueError("empty choices")
+
+        def call_api(client):
+            response = client.chat.completions.create(messages=[])
+            _require_choices(response)
+            return response.choices[0]
+        """,
+    )
+    results = check_codebase(tmp_path, modes=[LLM_RESPONSE_UNGUARDED])
+    # The bare choices[0] subscript violation should be suppressed
+    bare_subscript_viols = [v for v in results if v.call == "response.choices[0]"]
+    assert (
+        len(bare_subscript_viols) == 0
+    ), f"guard function _require_choices should suppress choices[0] violation; got {[v.call for v in results]}"
+
+
+def test_llm_guard_function_without_raise_does_not_suppress(tmp_path):
+    """A helper that does NOT raise must not suppress the violation."""
+    from .failure_mode import LLM_RESPONSE_UNGUARDED
+
+    _write_src(
+        tmp_path,
+        "svc.py",
+        """\
+        def log_empty(resp):
+            if not resp.choices:
+                print("empty")
+
+        def call_api(client):
+            response = client.chat.completions.create(messages=[])
+            log_empty(response)
+            return response.choices[0].message.content
+        """,
+    )
+    results = check_codebase(tmp_path, modes=[LLM_RESPONSE_UNGUARDED])
+    choices_viols = [v for v in results if "choices[0]" in v.call]
+    assert (
+        len(choices_viols) >= 1
+    ), "log_empty doesn't raise, so violation must still fire"
+
+
+def test_llm_guard_function_different_arg_does_not_suppress(tmp_path):
+    """Guard function called with a different var must not suppress another var."""
+    from .failure_mode import LLM_RESPONSE_UNGUARDED
+
+    _write_src(
+        tmp_path,
+        "svc.py",
+        """\
+        def _require_choices(resp):
+            if not resp.choices:
+                raise ValueError("empty choices")
+
+        def call_api(client):
+            r1 = client.chat.completions.create(messages=[])
+            r2 = client.chat.completions.create(messages=[])
+            _require_choices(r1)
+            return r2.choices[0].message.content
+        """,
+    )
+    results = check_codebase(tmp_path, modes=[LLM_RESPONSE_UNGUARDED])
+    # r1 is guarded via _require_choices, but r2 is not
+    r2_viols = [v for v in results if "r2.choices" in v.call]
+    assert len(r2_viols) >= 1, "r2 was never passed to the guard function"
+
+
+# ---------------------------------------------------------------------------
 # unvalidated_lookup_chain
 # ---------------------------------------------------------------------------
 

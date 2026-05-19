@@ -13,6 +13,7 @@ Properties tested:
 Run: pytest test_hypothesis_checkers.py -v
 """
 
+import keyword
 import tempfile
 import textwrap
 
@@ -29,7 +30,9 @@ from pact.failure_mode import (
 # Helpers
 # ---------------------------------------------------------------------------
 
-_IDENTIFIER = st.from_regex(r"[a-z][a-z0-9_]{0,8}", fullmatch=True)
+_IDENTIFIER = st.from_regex(r"[a-z][a-z0-9_]{0,8}", fullmatch=True).filter(
+    lambda s: not keyword.iskeyword(s)
+)
 _SAFE_VALUE = st.sampled_from(["None", "0", "''", '""', "True", "False", "42"])
 _MUTABLE_VALUE = st.sampled_from(["[]", "{}", "set()"])
 _EXCEPTION_NAME = st.sampled_from(
