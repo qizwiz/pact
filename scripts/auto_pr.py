@@ -156,6 +156,8 @@ _FIXABLE_MODES = frozenset(
         "sheaf_llm_unguarded",
         "missing_await",
         "json_loads_unguarded",
+        "optional_dereference",
+        "unvalidated_lookup_chain",
     }
 )
 
@@ -164,6 +166,8 @@ _BRANCH_NAMES = {
     "sheaf_llm_unguarded": "fix/pact-llm-response-guards",
     "missing_await": "fix/pact-missing-await",
     "json_loads_unguarded": "fix/pact-json-loads-guards",
+    "optional_dereference": "fix/pact-optional-dereference",
+    "unvalidated_lookup_chain": "fix/pact-lookup-guards",
 }
 
 
@@ -172,6 +176,102 @@ def _pr_content(target: dict, n_viols: int, changed: list[str]) -> tuple[str, st
     issue = target["issue"]
     mode = target.get("mode", "llm_response_unguarded")
     files_str = "\n".join(f"- `{f}`" for f in changed)
+
+    if mode == "optional_dereference":
+        title = (
+            f"fix: guard None dereference to prevent AttributeError (fixes #{issue})"
+        )
+        commit = (
+            f"fix: add None checks before attribute access on optional values\n\n"
+            f"Fixes {n_viols} unguarded accesses on values that may be None "
+            f"(.first(), .get(), dict.get() return Optional).\n"
+            f"Detected by pact (open-source Python static analysis tool)."
+        )
+        body = f"""## What this fixes
+
+Resolves #{issue}: accessing `.attribute` on the result of `.first()`, `.get()`,
+or `dict.get()` raises `AttributeError` when the result is `None`.
+
+This PR adds a guard at each of the {n_viols} unguarded access site(s):
+
+```python
+# Before
+obj = Model.objects.first()
+name = obj.name  # AttributeError if table is empty
+
+# After
+obj = Model.objects.first()
+if obj is None:
+    raise ValueError("'obj' is None")
+name = obj.name
+```
+
+**Files changed:**
+{files_str}
+
+## Why it crashes in practice
+
+Django ORM `.first()` and dict `.get()` both return `None` when no match is
+found. Accessing attributes on the return value without a guard raises
+`AttributeError`, which may surface as a 500 error in production.
+
+## How this was found
+
+Detected by [pact](https://github.com/qizwiz/pact), an open-source static
+checker for Python LLM and AI code. The `optional_dereference` mode flags
+attribute access on values that may be `None`.
+
+## Test plan
+- [ ] Existing test suite passes
+- [ ] Confirm guard fires when the optional value is absent
+"""
+        return title, commit, body
+
+    if mode == "unvalidated_lookup_chain":
+        title = f"fix: guard dict.get() chain against AttributeError (fixes #{issue})"
+        commit = (
+            f"fix: guard .get(key) result before accessing attributes\n\n"
+            f"Fixes {n_viols} unguarded `.get(key).attr` chains where `.get()` "
+            f"returns None when the key is absent.\n"
+            f"Detected by pact (open-source Python static analysis tool)."
+        )
+        body = f"""## What this fixes
+
+Resolves #{issue}: `mapping.get(key).attribute` raises `AttributeError` when
+`key` is not in the mapping (`.get()` returns `None`).
+
+This PR adds a guard at each of the {n_viols} unguarded lookup site(s):
+
+```python
+# Before
+value = data.get("field").strip()  # AttributeError when key absent
+
+# After
+raw = data.get("field")
+if raw is None:
+    raise KeyError("'field' missing from response")
+value = raw.strip()
+```
+
+**Files changed:**
+{files_str}
+
+## Why it crashes in practice
+
+`dict.get()` returns `None` by default when the key is absent. Chaining
+attribute access directly on the result silently crashes when the key is
+missing from the response (e.g., optional API fields, partial LLM outputs).
+
+## How this was found
+
+Detected by [pact](https://github.com/qizwiz/pact), an open-source static
+checker for Python LLM and AI code.
+
+## Test plan
+- [ ] Existing test suite passes
+- [ ] Confirm guard fires when the lookup key is absent
+"""
+        return title, commit, body
 
     if mode == "json_loads_unguarded":
         title = f"fix: guard json.loads() against JSONDecodeError (fixes #{issue})"
