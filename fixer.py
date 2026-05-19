@@ -10,6 +10,7 @@ correct fix is mechanically derivable from the AST. Modes supported:
   bare_except                  Replace bare `except:` with `except Exception:`
   mutable_default_arg          Replace mutable default with `None` + if-None guard
   save_without_update_fields   Add `update_fields=[...]` to bare `.save()` calls
+  unvalidated_lookup_chain     Replace `collection[x]` with `collection.get(x)`
 
 Usage
 -----
@@ -41,6 +42,7 @@ FIX_MODES = frozenset(
         "bare_except",
         "mutable_default_arg",
         "save_without_update_fields",
+        "unvalidated_lookup_chain",
     }
 )
 
@@ -666,6 +668,51 @@ def _fix_save_without_update_fields(
 
 
 # ---------------------------------------------------------------------------
+# unvalidated_lookup_chain fix
+# ---------------------------------------------------------------------------
+
+
+def _fix_unvalidated_lookup_chain(
+    source: str,
+    lines: list[str],
+    violations: list[FailureEvidence],
+) -> tuple[list[str], list[FailureEvidence], list[FailureEvidence]]:
+    """Replace collection[x] with collection.get(x) for unvalidated lookup chains.
+
+    The detector only flags Load-context subscripts (never Store), so every
+    violation is safe to convert: KeyError on miss → None.  The caller already
+    handles the None case because x itself came from dict.get().
+    """
+    result = list(lines)
+    applied: list[FailureEvidence] = []
+    skipped: list[FailureEvidence] = []
+
+    for ev in sorted(violations, key=lambda e: e.line, reverse=True):
+        call = ev.call  # "collection[var]"
+        bracket_pos = call.index("[")
+        collection = call[:bracket_pos]
+        var = call[bracket_pos + 1 :].rstrip("]")
+
+        line_idx = ev.line - 1
+        if line_idx < 0 or line_idx >= len(result):
+            skipped.append(ev)
+            continue
+
+        raw = result[line_idx]
+        old = f"{collection}[{var}]"
+        new = f"{collection}.get({var})"
+
+        if old not in raw:
+            skipped.append(ev)
+            continue
+
+        result[line_idx] = raw.replace(old, new, 1)
+        applied.append(ev)
+
+    return result, applied, skipped
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -740,6 +787,15 @@ def fix_file(
     if save_evs:
         lines, applied, skipped = _fix_save_without_update_fields(
             original, lines, save_evs
+        )
+        all_applied.extend(applied)
+        all_skipped.extend(skipped)
+
+    # Apply unvalidated_lookup_chain fixes (collection[x] → collection.get(x))
+    lookup_evs = [v for v in fixable if _mode(v) == "unvalidated_lookup_chain"]
+    if lookup_evs:
+        lines, applied, skipped = _fix_unvalidated_lookup_chain(
+            original, lines, lookup_evs
         )
         all_applied.extend(applied)
         all_skipped.extend(skipped)

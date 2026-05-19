@@ -430,6 +430,7 @@ def test_fix_modes_contains_expected():
     assert "bare_except" in FIX_MODES
     assert "mutable_default_arg" in FIX_MODES
     assert "save_without_update_fields" in FIX_MODES
+    assert "unvalidated_lookup_chain" in FIX_MODES
 
 
 # ---------------------------------------------------------------------------
@@ -703,3 +704,95 @@ def test_save_already_has_update_fields_not_refixed(tmp_path):
     result = fix_file(str(f), [ev])
     # The regex won't match because obj.save( has content already — should skip
     assert not result.changed or "update_fields" in result.patched
+
+
+# ---------------------------------------------------------------------------
+# unvalidated_lookup_chain
+# ---------------------------------------------------------------------------
+
+
+def test_unvalidated_lookup_simple_fixed(tmp_path):
+    """other[x] where x came from .get() is replaced with other.get(x)."""
+    src = textwrap.dedent("""\
+        def process(mapping, other):
+            x = mapping.get("key")
+            if x:
+                val = other[x]
+            return val
+    """)
+    f = tmp_path / "u.py"
+    f.write_text(src)
+    ev = _ev("unvalidated_lookup_chain", 4, "other[x]", str(f))
+    result = fix_file(str(f), [ev])
+    assert result.changed
+    assert "other.get(x)" in result.patched
+    assert "other[x]" not in result.patched
+
+
+def test_unvalidated_lookup_in_function_arg_fixed(tmp_path):
+    """Subscript inside function call is also patched."""
+    src = textwrap.dedent("""\
+        def run(mapping, table):
+            key = mapping.get("id")
+            print(table[key])
+    """)
+    f = tmp_path / "u.py"
+    f.write_text(src)
+    ev = _ev("unvalidated_lookup_chain", 3, "table[key]", str(f))
+    result = fix_file(str(f), [ev])
+    assert result.changed
+    assert "table.get(key)" in result.patched
+
+
+def test_unvalidated_lookup_text_not_found_skipped(tmp_path):
+    """Violation line mismatch causes skip."""
+    src = textwrap.dedent("""\
+        def f(m, d):
+            x = m.get("k")
+            return d[x]
+    """)
+    f = tmp_path / "u.py"
+    f.write_text(src)
+    # Wrong line — text won't match
+    ev = _ev("unvalidated_lookup_chain", 1, "d[x]", str(f))
+    result = fix_file(str(f), [ev])
+    assert not result.changed
+    assert len(result.skipped) == 1
+
+
+def test_unvalidated_lookup_result_syntactically_valid(tmp_path):
+    """Fixed output must parse as valid Python."""
+    src = textwrap.dedent("""\
+        def go(mapping, store):
+            identifier = mapping.get("id")
+            if identifier:
+                record = store[identifier]
+                print(record)
+    """)
+    f = tmp_path / "u.py"
+    f.write_text(src)
+    ev = _ev("unvalidated_lookup_chain", 4, "store[identifier]", str(f))
+    result = fix_file(str(f), [ev])
+    assert result.changed
+    ast.parse(result.patched)
+
+
+def test_unvalidated_lookup_multiple_violations_fixed(tmp_path):
+    """Multiple violations in one file all get patched."""
+    src = textwrap.dedent("""\
+        def multi(m, a, b):
+            x = m.get("x")
+            y = m.get("y")
+            return a[x], b[y]
+    """)
+    f = tmp_path / "u.py"
+    f.write_text(src)
+    evs = [
+        _ev("unvalidated_lookup_chain", 4, "a[x]", str(f)),
+        _ev("unvalidated_lookup_chain", 4, "b[y]", str(f)),
+    ]
+    result = fix_file(str(f), evs)
+    assert result.changed
+    assert "a.get(x)" in result.patched
+    assert "b.get(y)" in result.patched
+    assert len(result.applied) == 2
