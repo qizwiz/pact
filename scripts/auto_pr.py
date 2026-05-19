@@ -325,12 +325,58 @@ checker for Python LLM and AI code. The `json_loads_unguarded` mode flags
 """
         return title, commit, body
 
-    # Default: LLM response / missing_await modes
+    if mode == "missing_await":
+        title = (
+            f"fix: await async call to prevent coroutine-never-run bug (fixes #{issue})"
+        )
+        commit = (
+            f"fix: add missing await on async function calls\n\n"
+            f"Fixes {n_viols} unawaited async call(s) where the coroutine was\n"
+            f"created but never executed, silently dropping work.\n"
+            f"Detected by pact (open-source Python static analysis tool)."
+        )
+        body = f"""## What this fixes
+
+Resolves #{issue}: calling an async function without `await` creates a coroutine
+object but never runs it — the work is silently dropped and no exception is raised.
+
+This PR adds `await` at each of the {n_viols} missing site(s):
+
+```python
+# Before
+fetch_data(url)          # creates coroutine, never runs it
+
+# After
+await fetch_data(url)    # actually executes the call
+```
+
+**Files changed:**
+{files_str}
+
+## Why it's invisible in practice
+
+Python creates a `RuntimeWarning: coroutine 'X' was never awaited` at garbage
+collection time, but the warning is often swallowed by logging configuration.
+The code path appears to run but silently does nothing.
+
+## How this was found
+
+Detected by [pact](https://github.com/qizwiz/pact), an open-source static
+checker for Python async code.
+
+## Test plan
+- [ ] Existing test suite passes
+- [ ] Confirm the previously-unawaited call now executes
+"""
+        return title, commit, body
+
+    # Default: llm_response_unguarded / sheaf_llm_unguarded
     title = f"fix: prevent IndexError on empty LLM response (fixes #{issue})"
     commit = (
         f"fix: guard LLM response access against empty choices\n\n"
-        f"Fixes {n_viols} unguarded response.choices[0] accesses detected by pact\n"
-        f"(sheaf-cohomological checker, Z3 UNSAT certificate)."
+        f"Fixes {n_viols} unguarded response.choices[0] accesses that raise\n"
+        f"IndexError when the LLM returns an empty choices list.\n"
+        f"Detected by pact (open-source Python static analysis tool)."
     )
     body = f"""## What this fixes
 
