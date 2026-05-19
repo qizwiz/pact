@@ -34,7 +34,7 @@ from .failure_mode import FailureEvidence
 
 # Modes that this fixer can handle
 FIX_MODES = frozenset(
-    {"llm_response_unguarded", "missing_await", "optional_dereference"}
+    {"llm_response_unguarded", "missing_await", "optional_dereference", "bare_except"}
 )
 
 
@@ -344,6 +344,47 @@ def _fix_optional_dereference(
 
 
 # ---------------------------------------------------------------------------
+# bare_except fix
+# ---------------------------------------------------------------------------
+# Violation: bare `except:` catches KeyboardInterrupt and SystemExit.
+# ev.call format: "except:"  (only this variant is fixable; "except Exception: pass"
+#                 requires deciding on logging/re-raise — left to the developer)
+#
+# Fix: replace `except:` with `except Exception:` on the same line, preserving
+# indentation and any trailing comment.
+# ---------------------------------------------------------------------------
+
+_BARE_EXCEPT_PAT = re.compile(r"^(\s*)except(\s*)(:.*)$")
+
+
+def _fix_bare_except(
+    source: str,
+    lines: list[str],
+    violations: list[FailureEvidence],
+) -> tuple[list[str], list[FailureEvidence], list[FailureEvidence]]:
+    """Return (patched_lines, applied, skipped)."""
+    applied: list[FailureEvidence] = []
+    skipped: list[FailureEvidence] = []
+
+    result = list(lines)
+    for ev in sorted(violations, key=lambda e: e.line, reverse=True):
+        # Only handle bare `except:` — the silent-swallow variant needs human judgment
+        if ev.call != "except:":
+            skipped.append(ev)
+            continue
+        raw = result[ev.line - 1]
+        m = _BARE_EXCEPT_PAT.match(raw.rstrip("\n"))
+        if not m:
+            skipped.append(ev)
+            continue
+        indent, _space, rest = m.groups()
+        result[ev.line - 1] = f"{indent}except Exception{rest}\n"
+        applied.append(ev)
+
+    return result, applied, skipped
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -396,6 +437,13 @@ def fix_file(
     opt_evs = [v for v in fixable if _mode(v) == "optional_dereference"]
     if opt_evs:
         lines, applied, skipped = _fix_optional_dereference(original, lines, opt_evs)
+        all_applied.extend(applied)
+        all_skipped.extend(skipped)
+
+    # Apply bare_except fixes (bare `except:` → `except Exception:`)
+    bare_evs = [v for v in fixable if _mode(v) == "bare_except"]
+    if bare_evs:
+        lines, applied, skipped = _fix_bare_except(original, lines, bare_evs)
         all_applied.extend(applied)
         all_skipped.extend(skipped)
 

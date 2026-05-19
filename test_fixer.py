@@ -376,4 +376,86 @@ def test_fix_modes_contains_expected():
     assert "llm_response_unguarded" in FIX_MODES
     assert "missing_await" in FIX_MODES
     assert "optional_dereference" in FIX_MODES
+    assert "bare_except" in FIX_MODES
     assert "save_without_update_fields" not in FIX_MODES
+
+
+# ---------------------------------------------------------------------------
+# bare_except
+# ---------------------------------------------------------------------------
+
+
+def test_bare_except_replaced_with_exception(tmp_path):
+    src = textwrap.dedent("""\
+        def fn():
+            try:
+                pass
+            except:
+                pass
+    """)
+    f = tmp_path / "ex.py"
+    f.write_text(src)
+    ev = _ev("bare_except", 4, "except:", str(f))
+    result = fix_file(str(f), [ev])
+    assert result.changed
+    assert "except Exception:" in result.patched
+    assert "except:" not in result.patched
+    assert len(result.applied) == 1
+
+
+def test_bare_except_preserves_indentation(tmp_path):
+    src = textwrap.dedent("""\
+        def fn():
+            if True:
+                try:
+                    pass
+                except:
+                    pass
+    """)
+    f = tmp_path / "ex.py"
+    f.write_text(src)
+    ev = _ev("bare_except", 5, "except:", str(f))
+    result = fix_file(str(f), [ev])
+    lines = result.patched.splitlines()
+    except_line = next(ln for ln in lines if "except Exception" in ln)
+    assert except_line.startswith(
+        "        "
+    )  # 8 spaces — same as original except: line
+
+
+def test_bare_except_preserves_trailing_comment(tmp_path):
+    src = "try:\n    pass\nexcept:  # legacy\n    pass\n"
+    f = tmp_path / "ex.py"
+    f.write_text(src)
+    ev = _ev("bare_except", 3, "except:", str(f))
+    result = fix_file(str(f), [ev])
+    assert "except Exception:  # legacy" in result.patched
+
+
+def test_bare_except_silent_swallow_skipped(tmp_path):
+    """except Exception: pass variant is left to the developer (needs logging/re-raise decision)."""
+    src = "try:\n    pass\nexcept Exception:\n    pass\n"
+    f = tmp_path / "ex.py"
+    f.write_text(src)
+    ev = _ev("bare_except", 3, "except Exception: pass", str(f))
+    result = fix_file(str(f), [ev])
+    assert not result.changed
+    assert len(result.skipped) == 1
+
+
+def test_bare_except_syntactically_valid(tmp_path):
+    src = textwrap.dedent("""\
+        def fn():
+            try:
+                risky()
+            except:
+                cleanup()
+    """)
+    f = tmp_path / "ex.py"
+    f.write_text(src)
+    ev = _ev("bare_except", 4, "except:", str(f))
+    result = fix_file(str(f), [ev])
+    assert result.changed
+    import ast as _ast
+
+    _ast.parse(result.patched)  # must not raise SyntaxError
