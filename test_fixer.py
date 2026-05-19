@@ -431,6 +431,7 @@ def test_fix_modes_contains_expected():
     assert "mutable_default_arg" in FIX_MODES
     assert "save_without_update_fields" in FIX_MODES
     assert "unvalidated_lookup_chain" in FIX_MODES
+    assert "asyncio_run_in_async" in FIX_MODES
 
 
 # ---------------------------------------------------------------------------
@@ -796,3 +797,72 @@ def test_unvalidated_lookup_multiple_violations_fixed(tmp_path):
     assert "a.get(x)" in result.patched
     assert "b.get(y)" in result.patched
     assert len(result.applied) == 2
+
+
+# ---------------------------------------------------------------------------
+# asyncio_run_in_async
+# ---------------------------------------------------------------------------
+
+
+def test_asyncio_run_replaced_with_await(tmp_path):
+    """asyncio.run(coro()) inside async function → await coro()."""
+    src = textwrap.dedent("""\
+        import asyncio
+        async def handler():
+            result = asyncio.run(fetch_data())
+            return result
+    """)
+    f = tmp_path / "a.py"
+    f.write_text(src)
+    ev = _ev("asyncio_run_in_async", 3, "asyncio.run(...)", str(f))
+    result = fix_file(str(f), [ev])
+    assert result.changed
+    assert "await fetch_data()" in result.patched
+    assert "asyncio.run" not in result.patched
+
+
+def test_asyncio_run_with_args_replaced(tmp_path):
+    """asyncio.run(gather(a(), b())) → await gather(a(), b())."""
+    src = textwrap.dedent("""\
+        import asyncio
+        async def main():
+            results = asyncio.run(asyncio.gather(task_a(), task_b()))
+    """)
+    f = tmp_path / "a.py"
+    f.write_text(src)
+    ev = _ev("asyncio_run_in_async", 3, "asyncio.run(...)", str(f))
+    result = fix_file(str(f), [ev])
+    assert result.changed
+    assert "await asyncio.gather(task_a(), task_b())" in result.patched
+
+
+def test_asyncio_run_no_match_on_line_skipped(tmp_path):
+    """Mismatch between violation line and asyncio.run location causes skip."""
+    src = textwrap.dedent("""\
+        import asyncio
+        async def f():
+            pass
+        asyncio.run(f())
+    """)
+    f = tmp_path / "a.py"
+    f.write_text(src)
+    # Violation points at line 3 (pass), not the asyncio.run line
+    ev = _ev("asyncio_run_in_async", 3, "asyncio.run(...)", str(f))
+    result = fix_file(str(f), [ev])
+    assert not result.changed
+
+
+def test_asyncio_run_result_syntactically_valid(tmp_path):
+    """Fixed output must parse as valid Python."""
+    src = textwrap.dedent("""\
+        import asyncio
+        async def process():
+            data = asyncio.run(load_records(limit=100))
+            return data
+    """)
+    f = tmp_path / "a.py"
+    f.write_text(src)
+    ev = _ev("asyncio_run_in_async", 3, "asyncio.run(...)", str(f))
+    result = fix_file(str(f), [ev])
+    assert result.changed
+    ast.parse(result.patched)

@@ -11,6 +11,7 @@ correct fix is mechanically derivable from the AST. Modes supported:
   mutable_default_arg          Replace mutable default with `None` + if-None guard
   save_without_update_fields   Add `update_fields=[...]` to bare `.save()` calls
   unvalidated_lookup_chain     Replace `collection[x]` with `collection.get(x)`
+  asyncio_run_in_async         Replace `asyncio.run(expr)` with `await expr`
 
 Usage
 -----
@@ -43,6 +44,7 @@ FIX_MODES = frozenset(
         "mutable_default_arg",
         "save_without_update_fields",
         "unvalidated_lookup_chain",
+        "asyncio_run_in_async",
     }
 )
 
@@ -713,6 +715,71 @@ def _fix_unvalidated_lookup_chain(
 
 
 # ---------------------------------------------------------------------------
+# asyncio_run_in_async fix
+# ---------------------------------------------------------------------------
+
+_ASYNCIO_RUN_RE = re.compile(r"\basyncio\.run\(")
+
+
+def _find_matching_close(line: str, open_pos: int) -> int | None:
+    """Return the index just past the ')' that closes the '(' at open_pos-1.
+
+    open_pos is the position after the opening '('.  Returns None if the
+    closing paren is not found on this line (multi-line call — skip).
+    """
+    depth = 1
+    pos = open_pos
+    while pos < len(line) and depth > 0:
+        ch = line[pos]
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+        pos += 1
+    return pos if depth == 0 else None
+
+
+def _fix_asyncio_run_in_async(
+    source: str,
+    lines: list[str],
+    violations: list[FailureEvidence],
+) -> tuple[list[str], list[FailureEvidence], list[FailureEvidence]]:
+    """Replace asyncio.run(expr) with await expr inside async functions.
+
+    Only handles single-line calls — multi-line asyncio.run(...) is skipped
+    to avoid mangling indented argument lists.
+    """
+    result = list(lines)
+    applied: list[FailureEvidence] = []
+    skipped: list[FailureEvidence] = []
+
+    for ev in sorted(violations, key=lambda e: e.line, reverse=True):
+        line_idx = ev.line - 1
+        if line_idx < 0 or line_idx >= len(result):
+            skipped.append(ev)
+            continue
+
+        raw = result[line_idx]
+        m = _ASYNCIO_RUN_RE.search(raw)
+        if not m:
+            skipped.append(ev)
+            continue
+
+        open_pos = m.end()  # position after the opening '('
+        close_pos = _find_matching_close(raw, open_pos)
+        if close_pos is None:
+            skipped.append(ev)
+            continue
+
+        inner = raw[open_pos : close_pos - 1]  # content between ( and )
+        # Build: everything before "asyncio.run(" + "await " + inner + rest after ")"
+        result[line_idx] = raw[: m.start()] + "await " + inner + raw[close_pos:]
+        applied.append(ev)
+
+    return result, applied, skipped
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -796,6 +863,15 @@ def fix_file(
     if lookup_evs:
         lines, applied, skipped = _fix_unvalidated_lookup_chain(
             original, lines, lookup_evs
+        )
+        all_applied.extend(applied)
+        all_skipped.extend(skipped)
+
+    # Apply asyncio_run_in_async fixes (asyncio.run(expr) → await expr)
+    async_run_evs = [v for v in fixable if _mode(v) == "asyncio_run_in_async"]
+    if async_run_evs:
+        lines, applied, skipped = _fix_asyncio_run_in_async(
+            original, lines, async_run_evs
         )
         all_applied.extend(applied)
         all_skipped.extend(skipped)
