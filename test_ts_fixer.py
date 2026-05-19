@@ -12,6 +12,10 @@ Covers:
     - fetch() without await → adds await
     - standalone unawaited call → adds await
     - Call not found in line → skipped
+  optional_dereference fixer:
+    - item.name where item = arr.find() → item?.name
+    - Not found in line → skipped
+    - Multiple violations on different lines both fixed
   TS_FIX_MODES contains expected entries
 """
 
@@ -259,3 +263,76 @@ def test_missing_await_multiple_on_different_lines(tmp_path):
     assert len(result.applied) == 2
     assert "await axios.get" in result.patched
     assert "await fetch" in result.patched
+
+
+# ---------------------------------------------------------------------------
+# optional_dereference fixer
+# ---------------------------------------------------------------------------
+
+
+def _opt_viol(line: int, call: str) -> object:
+    return SimpleNamespace(
+        line=line,
+        call=call,
+        missing=[
+            "assigned from array method returning T|undefined — dereference without guard"
+        ],
+        context="optional_dereference",
+    )
+
+
+def test_fix_modes_contains_optional_dereference():
+    assert "optional_dereference" in TS_FIX_MODES
+
+
+def test_optional_dereference_find_result(tmp_path):
+    """item.name where item = arr.find(...) gets optional chaining."""
+    src = """\
+        const item = items.find(x => x.id === id);
+        const name = item.name;
+    """
+    result = _fix(tmp_path, "a.ts", src, [_opt_viol(2, "item.name")])
+    assert result.changed
+    assert len(result.applied) == 1
+    assert "item?.name" in result.patched
+    assert "item.name" not in result.patched
+
+
+def test_optional_dereference_pop_result(tmp_path):
+    """item.value where item = arr.pop() gets optional chaining."""
+    src = "const val = stack.pop().value;\n"
+    result = _fix(tmp_path, "b.js", src, [_opt_viol(1, "stack.pop().value")])
+    # call text is var_name.prop_name — won't contain the method call; skip this edge case
+    # (pop() result is stored in a variable; the violation is on the variable's access)
+    # For this test, use a realistic stored-result scenario
+    src = """\
+        const top = stack.pop();
+        return top.value;
+    """
+    result = _fix(tmp_path, "b.js", src, [_opt_viol(2, "top.value")])
+    assert result.changed
+    assert "top?.value" in result.patched
+
+
+def test_optional_dereference_call_not_found_skipped(tmp_path):
+    """If the call text can't be found in the line, skip gracefully."""
+    src = "const x = arr.find(y => y.id);\n"
+    result = _fix(tmp_path, "c.ts", src, [_opt_viol(1, "notHere.prop")])
+    assert not result.changed
+    assert len(result.skipped) == 1
+
+
+def test_optional_dereference_multiple_lines(tmp_path):
+    """Two violations on different lines are both fixed."""
+    src = """\
+        const first = items.find(x => x.active);
+        const name = first.name;
+        const last = others.shift();
+        const id = last.id;
+    """
+    viols = [_opt_viol(2, "first.name"), _opt_viol(4, "last.id")]
+    result = _fix(tmp_path, "d.ts", src, viols)
+    assert result.changed
+    assert len(result.applied) == 2
+    assert "first?.name" in result.patched
+    assert "last?.id" in result.patched

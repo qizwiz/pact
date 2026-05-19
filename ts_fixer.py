@@ -4,9 +4,10 @@ pact ts_fixer — automated patch generation for JavaScript/TypeScript violation
 Produces unified diffs (or applies in-place) for JS/TS violations where the
 correct fix is mechanically derivable from the source. Modes supported:
 
-  empty_catch    Insert `console.error(e);` into empty catch blocks
-                 (truly empty only; comment-only bodies are skipped)
-  missing_await  Prepend `await` to unawaited async calls inside async functions
+  empty_catch           Insert `console.error(e);` into empty catch blocks
+                        (truly empty only; comment-only bodies are skipped)
+  missing_await         Prepend `await` to unawaited async calls inside async functions
+  optional_dereference  Add `?.` optional chaining to .find()/.pop()/.shift() results
 
 Usage
 -----
@@ -23,7 +24,7 @@ from pathlib import Path
 from typing import NamedTuple
 
 # Modes this fixer can handle
-TS_FIX_MODES = frozenset({"empty_catch", "missing_await"})
+TS_FIX_MODES = frozenset({"empty_catch", "missing_await", "optional_dereference"})
 
 # Matches: catch (varName)
 _CATCH_WITH_PARAM_RE = re.compile(r"\bcatch\s*\(\s*(\w+)\s*\)")
@@ -310,6 +311,65 @@ def _fix_missing_await(
 
 
 # ---------------------------------------------------------------------------
+# optional_dereference fix
+# ---------------------------------------------------------------------------
+# Violation: variable assigned from .find()/.pop()/.shift()/.at() used via
+#   direct member access without a null guard.
+# ev.line: 1-indexed line of the unsafe member_expression.
+# ev.call: "{var_name}.{prop_name}" — the exact unguarded access text.
+#
+# Fix:
+#   item.name   →  item?.name
+#   item.method →  item?.method
+#
+# Optional chaining (?.) is the minimal safe change — it propagates undefined
+# rather than throwing, matching TypeScript's type-narrowing idiom.
+# ---------------------------------------------------------------------------
+
+
+def _fix_optional_dereference(
+    source: str,  # noqa: ARG001 — unused but kept for API consistency
+    lines: list[str],
+    violations: list,
+) -> tuple[list[str], list, list]:
+    """Add optional chaining (?.) to unguarded array-method result accesses."""
+    result = list(lines)
+    applied: list = []
+    skipped: list = []
+
+    for ev in sorted(violations, key=lambda e: e.line, reverse=True):
+        line_idx = ev.line - 1
+        if line_idx < 0 or line_idx >= len(result):
+            skipped.append(ev)
+            continue
+
+        raw = result[line_idx]
+        call_text: str = getattr(ev, "call", "")
+        if not call_text or "." not in call_text:
+            skipped.append(ev)
+            continue
+
+        # call_text is "var_name.prop_name" — split on first dot
+        dot_pos = call_text.index(".")
+        var_name = call_text[:dot_pos]
+        prop_name = call_text[dot_pos + 1 :]
+
+        target = f"{var_name}.{prop_name}"
+        safe = f"{var_name}?.{prop_name}"
+
+        # `target` ("item.name") is never a substring of `safe` ("item?.name")
+        # so a simple find is unambiguous
+        if target not in raw:
+            skipped.append(ev)
+            continue
+
+        result[line_idx] = raw.replace(target, safe, 1)
+        applied.append(ev)
+
+    return result, applied, skipped
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -351,6 +411,12 @@ def fix_ts_file(
     await_evs = [v for v in fixable if _mode(v) == "missing_await"]
     if await_evs:
         lines, applied, skipped = _fix_missing_await(original, lines, await_evs)
+        all_applied.extend(applied)
+        all_skipped.extend(skipped)
+
+    opt_evs = [v for v in fixable if _mode(v) == "optional_dereference"]
+    if opt_evs:
+        lines, applied, skipped = _fix_optional_dereference(original, lines, opt_evs)
         all_applied.extend(applied)
         all_skipped.extend(skipped)
 
