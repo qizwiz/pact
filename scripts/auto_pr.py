@@ -77,6 +77,7 @@ QUEUE = [
         "stars": 123017,
         "priority": 6,
         "notes": "STRONG: 15 missing_await violations in langchain_core (callbacks, indexing, chat_models, llms)",
+        "skip": True,  # PR #37516 auto-closed: langchain requires maintainer-approved issue before accepting external PRs
     },
     {
         "repo": "infiniflow/ragflow",

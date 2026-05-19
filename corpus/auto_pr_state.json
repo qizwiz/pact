@@ -12,7 +12,7 @@
     "Aider-AI/aider"
   ],
   "notes": {
-    "langchain-ai/langchain": "PR #37516 auto-closed by bot; issue #37517 opened; awaiting maintainer reopen",
+    "langchain-ai/langchain": "PR #37516 auto-closed 2026-05-19: langchain requires pre-approved issue. Need maintainer to approve issue #37058 before re-filing.",
     "Significant-Gravitas/AutoGPT": "PR #13157 — fork is qizwiz/Auto-GPT (hyphenated); 1 llm_response_unguarded + 5 bare_except fixed"
   }
 }
