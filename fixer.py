@@ -516,6 +516,49 @@ def _obj_name(node: ast.expr) -> str | None:
     return None
 
 
+def _collect_non_field_class_attrs(tree: ast.Module) -> frozenset[str]:
+    """
+    Collect attribute names that are assigned simple Python values (not Django
+    Field instances) at class-body level in any class in the module.
+
+    These are Python sentinels / class constants (e.g. `no_changes = False`,
+    `objects = Manager()`, `Meta = ...`) — not real database columns.  When
+    pact infers `update_fields` from preceding attribute assignments it must
+    exclude these, or Django raises FieldDoesNotExist at runtime.
+
+    Pattern detected:
+        class SomeModel(models.Model):
+            real_field = models.CharField(...)   ← NOT collected (is a Field)
+            no_changes = False                   ← collected (simple value)
+            _state  = ...                        ← collected (non-Field)
+    """
+    non_fields: set[str] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.ClassDef):
+            continue
+        for stmt in node.body:
+            if not isinstance(stmt, ast.Assign):
+                continue
+            if len(stmt.targets) != 1:
+                continue
+            target = stmt.targets[0]
+            if not isinstance(target, ast.Name):
+                continue
+            val = stmt.value
+            # If the value is a call whose function name ends in "Field", it's a
+            # real Django field definition — skip it.
+            if isinstance(val, ast.Call):
+                func = val.func
+                is_field = (
+                    isinstance(func, ast.Attribute) and func.attr.endswith("Field")
+                ) or (isinstance(func, ast.Name) and func.id.endswith("Field"))
+                if is_field:
+                    continue
+            # Not a Field call — this is a Python class attribute / sentinel.
+            non_fields.add(target.id)
+    return frozenset(non_fields)
+
+
 def _collect_preceding_assignments(
     func_body: list[ast.stmt],
     save_lineno: int,
@@ -599,6 +642,10 @@ def _fix_save_without_update_fields(
         skipped.extend(violations)
         return list(lines), applied, skipped
 
+    # Attrs that are Python class constants / sentinels (not Django Fields).
+    # These must never appear in update_fields — Django would raise FieldDoesNotExist.
+    sentinel_attrs = _collect_non_field_class_attrs(tree)
+
     # Build map: save_lineno → enclosing function body
     save_line_to_func: dict[int, list[ast.stmt]] = {}
     for node in ast.walk(tree):
@@ -643,6 +690,12 @@ def _fix_save_without_update_fields(
             obj_name = obj_expr
 
         attrs = _collect_preceding_assignments(func_body, ev.line, obj_name)
+        if not attrs:
+            skipped.append(ev)
+            continue
+
+        # Filter out Python sentinels — keep only real DB columns.
+        attrs = [a for a in attrs if a not in sentinel_attrs]
         if not attrs:
             skipped.append(ev)
             continue

@@ -707,6 +707,51 @@ def test_save_already_has_update_fields_not_refixed(tmp_path):
     assert not result.changed or "update_fields" in result.patched
 
 
+def test_save_excludes_python_sentinel_attrs(tmp_path):
+    """Regression: class-level Python sentinels (not models.Field) excluded from update_fields.
+
+    Root cause of celery/django-celery#643 CI failure: pact inferred
+    `update_fields=['no_changes', 'enabled']` but `no_changes = False` is a
+    Python class attribute, not a DB column — Django raises FieldDoesNotExist.
+    """
+    src = textwrap.dedent("""\
+        class PeriodicTask(models.Model):
+            enabled = models.BooleanField(default=True)
+            no_changes = False
+
+        def _disable(model):
+            model.no_changes = True
+            model.enabled = False
+            model.save()
+    """)
+    f = tmp_path / "s.py"
+    f.write_text(src)
+    ev = _ev("save_without_update_fields", 8, "model.save", str(f))
+    result = fix_file(str(f), [ev])
+    assert result.changed
+    assert 'update_fields=["enabled"]' in result.patched
+    assert "no_changes" not in result.patched.split("update_fields=")[1]
+    ast.parse(result.patched)
+
+
+def test_save_all_sentinel_attrs_skipped(tmp_path):
+    """If all inferred attrs are sentinels, skip rather than emit empty update_fields."""
+    src = textwrap.dedent("""\
+        class Task(models.Model):
+            _sentinel = None
+
+        def update(obj):
+            obj._sentinel = True
+            obj.save()
+    """)
+    f = tmp_path / "s.py"
+    f.write_text(src)
+    ev = _ev("save_without_update_fields", 5, "obj.save", str(f))
+    result = fix_file(str(f), [ev])
+    assert not result.changed
+    assert len(result.skipped) == 1
+
+
 # ---------------------------------------------------------------------------
 # unvalidated_lookup_chain
 # ---------------------------------------------------------------------------
