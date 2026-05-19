@@ -4521,3 +4521,68 @@ def test_prompt_injection_query_var_flagged(tmp_path):
     assert any(
         r.context == "prompt_injection_risk" for r in results
     ), "query var in LLM content must be flagged"
+
+
+# ---------------------------------------------------------------------------
+# asyncio_run_in_async
+# ---------------------------------------------------------------------------
+
+
+def test_asyncio_run_inside_async_function_flagged(tmp_path):
+    """asyncio.run() directly inside an async function is flagged."""
+    from .failure_mode import ASYNCIO_RUN_IN_ASYNC
+
+    (tmp_path / "a.py").write_text(
+        "import asyncio\n"
+        "async def handler():\n"
+        "    result = asyncio.run(fetch_data())\n"
+        "    return result\n"
+    )
+    results = check_codebase(tmp_path, modes=[ASYNCIO_RUN_IN_ASYNC])
+    assert any(
+        r.context == "asyncio_run_in_async" for r in results
+    ), "asyncio.run() inside async function must be flagged"
+
+
+def test_asyncio_run_at_top_level_not_flagged(tmp_path):
+    """asyncio.run() at module top-level (outside any function) is NOT flagged."""
+    from .failure_mode import ASYNCIO_RUN_IN_ASYNC
+
+    (tmp_path / "a.py").write_text(
+        "import asyncio\n" "async def main():\n" "    pass\n" "asyncio.run(main())\n"
+    )
+    results = check_codebase(tmp_path, modes=[ASYNCIO_RUN_IN_ASYNC])
+    assert not results, f"top-level asyncio.run() must not be flagged: {results}"
+
+
+def test_asyncio_run_in_sync_function_not_flagged(tmp_path):
+    """asyncio.run() in a plain sync function is NOT flagged."""
+    from .failure_mode import ASYNCIO_RUN_IN_ASYNC
+
+    (tmp_path / "a.py").write_text(
+        "import asyncio\n"
+        "def worker():\n"
+        "    result = asyncio.run(fetch())\n"
+        "    return result\n"
+    )
+    results = check_codebase(tmp_path, modes=[ASYNCIO_RUN_IN_ASYNC])
+    assert not results, f"asyncio.run() in sync function must not be flagged: {results}"
+
+
+def test_asyncio_run_in_nested_sync_inside_async_not_flagged(tmp_path):
+    """asyncio.run() inside a sync closure within async function is NOT flagged."""
+    from .failure_mode import ASYNCIO_RUN_IN_ASYNC
+
+    (tmp_path / "a.py").write_text(
+        "import asyncio\n"
+        "async def outer():\n"
+        "    def run_in_thread():\n"
+        "        return asyncio.run(fetch())\n"
+        "    import threading\n"
+        "    t = threading.Thread(target=run_in_thread)\n"
+        "    t.start()\n"
+    )
+    results = check_codebase(tmp_path, modes=[ASYNCIO_RUN_IN_ASYNC])
+    assert (
+        not results
+    ), "asyncio.run() in nested sync function inside async must not be flagged"

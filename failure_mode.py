@@ -2635,6 +2635,104 @@ PROMPT_INJECTION_RISK = FailureMode(
 
 
 # ---------------------------------------------------------------------------
+# Failure mode: asyncio_run_in_async
+#
+# Detects: asyncio.run() called directly inside an async function body.
+# asyncio.run() creates a new event loop and blocks; when called inside a
+# running event loop it raises RuntimeError: This event loop is already running.
+#
+# Pattern:
+#   async def handler(request):
+#       data = asyncio.run(fetch_data())   ← RuntimeError at runtime!
+#
+# Fix: await the coroutine directly:
+#   async def handler(request):
+#       data = await fetch_data()
+#
+# Safe contexts (not flagged):
+#   - asyncio.run() inside a nested *sync* function within an async function
+#     (the sync function may be called from a non-async context at runtime)
+#   - Top-level script usage (outside any function)
+# ---------------------------------------------------------------------------
+
+
+class _AsyncioRunVisitor(pyast.NodeVisitor):
+    """Walk AST tracking async context, flagging asyncio.run() calls inside it."""
+
+    def __init__(self, path: str, results: list):
+        self._path = path
+        self._results = results
+        self._in_async = False
+        self._sync_nested = 0
+
+    def visit_AsyncFunctionDef(self, node: pyast.AsyncFunctionDef) -> None:
+        prev = self._in_async
+        self._in_async = True
+        self.generic_visit(node)
+        self._in_async = prev
+
+    def visit_FunctionDef(self, node: pyast.FunctionDef) -> None:
+        if self._in_async:
+            self._sync_nested += 1
+            self.generic_visit(node)
+            self._sync_nested -= 1
+        else:
+            self.generic_visit(node)
+
+    def visit_Call(self, node: pyast.Call) -> None:
+        if (
+            self._in_async
+            and self._sync_nested == 0
+            and isinstance(node.func, pyast.Attribute)
+            and node.func.attr == "run"
+            and isinstance(node.func.value, pyast.Name)
+            and node.func.value.id == "asyncio"
+        ):
+            self._results.append(
+                FailureEvidence(
+                    mode_name="asyncio_run_in_async",
+                    file=self._path,
+                    line=node.lineno,
+                    call="asyncio.run(...)",
+                    message=(
+                        "asyncio.run() called inside an async function — raises "
+                        "RuntimeError when the event loop is already running; "
+                        "await the coroutine directly instead"
+                    ),
+                )
+            )
+        self.generic_visit(node)
+
+
+@functools.lru_cache(maxsize=None)
+def _scan_file_asyncio_run_in_async(path: str) -> list[FailureEvidence]:
+    try:
+        with open(path, encoding="utf-8", errors="ignore") as fh:
+            source = fh.read()
+        if "asyncio.run" not in source:
+            return []
+        tree = pyast.parse(source, filename=path)
+    except (SyntaxError, OSError):
+        return []
+
+    results: list[FailureEvidence] = []
+    _AsyncioRunVisitor(path, results).visit(tree)
+    return results
+
+
+ASYNCIO_RUN_IN_ASYNC = FailureMode(
+    name="asyncio_run_in_async",
+    description=(
+        "asyncio.run() called directly inside an async function. "
+        "asyncio.run() creates a new event loop; calling it inside a running "
+        "event loop raises RuntimeError at runtime. Await the coroutine directly."
+    ),
+    check=None,
+    file_check=_scan_file_asyncio_run_in_async,
+)
+
+
+# ---------------------------------------------------------------------------
 # Registry — all active failure modes
 # ---------------------------------------------------------------------------
 
@@ -2650,4 +2748,5 @@ DEFAULT_MODES: list[FailureMode] = [
     LLM_RESPONSE_UNGUARDED,
     UNVALIDATED_LOOKUP_CHAIN,
     PROMPT_INJECTION_RISK,
+    ASYNCIO_RUN_IN_ASYNC,
 ]
