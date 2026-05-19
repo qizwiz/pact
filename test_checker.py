@@ -4442,3 +4442,82 @@ def test_numba_typingcontext_intrinsic_not_flagged(tmp_path):
     assert (
         not results
     ), f"false positive: gen_random_int64() with typingcontext intrinsic flagged: {results}"
+
+
+# ---------------------------------------------------------------------------
+# prompt_injection_risk
+# ---------------------------------------------------------------------------
+
+
+def test_prompt_injection_fstring_flagged(tmp_path):
+    """f-string with user-controlled var in LLM message content is flagged."""
+    from .failure_mode import PROMPT_INJECTION_RISK
+
+    (tmp_path / "pi.py").write_text(
+        "def handle(user_input):\n"
+        "    client.chat.completions.create(\n"
+        '        messages=[{"role": "user", "content": f"Answer: {user_input}"}]\n'
+        "    )\n"
+    )
+    results = check_codebase(tmp_path, modes=[PROMPT_INJECTION_RISK])
+    assert any(
+        r.context == "prompt_injection_risk" for r in results
+    ), "f-string with user_input in LLM content must be flagged"
+
+
+def test_prompt_injection_literal_content_not_flagged(tmp_path):
+    """Static string content (no interpolation) is NOT flagged."""
+    from .failure_mode import PROMPT_INJECTION_RISK
+
+    (tmp_path / "pi.py").write_text(
+        "def ask():\n"
+        "    client.chat.completions.create(\n"
+        '        messages=[{"role": "user", "content": "What is 2+2?"}]\n'
+        "    )\n"
+    )
+    results = check_codebase(tmp_path, modes=[PROMPT_INJECTION_RISK])
+    assert not results, f"static content must not be flagged: {results}"
+
+
+def test_prompt_injection_safe_var_name_not_flagged(tmp_path):
+    """f-string with non-user-controlled var names is NOT flagged."""
+    from .failure_mode import PROMPT_INJECTION_RISK
+
+    (tmp_path / "pi.py").write_text(
+        "def ask(today, location):\n"
+        "    client.chat.completions.create(\n"
+        '        messages=[{"role": "user", "content": f"Today is {today}, at {location}"}]\n'
+        "    )\n"
+    )
+    results = check_codebase(tmp_path, modes=[PROMPT_INJECTION_RISK])
+    assert not results, f"today/location vars must not be flagged: {results}"
+
+
+def test_prompt_injection_non_llm_call_not_flagged(tmp_path):
+    """messages= in a non-LLM call (no known method suffix) is NOT flagged."""
+    from .failure_mode import PROMPT_INJECTION_RISK
+
+    (tmp_path / "pi.py").write_text(
+        "def send_notification(user_message):\n"
+        "    email_client.dispatch(\n"
+        '        messages=[{"role": "user", "content": f"Hello: {user_message}"}]\n'
+        "    )\n"
+    )
+    results = check_codebase(tmp_path, modes=[PROMPT_INJECTION_RISK])
+    assert not results, f"non-LLM dispatch must not be flagged: {results}"
+
+
+def test_prompt_injection_query_var_flagged(tmp_path):
+    """Variable named 'query' in LLM content is flagged."""
+    from .failure_mode import PROMPT_INJECTION_RISK
+
+    (tmp_path / "pi.py").write_text(
+        "def search(query):\n"
+        "    llm.invoke(\n"
+        '        messages=[{"role": "user", "content": f"Search for: {query}"}]\n'
+        "    )\n"
+    )
+    results = check_codebase(tmp_path, modes=[PROMPT_INJECTION_RISK])
+    assert any(
+        r.context == "prompt_injection_risk" for r in results
+    ), "query var in LLM content must be flagged"

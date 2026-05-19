@@ -2501,6 +2501,140 @@ UNVALIDATED_LOOKUP_CHAIN = FailureMode(
 
 
 # ---------------------------------------------------------------------------
+# Failure mode: prompt_injection_risk
+#
+# Detects: an f-string containing a likely-user-controlled variable reference
+# is passed as the `content` of a message dict to an LLM chat completions call.
+#
+# Pattern:
+#   def handle(user_input):
+#       response = client.chat.completions.create(
+#           messages=[{"role": "user", "content": f"Answer: {user_input}"}]
+#       )
+#
+# User-controlled heuristic: variable name contains a substring from
+# _PROMPT_INJECTION_KEYWORDS.  This is intentionally conservative — it flags
+# names like `user_query`, `message`, `raw_input` but not `result` or `date`.
+# ---------------------------------------------------------------------------
+
+_PROMPT_INJECTION_KEYWORDS: frozenset[str] = frozenset(
+    {
+        "user",
+        "input",
+        "query",
+        "message",
+        "text",
+        "prompt",
+        "request",
+        "question",
+        "raw",
+        "external",
+        "human",
+        "customer",
+    }
+)
+
+_LLM_CHAT_METHODS: frozenset[str] = frozenset(
+    {"create", "invoke", "generate", "complete", "send", "run"}
+)
+
+
+def _is_user_controlled(name: str) -> bool:
+    """Return True if name's underscore-split parts contain a user-controlled keyword.
+
+    Uses word-part matching (split on "_") rather than substring search to avoid
+    false positives like "context" (contains "text") or "external_ref" (contains
+    "external" but isn't necessarily user input).
+    """
+    parts = name.lower().replace("-", "_").split("_")
+    return any(part in _PROMPT_INJECTION_KEYWORDS for part in parts) or (
+        name.lower() in _PROMPT_INJECTION_KEYWORDS
+    )
+
+
+def _fstring_user_vars(node: pyast.JoinedStr) -> list[str]:
+    """Return variable names in an f-string that look user-controlled."""
+    names = []
+    for child in pyast.walk(node):
+        if isinstance(child, pyast.Name) and _is_user_controlled(child.id):
+            names.append(child.id)
+    return names
+
+
+def _check_messages_for_injection(node: pyast.expr, path: str, results: list) -> None:
+    """Recurse through a messages= value looking for dangerous content f-strings."""
+    if isinstance(node, (pyast.List, pyast.Tuple)):
+        for elt in node.elts:
+            _check_messages_for_injection(elt, path, results)
+        return
+    if isinstance(node, pyast.Dict):
+        for key, value in zip(node.keys, node.values):
+            if (
+                isinstance(key, pyast.Constant)
+                and key.value == "content"
+                and isinstance(value, pyast.JoinedStr)
+            ):
+                user_vars = _fstring_user_vars(value)
+                if user_vars:
+                    var_list = ", ".join(f"`{v}`" for v in user_vars)
+                    snippet = f'f"...{{{user_vars[0]}}}..."'
+                    results.append(
+                        FailureEvidence(
+                            mode_name="prompt_injection_risk",
+                            file=path,
+                            line=value.lineno,
+                            call=snippet,
+                            message=(
+                                f"f-string in LLM message content interpolates "
+                                f"user-controlled variable(s) {var_list} — "
+                                f"unsanitised input reaches the model prompt"
+                            ),
+                        )
+                    )
+
+
+@functools.lru_cache(maxsize=None)
+def _scan_file_prompt_injection_risk(path: str) -> list[FailureEvidence]:
+    try:
+        with open(path, encoding="utf-8", errors="ignore") as fh:
+            source = fh.read()
+        tree = pyast.parse(source, filename=path)
+    except (SyntaxError, OSError):
+        return []
+
+    results: list[FailureEvidence] = []
+
+    for node in pyast.walk(tree):
+        if not isinstance(node, pyast.Call):
+            continue
+        # Must have a messages= keyword — this is the LLM API signature
+        messages_kw = next((kw for kw in node.keywords if kw.arg == "messages"), None)
+        if messages_kw is None:
+            continue
+        # The callee must end in a known LLM method name to reduce false positives
+        if not (
+            isinstance(node.func, pyast.Attribute)
+            and node.func.attr in _LLM_CHAT_METHODS
+        ):
+            continue
+        _check_messages_for_injection(messages_kw.value, path, results)
+
+    return results
+
+
+PROMPT_INJECTION_RISK = FailureMode(
+    name="prompt_injection_risk",
+    description=(
+        "An f-string containing a likely-user-controlled variable is passed as "
+        "`content` in an LLM chat message without sanitisation. An adversary can "
+        "override system instructions by crafting the interpolated value."
+    ),
+    check=None,
+    file_check=_scan_file_prompt_injection_risk,
+)
+
+
+# ---------------------------------------------------------------------------
 # Registry — all active failure modes
 # ---------------------------------------------------------------------------
 
@@ -2515,4 +2649,5 @@ DEFAULT_MODES: list[FailureMode] = [
     FORMAT_ARG_MISMATCH,
     LLM_RESPONSE_UNGUARDED,
     UNVALIDATED_LOOKUP_CHAIN,
+    PROMPT_INJECTION_RISK,
 ]
