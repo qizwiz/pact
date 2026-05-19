@@ -1,14 +1,16 @@
 """
-TypeScript / TSX constraint checker (tree-sitter backed).
+TypeScript / TSX / JavaScript constraint checker (tree-sitter backed).
 
 Failure modes:
-  missing_await        — async call without await inside an async function
-  optional_dereference — .find()/.shift()/.pop() result used without null guard
-  empty_catch          — catch (e) {} — silent error suppression
+  missing_await           — async call without await inside an async function
+  optional_dereference    — .find()/.shift()/.pop() result used without null guard
+  empty_catch             — catch (e) {} — silent error suppression
+  llm_response_unguarded  — choices[0] accessed without optional chaining (?.[0])
 """
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Iterator
 
@@ -21,6 +23,39 @@ try:
     _HAS_TS = True
 except Exception:
     _HAS_TS = False
+
+_HAS_JS = False
+try:
+    import tree_sitter_javascript as _tsjs
+
+    _JS_LANGUAGE = _ts.Language(_tsjs.language())
+    _JSX_LANGUAGE = _JS_LANGUAGE  # tree-sitter-javascript handles JSX natively
+    _HAS_JS = True
+except Exception:
+    pass
+
+# Directories to skip (mirrors extractor._SKIP_DIRS)
+_SKIP_DIRS = frozenset(
+    {
+        "__pycache__",
+        ".git",
+        ".github",
+        ".venv",
+        "venv",
+        "node_modules",
+        "migrations",
+        ".mypy_cache",
+        ".uv-cache",
+        ".ruff_cache",
+        "vendor",
+        "_vendor",
+        "dist",
+        "build",
+        ".next",
+        ".nuxt",
+        "out",
+    }
+)
 
 # Web / Node APIs that always return Promises
 _KNOWN_ASYNC_APIS: frozenset[str] = frozenset(
@@ -107,8 +142,14 @@ _NULLABLE_ARRAY_METHODS: frozenset[str] = frozenset({"find", "shift", "pop", "at
 
 
 def _iter_ts_files(root: Path) -> Iterator[Path]:
-    for ext in ("*.ts", "*.tsx"):
-        yield from root.rglob(ext)
+    """Yield TS/TSX/JS/JSX files under root, skipping vendor/generated dirs."""
+    ts_exts = ("*.ts", "*.tsx") if _HAS_TS else ()
+    js_exts = ("*.js", "*.jsx", "*.mjs", "*.cjs") if _HAS_JS else ()
+    for ext in (*ts_exts, *js_exts):
+        for path in root.rglob(ext):
+            if any(part in _SKIP_DIRS for part in path.parts):
+                continue
+            yield path
 
 
 def _find_all(node, ntype: str) -> list:
@@ -377,17 +418,103 @@ def _scan_empty_catch(root_node) -> list[tuple[int, str, str]]:
     return results
 
 
+_CHOICES_RE = re.compile(rb"\bchoices\b")
+
+
+def _scan_llm_unguarded(src: bytes, root_node) -> list[tuple[int, str, str]]:
+    """
+    Detect response.choices[0] (non-optional subscript) in JS/TS files.
+
+    Safe patterns skipped:
+      response.choices?.[0]   — optional chaining
+      response.choices?.length — guarded by caller
+    Flagged patterns:
+      response.choices[0]
+      response.choices[0].message
+      response.choices[0].message.content
+    """
+    if not _CHOICES_RE.search(src):
+        return []
+
+    results = []
+
+    def walk(node):
+        if node.type == "subscript_expression":
+            children = node.children
+            # Optional chaining: choices?.[0] has an optional_chain child token
+            if any(c.type == "optional_chain" for c in children):
+                for child in children:
+                    walk(child)
+                return
+
+            # Index must be the literal number 0
+            index_nodes = [c for c in children if c.type == "number"]
+            if not index_nodes or index_nodes[0].text != b"0":
+                for child in children:
+                    walk(child)
+                return
+
+            # Object must be member_expression ending in .choices
+            obj = children[0]
+            if obj.type != "member_expression":
+                for child in children:
+                    walk(child)
+                return
+            prop_nodes = [c for c in obj.children if c.type == "property_identifier"]
+            if not prop_nodes or prop_nodes[0].text != b"choices":
+                for child in children:
+                    walk(child)
+                return
+
+            call_text = src[node.start_byte : node.end_byte].decode(
+                "utf-8", errors="replace"
+            )[:120]
+            results.append(
+                (
+                    node.start_point[0] + 1,
+                    call_text,
+                    (
+                        f"'{call_text[:60]}' accessed without optional chaining — "
+                        "use '?.[0]' to guard against empty choices arrays"
+                    ),
+                )
+            )
+            # Don't descend into the flagged subscript
+            return
+
+        for child in node.children:
+            walk(child)
+
+    walk(root_node)
+    return results
+
+
+def _get_lang(path: str):
+    """Return (language, parser) for path, or (None, None) if unsupported."""
+    ext = Path(path).suffix.lower()
+    if _HAS_TS and ext in (".ts", ".mts"):
+        return _TS_LANGUAGE, _ts.Parser(_TS_LANGUAGE)
+    if _HAS_TS and ext in (".tsx",):
+        return _TSX_LANGUAGE, _ts.Parser(_TSX_LANGUAGE)
+    if _HAS_JS and ext in (".js", ".mjs", ".cjs"):
+        return _JS_LANGUAGE, _ts.Parser(_JS_LANGUAGE)
+    if _HAS_JS and ext in (".jsx",):
+        return _JSX_LANGUAGE, _ts.Parser(_JSX_LANGUAGE)
+    return None, None
+
+
 def check_ts_file(path: str) -> list:
     """
-    Run all TypeScript failure mode checks against one file.
-    Returns list of Violation-compatible dicts (avoids circular import).
+    Run all JS/TS failure mode checks against one file.
+    Returns list of Violation-compatible objects.
     """
     try:
         from .encoder import Violation
     except ImportError:
         from encoder import Violation  # type: ignore[no-redef]
 
-    if not _HAS_TS:
+    lang, parser = _get_lang(path)
+    if parser is None:
         return []
 
     p = Path(path)
@@ -396,8 +523,6 @@ def check_ts_file(path: str) -> list:
     except OSError:
         return []
 
-    lang = _TSX_LANGUAGE if path.endswith(".tsx") else _TS_LANGUAGE
-    parser = _ts.Parser(lang)
     tree = parser.parse(src)
     root = tree.root_node
 
@@ -438,12 +563,23 @@ def check_ts_file(path: str) -> list:
             )
         )
 
+    for line, call, msg in _scan_llm_unguarded(src, root):
+        violations.append(
+            Violation(
+                file=path,
+                line=line,
+                call=call,
+                missing=[msg],
+                context="llm_response_unguarded",
+            )
+        )
+
     return violations
 
 
 def check_ts_files(root: Path) -> list:
-    """Scan all .ts/.tsx files under root. Returns list of Violation objects."""
-    if not _HAS_TS:
+    """Scan all TS/TSX/JS/JSX files under root. Returns list of Violation objects."""
+    if not _HAS_TS and not _HAS_JS:
         return []
     violations = []
     for path in _iter_ts_files(root):

@@ -28,7 +28,8 @@ dependencies = [
 
 [project.optional-dependencies]
 llm = ["anthropic>=0.20"]
-dev = ["pytest", "hypothesis", "z3-solver", "anthropic"]
+js = ["tree-sitter>=0.21", "tree-sitter-javascript>=0.21", "tree-sitter-typescript>=0.21"]
+dev = ["pytest", "hypothesis", "z3-solver", "anthropic", "tree-sitter>=0.21", "tree-sitter-javascript>=0.21", "tree-sitter-typescript>=0.21"]
 
 [project.scripts]
 pact = "pact.cli:main"
