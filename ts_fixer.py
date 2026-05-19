@@ -4,10 +4,11 @@ pact ts_fixer — automated patch generation for JavaScript/TypeScript violation
 Produces unified diffs (or applies in-place) for JS/TS violations where the
 correct fix is mechanically derivable from the source. Modes supported:
 
-  empty_catch           Insert `console.error(e);` into empty catch blocks
-                        (truly empty only; comment-only bodies are skipped)
-  missing_await         Prepend `await` to unawaited async calls inside async functions
-  optional_dereference  Add `?.` optional chaining to .find()/.pop()/.shift() results
+  empty_catch                Insert `console.error(e);` into empty catch blocks
+                             (truly empty only; comment-only bodies are skipped)
+  missing_await              Prepend `await` to unawaited async calls inside async functions
+  optional_dereference       Add `?.` optional chaining to .find()/.pop()/.shift() results
+  unvalidated_lookup_chain   Add `?.` between .get(key) call and property/subscript access
 
 Usage
 -----
@@ -24,7 +25,9 @@ from pathlib import Path
 from typing import NamedTuple
 
 # Modes this fixer can handle
-TS_FIX_MODES = frozenset({"empty_catch", "missing_await", "optional_dereference"})
+TS_FIX_MODES = frozenset(
+    {"empty_catch", "missing_await", "optional_dereference", "unvalidated_lookup_chain"}
+)
 
 # Matches: catch (varName)
 _CATCH_WITH_PARAM_RE = re.compile(r"\bcatch\s*\(\s*(\w+)\s*\)")
@@ -370,6 +373,68 @@ def _fix_optional_dereference(
 
 
 # ---------------------------------------------------------------------------
+# unvalidated_lookup_chain fix
+# ---------------------------------------------------------------------------
+# Violation: myMap.get(key).property — .get() returns undefined if key absent.
+# ev.call carries the .get() call text, e.g. "userMap.get(id)".
+#
+# Fix: insert ?. between the .get() call and the following . or [:
+#   myMap.get(key).property  →  myMap.get(key)?.property
+#   myMap.get(key)[index]    →  myMap.get(key)?.[index]
+#
+# Skips if already optional-chained (call_text?.) or multi-line call.
+# ---------------------------------------------------------------------------
+
+
+def _fix_unvalidated_map_get(
+    source: str,  # noqa: ARG001
+    lines: list[str],
+    violations: list,
+) -> tuple[list[str], list, list]:
+    """Add ?. optional chaining between .get() call and property/subscript."""
+    result = list(lines)
+    applied: list = []
+    skipped: list = []
+
+    for ev in sorted(violations, key=lambda e: e.line, reverse=True):
+        line_idx = ev.line - 1
+        if line_idx < 0 or line_idx >= len(result):
+            skipped.append(ev)
+            continue
+
+        raw = result[line_idx]
+        call_text: str = getattr(ev, "call", "") or ""
+        if not call_text:
+            skipped.append(ev)
+            continue
+
+        # Already guarded?
+        if f"{call_text}?." in raw or f"{call_text}?.[" in raw:
+            skipped.append(ev)
+            continue
+
+        # Member dereference: call_text.prop → call_text?.prop
+        member_target = f"{call_text}."
+        member_safe = f"{call_text}?."
+        if member_target in raw and "?." not in raw[raw.index(member_target) :]:
+            result[line_idx] = raw.replace(member_target, member_safe, 1)
+            applied.append(ev)
+            continue
+
+        # Subscript dereference: call_text[... → call_text?.[...
+        subscript_target = f"{call_text}["
+        subscript_safe = f"{call_text}?.["
+        if subscript_target in raw:
+            result[line_idx] = raw.replace(subscript_target, subscript_safe, 1)
+            applied.append(ev)
+            continue
+
+        skipped.append(ev)
+
+    return result, applied, skipped
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -417,6 +482,12 @@ def fix_ts_file(
     opt_evs = [v for v in fixable if _mode(v) == "optional_dereference"]
     if opt_evs:
         lines, applied, skipped = _fix_optional_dereference(original, lines, opt_evs)
+        all_applied.extend(applied)
+        all_skipped.extend(skipped)
+
+    map_evs = [v for v in fixable if _mode(v) == "unvalidated_lookup_chain"]
+    if map_evs:
+        lines, applied, skipped = _fix_unvalidated_map_get(original, lines, map_evs)
         all_applied.extend(applied)
         all_skipped.extend(skipped)
 

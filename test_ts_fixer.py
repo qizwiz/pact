@@ -336,3 +336,62 @@ def test_optional_dereference_multiple_lines(tmp_path):
     assert len(result.applied) == 2
     assert "first?.name" in result.patched
     assert "last?.id" in result.patched
+
+
+# ---------------------------------------------------------------------------
+# unvalidated_lookup_chain fixer
+# ---------------------------------------------------------------------------
+
+
+def _map_viol(line: int, call: str) -> object:
+    return SimpleNamespace(
+        line=line,
+        call=call,
+        missing=["Map.get() result dereferenced without null guard"],
+        context="unvalidated_lookup_chain",
+    )
+
+
+def test_fix_modes_contains_unvalidated_lookup_chain():
+    assert "unvalidated_lookup_chain" in TS_FIX_MODES
+
+
+def test_map_get_member_dereference_fixed(tmp_path):
+    """userMap.get(id).name → userMap.get(id)?.name"""
+    src = "const name = userMap.get(id).name;\n"
+    result = _fix(tmp_path, "a.ts", src, [_map_viol(1, "userMap.get(id)")])
+    assert result.changed
+    assert "userMap.get(id)?.name" in result.patched
+    assert len(result.applied) == 1
+
+
+def test_map_get_subscript_dereference_fixed(tmp_path):
+    """dataMap.get(key)[0] → dataMap.get(key)?.[0]"""
+    src = "const first = dataMap.get(key)[0];\n"
+    result = _fix(tmp_path, "b.js", src, [_map_viol(1, "dataMap.get(key)")])
+    assert result.changed
+    assert "dataMap.get(key)?.[0]" in result.patched
+    assert len(result.applied) == 1
+
+
+def test_map_get_already_optional_skipped(tmp_path):
+    """Already-safe myMap.get(key)?.prop — fixer must not double-apply."""
+    src = "const x = myMap.get(key)?.prop;\n"
+    result = _fix(tmp_path, "c.ts", src, [_map_viol(1, "myMap.get(key)")])
+    assert not result.changed
+    assert len(result.skipped) == 1
+
+
+def test_map_get_call_not_found_skipped(tmp_path):
+    """ev.call names a get() call not present on the line — skip cleanly."""
+    src = "const x = other.get('z').y;\n"
+    result = _fix(tmp_path, "d.ts", src, [_map_viol(1, "myMap.get(id)")])
+    assert not result.changed
+
+
+def test_map_get_deep_chain_fixed(tmp_path):
+    """config.get(key).nested.value — only first . becomes ?."""
+    src = "const v = config.get(key).nested.value;\n"
+    result = _fix(tmp_path, "e.ts", src, [_map_viol(1, "config.get(key)")])
+    assert result.changed
+    assert "config.get(key)?.nested.value" in result.patched
