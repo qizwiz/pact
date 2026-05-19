@@ -4586,3 +4586,59 @@ def test_asyncio_run_in_nested_sync_inside_async_not_flagged(tmp_path):
     assert (
         not results
     ), "asyncio.run() in nested sync function inside async must not be flagged"
+
+
+# ---------------------------------------------------------------------------
+# falsy_or_zero_elision
+# ---------------------------------------------------------------------------
+
+
+def test_falsy_or_zero_elision_pass_rate_flagged(tmp_path):
+    """pass_rate or 0 — zero pass rate silently becomes 0."""
+    from .failure_mode import FALSY_OR_ZERO_ELISION
+
+    (tmp_path / "a.py").write_text("pass_rate = total / count or 0\n")
+    results = check_codebase(tmp_path, modes=[FALSY_OR_ZERO_ELISION])
+    assert any(
+        r.context == "falsy_or_zero_elision" for r in results
+    ), "division result or 0 with float hint must be flagged"
+
+
+def test_falsy_or_zero_elision_score_name_flagged(tmp_path):
+    """Variable named 'score' used with `or 0` must be flagged."""
+    from .failure_mode import FALSY_OR_ZERO_ELISION
+
+    (tmp_path / "a.py").write_text("result = score or 0\n")
+    results = check_codebase(tmp_path, modes=[FALSY_OR_ZERO_ELISION])
+    assert any(
+        r.context == "falsy_or_zero_elision" for r in results
+    ), "float-hinted name `score or 0` must be flagged"
+
+
+def test_falsy_or_zero_elision_float_zero_flagged(tmp_path):
+    """ratio or 0.0 — same issue with explicit float zero."""
+    from .failure_mode import FALSY_OR_ZERO_ELISION
+
+    (tmp_path / "a.py").write_text("x = ratio or 0.0\n")
+    results = check_codebase(tmp_path, modes=[FALSY_OR_ZERO_ELISION])
+    assert any(
+        r.context == "falsy_or_zero_elision" for r in results
+    ), "float-hinted name `ratio or 0.0` must be flagged"
+
+
+def test_falsy_or_zero_elision_count_not_flagged(tmp_path):
+    """`count or 0` — count is typically int, no float hint, not flagged."""
+    from .failure_mode import FALSY_OR_ZERO_ELISION
+
+    (tmp_path / "a.py").write_text("x = count or 0\n")
+    results = check_codebase(tmp_path, modes=[FALSY_OR_ZERO_ELISION])
+    assert not results, "`count or 0` has no float hint — must not be flagged"
+
+
+def test_falsy_or_zero_elision_string_fallback_not_flagged(tmp_path):
+    """`score or ''` — non-numeric fallback is not in scope."""
+    from .failure_mode import FALSY_OR_ZERO_ELISION
+
+    (tmp_path / "a.py").write_text("x = score or ''\n")
+    results = check_codebase(tmp_path, modes=[FALSY_OR_ZERO_ELISION])
+    assert not results, "`score or ''` fallback is not numeric — must not be flagged"

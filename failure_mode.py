@@ -2733,6 +2733,144 @@ ASYNCIO_RUN_IN_ASYNC = FailureMode(
 
 
 # ---------------------------------------------------------------------------
+# Failure mode: falsy_or_zero_elision
+#
+# Detects: `x or 0` / `x or 0.0` where x is a float-typed expression.
+# Because 0.0 is falsy in Python, this pattern silently replaces a legitimate
+# zero value with the fallback. The correct guard for None is `if x is None`.
+#
+# Pattern:
+#   pass_rate = total_passed / total or 0   ← 0% pass rate disappears!
+#   score = compute_score() or 0.0          ← valid 0 treated as missing
+#
+# Safe contexts (not flagged):
+#   - Right-hand side of `or` is not a numeric zero (e.g. `x or ""`, `x or []`)
+#   - Left-hand side has no float hint (e.g. `count or 0` — count is usually int)
+# ---------------------------------------------------------------------------
+
+_FLOAT_HINT_NAMES = frozenset(
+    {
+        "rate",
+        "score",
+        "ratio",
+        "pct",
+        "percent",
+        "frac",
+        "fraction",
+        "prob",
+        "probability",
+        "conf",
+        "confidence",
+        "weight",
+        "freq",
+        "frequency",
+        "avg",
+        "average",
+        "mean",
+        "loss",
+        "accuracy",
+        "precision",
+        "recall",
+        "f1",
+        "auc",
+        "metric",
+    }
+)
+
+
+def _has_float_hint(node: pyast.expr) -> bool:
+    """Return True if node is likely float-valued."""
+    if isinstance(node, pyast.BinOp) and isinstance(node.op, pyast.Div):
+        return True
+    if isinstance(node, pyast.Call):
+        func = node.func
+        if isinstance(func, pyast.Name) and func.id in ("float", "sum"):
+            return True
+        if isinstance(func, pyast.Attribute) and func.attr in (
+            "mean",
+            "average",
+            "std",
+            "var",
+            "score",
+        ):
+            return True
+    if isinstance(node, pyast.Name):
+        name_low = node.id.lower()
+        return any(hint in name_low for hint in _FLOAT_HINT_NAMES)
+    if isinstance(node, pyast.Attribute):
+        name_low = node.attr.lower()
+        return any(hint in name_low for hint in _FLOAT_HINT_NAMES)
+    return False
+
+
+def _is_numeric_zero(node: pyast.expr) -> bool:
+    return (
+        isinstance(node, pyast.Constant)
+        and node.value in (0, 0.0)
+        and isinstance(node.value, (int, float))
+    )
+
+
+@functools.lru_cache(maxsize=None)
+def _scan_file_falsy_or_zero_elision(path: str) -> list[FailureEvidence]:
+    try:
+        with open(path, encoding="utf-8", errors="ignore") as fh:
+            source = fh.read()
+        if " or 0" not in source:
+            return []
+        tree = pyast.parse(source, filename=path)
+    except (SyntaxError, OSError):
+        return []
+
+    results: list[FailureEvidence] = []
+    source_lines = source.splitlines()
+
+    for node in pyast.walk(tree):
+        if not isinstance(node, pyast.BoolOp):
+            continue
+        if not isinstance(node.op, pyast.Or):
+            continue
+        if len(node.values) < 2:
+            continue
+        left = node.values[-2]
+        right = node.values[-1]
+        if not _is_numeric_zero(right):
+            continue
+        if not _has_float_hint(left):
+            continue
+        line_idx = node.lineno - 1
+        if 0 <= line_idx < len(source_lines) and "# noqa" in source_lines[line_idx]:
+            continue
+        call_text = pyast.unparse(left) if hasattr(pyast, "unparse") else "..."
+        results.append(
+            FailureEvidence(
+                mode_name="falsy_or_zero_elision",
+                file=path,
+                line=node.lineno,
+                call=f"{call_text} or {right.value!r}",
+                message=(
+                    f"`{call_text} or {right.value!r}` silently replaces a valid zero "
+                    "with the fallback — use `x if x is not None else 0` to guard "
+                    "only the None case"
+                ),
+            )
+        )
+    return results
+
+
+FALSY_OR_ZERO_ELISION = FailureMode(
+    name="falsy_or_zero_elision",
+    description=(
+        "`x or 0` where x is a float-typed expression. Because 0.0 is falsy in "
+        "Python, this silently replaces a legitimate zero with the fallback value. "
+        "Use `x if x is not None else 0` to guard only the None case."
+    ),
+    check=None,
+    file_check=_scan_file_falsy_or_zero_elision,
+)
+
+
+# ---------------------------------------------------------------------------
 # Registry — all active failure modes
 # ---------------------------------------------------------------------------
 
@@ -2749,4 +2887,5 @@ DEFAULT_MODES: list[FailureMode] = [
     UNVALIDATED_LOOKUP_CHAIN,
     PROMPT_INJECTION_RISK,
     ASYNCIO_RUN_IN_ASYNC,
+    FALSY_OR_ZERO_ELISION,
 ]
