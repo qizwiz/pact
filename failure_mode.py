@@ -3074,6 +3074,119 @@ SHEAF_LLM_UNGUARDED = FailureMode(
 
 
 # ---------------------------------------------------------------------------
+# json_loads_unguarded — json.loads() without try/except catching decode errors
+# ---------------------------------------------------------------------------
+
+
+def _try_catches_json_error(handler: pyast.ExceptHandler) -> bool:
+    """True if except handler catches json.JSONDecodeError, ValueError, or Exception."""
+    if handler.type is None:  # bare except:
+        return True
+    if isinstance(handler.type, pyast.Attribute):
+        if (
+            isinstance(handler.type.value, pyast.Name)
+            and handler.type.value.id == "json"
+            and handler.type.attr == "JSONDecodeError"
+        ):
+            return True
+    if isinstance(handler.type, pyast.Name):
+        return handler.type.id in {"ValueError", "Exception", "BaseException"}
+    if isinstance(handler.type, pyast.Tuple):
+        for elt in handler.type.elts:
+            if isinstance(elt, pyast.Name) and elt.id in {
+                "ValueError",
+                "Exception",
+                "BaseException",
+            }:
+                return True
+            if (
+                isinstance(elt, pyast.Attribute)
+                and isinstance(elt.value, pyast.Name)
+                and elt.value.id == "json"
+                and elt.attr == "JSONDecodeError"
+            ):
+                return True
+    return False
+
+
+def _is_in_json_guarded_try(
+    node: pyast.AST, parent_map: dict[pyast.AST, pyast.AST]
+) -> bool:
+    """True if node lives in a try body whose handlers catch JSON decode errors."""
+    current: pyast.AST = node
+    while current in parent_map:
+        parent = parent_map[current]
+        if isinstance(parent, pyast.Try):
+            if current in parent.body:
+                for handler in parent.handlers:
+                    if _try_catches_json_error(handler):
+                        return True
+        current = parent
+    return False
+
+
+@functools.lru_cache(maxsize=None)
+def _scan_file_json_loads_unguarded(path: str) -> list[FailureEvidence]:
+    try:
+        with open(path, encoding="utf-8", errors="ignore") as fh:
+            source = fh.read()
+    except OSError:
+        return []
+    if "json.loads" not in source:
+        return []
+    try:
+        tree = pyast.parse(source, filename=path)
+    except SyntaxError:
+        return []
+
+    parent_map: dict[pyast.AST, pyast.AST] = {}
+    for node in pyast.walk(tree):
+        for child in pyast.iter_child_nodes(node):
+            parent_map[child] = node
+
+    results: list[FailureEvidence] = []
+    for node in pyast.walk(tree):
+        if not isinstance(node, pyast.Call):
+            continue
+        func = node.func
+        if not (
+            isinstance(func, pyast.Attribute)
+            and func.attr == "loads"
+            and isinstance(func.value, pyast.Name)
+            and func.value.id == "json"
+        ):
+            continue
+        if _is_in_json_guarded_try(node, parent_map):
+            continue
+        arg_src = pyast.unparse(node.args[0]) if node.args else "..."
+        results.append(
+            FailureEvidence(
+                mode_name="json_loads_unguarded",
+                file=path,
+                line=node.lineno,
+                call=f"json.loads({arg_src})",
+                message=(
+                    "json.loads() without try/except json.JSONDecodeError — "
+                    "LLM/API output is often invalid JSON; crashes with ValueError"
+                ),
+            )
+        )
+    return results
+
+
+JSON_LOADS_UNGUARDED = FailureMode(
+    name="json_loads_unguarded",
+    description=(
+        "json.loads() call without a surrounding try/except that catches "
+        "json.JSONDecodeError or ValueError. LLM and API responses frequently "
+        "return malformed JSON; an unguarded parse raises ValueError at runtime."
+    ),
+    check=None,
+    file_check=_scan_file_json_loads_unguarded,
+)
+
+
+# ---------------------------------------------------------------------------
 # Registry — all active failure modes
 # ---------------------------------------------------------------------------
 
@@ -3093,4 +3206,5 @@ DEFAULT_MODES: list[FailureMode] = [
     FALSY_OR_ZERO_ELISION,
     SUBPROCESS_EXIT_CODE_UNCHECKED,
     SHEAF_LLM_UNGUARDED,
+    JSON_LOADS_UNGUARDED,
 ]

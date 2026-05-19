@@ -4743,3 +4743,79 @@ def test_sheaf_llm_unguarded_no_choices_skipped(tmp_path):
     (tmp_path / "a.py").write_text("x = 1 + 1\n")
     results = check_codebase(tmp_path, modes=[SHEAF_LLM_UNGUARDED])
     assert not results, "file with no LLM access patterns must not be flagged"
+
+
+def test_json_loads_unguarded_flagged(tmp_path):
+    """Bare json.loads() without try/except is flagged."""
+    from .failure_mode import JSON_LOADS_UNGUARDED
+
+    (tmp_path / "a.py").write_text(
+        "import json\n" "def parse(text):\n" "    return json.loads(text)\n"
+    )
+    results = check_codebase(tmp_path, modes=[JSON_LOADS_UNGUARDED])
+    assert any(
+        r.context == "json_loads_unguarded" for r in results
+    ), "unguarded json.loads() must be flagged"
+
+
+def test_json_loads_guarded_by_value_error_not_flagged(tmp_path):
+    """json.loads() inside try/except ValueError is safe."""
+    from .failure_mode import JSON_LOADS_UNGUARDED
+
+    (tmp_path / "a.py").write_text(
+        "import json\n"
+        "def parse(text):\n"
+        "    try:\n"
+        "        return json.loads(text)\n"
+        "    except ValueError:\n"
+        "        return None\n"
+    )
+    results = check_codebase(tmp_path, modes=[JSON_LOADS_UNGUARDED])
+    assert not results, "json.loads() guarded by ValueError must not be flagged"
+
+
+def test_json_loads_guarded_by_json_decode_error_not_flagged(tmp_path):
+    """json.loads() inside try/except json.JSONDecodeError is safe."""
+    from .failure_mode import JSON_LOADS_UNGUARDED
+
+    (tmp_path / "a.py").write_text(
+        "import json\n"
+        "def parse(text):\n"
+        "    try:\n"
+        "        return json.loads(text)\n"
+        "    except json.JSONDecodeError:\n"
+        "        return None\n"
+    )
+    results = check_codebase(tmp_path, modes=[JSON_LOADS_UNGUARDED])
+    assert (
+        not results
+    ), "json.loads() guarded by json.JSONDecodeError must not be flagged"
+
+
+def test_json_loads_no_json_fast_path(tmp_path):
+    """File without json.loads is fast-path skipped."""
+    from .failure_mode import JSON_LOADS_UNGUARDED
+
+    (tmp_path / "a.py").write_text("x = 1 + 1\n")
+    results = check_codebase(tmp_path, modes=[JSON_LOADS_UNGUARDED])
+    assert not results, "file with no json.loads must not be flagged"
+
+
+def test_json_loads_in_exception_handler_not_flagged(tmp_path):
+    """json.loads inside the except body itself (re-parse) is still checked."""
+    from .failure_mode import JSON_LOADS_UNGUARDED
+
+    (tmp_path / "a.py").write_text(
+        "import json\n"
+        "def parse(text):\n"
+        "    try:\n"
+        "        data = json.loads(text)\n"
+        "    except ValueError:\n"
+        "        data = json.loads('{}')\n"
+        "    return data\n"
+    )
+    results = check_codebase(tmp_path, modes=[JSON_LOADS_UNGUARDED])
+    # The first call (line 4) is guarded; the call in except body (line 6) is NOT in a try body
+    assert any(
+        r.context == "json_loads_unguarded" for r in results
+    ), "json.loads() in bare except body should be flagged"
