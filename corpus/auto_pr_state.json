@@ -3,12 +3,16 @@
     "vllm-project/vllm",
     "run-llama/llama_index",
     "langchain-ai/langchain",
-    "infiniflow/ragflow"
+    "infiniflow/ragflow",
+    "Significant-Gravitas/AutoGPT"
   ],
   "skipped": [
     "google/adk-python",
     "google/adk-python",
-    "Aider-AI/aider",
-    "Significant-Gravitas/AutoGPT"
-  ]
+    "Aider-AI/aider"
+  ],
+  "notes": {
+    "langchain-ai/langchain": "PR #37516 auto-closed by bot; issue #37517 opened; awaiting maintainer reopen",
+    "Significant-Gravitas/AutoGPT": "PR #13157 — fork is qizwiz/Auto-GPT (hyphenated); 1 llm_response_unguarded + 5 bare_except fixed"
+  }
 }
