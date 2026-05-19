@@ -46,6 +46,7 @@ FIX_MODES = frozenset(
         "unvalidated_lookup_chain",
         "asyncio_run_in_async",
         "subprocess_exit_code_unchecked",
+        "falsy_or_zero_elision",
     }
 )
 
@@ -833,6 +834,61 @@ def _fix_asyncio_run_in_async(
     return result, applied, skipped
 
 
+_FALSY_OR_ZERO_RE = re.compile(
+    r"(?<![=!<>])(?<!\bif\b)\b([A-Za-z_][A-Za-z0-9_]*)\s+or\s+(0(?:\.0)?)\b"
+)
+
+
+def _fix_falsy_or_zero_elision(
+    source: str,  # noqa: ARG001
+    lines: list[str],
+    violations: list[FailureEvidence],
+) -> tuple[list[str], list[FailureEvidence], list[FailureEvidence]]:
+    """Rewrite `var or 0` → `var if var is not None else 0`.
+
+    Only fixes simple single-token left-hand sides (variable names). Complex
+    expressions like `total / count or 0` are skipped to avoid double-evaluation.
+    The ev.call field carries `<expr> or <zero>` — we parse the variable name
+    from there and match it on the line.
+    """
+    result = list(lines)
+    applied: list[FailureEvidence] = []
+    skipped: list[FailureEvidence] = []
+
+    for ev in sorted(violations, key=lambda e: e.line, reverse=True):
+        line_idx = ev.line - 1
+        if line_idx < 0 or line_idx >= len(result):
+            skipped.append(ev)
+            continue
+
+        raw = result[line_idx]
+
+        # Parse call: "<left> or <zero>"
+        call = getattr(ev, "call", "") or ""
+        if " or " not in call:
+            skipped.append(ev)
+            continue
+        left_expr, _, zero_str = call.partition(" or ")
+        left_expr = left_expr.strip()
+        zero_str = zero_str.strip()
+
+        # Only handle simple variable names on the left
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", left_expr):
+            skipped.append(ev)
+            continue
+
+        target = f"{left_expr} or {zero_str}"
+        replacement = f"{left_expr} if {left_expr} is not None else {zero_str}"
+        if target not in raw:
+            skipped.append(ev)
+            continue
+
+        result[line_idx] = raw.replace(target, replacement, 1)
+        applied.append(ev)
+
+    return result, applied, skipped
+
+
 _SUBPROCESS_RUN_RE = re.compile(r"\bsubprocess\.(run|call|Popen)\s*\(")
 
 
@@ -979,6 +1035,13 @@ def fix_file(
         lines, applied, skipped = _fix_asyncio_run_in_async(
             original, lines, async_run_evs
         )
+        all_applied.extend(applied)
+        all_skipped.extend(skipped)
+
+    # Apply falsy_or_zero_elision fixes (var or 0 → var if var is not None else 0)
+    falsy_evs = [v for v in fixable if _mode(v) == "falsy_or_zero_elision"]
+    if falsy_evs:
+        lines, applied, skipped = _fix_falsy_or_zero_elision(original, lines, falsy_evs)
         all_applied.extend(applied)
         all_skipped.extend(skipped)
 

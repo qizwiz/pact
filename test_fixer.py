@@ -964,3 +964,54 @@ def test_subprocess_already_check_true_skipped(tmp_path):
     ev = _ev("subprocess_exit_code_unchecked", 2, "subprocess.run(...)", str(f))
     result = fix_file(str(f), [ev])
     assert not result.changed
+
+
+# ---------------------------------------------------------------------------
+# falsy_or_zero_elision fixer
+# ---------------------------------------------------------------------------
+
+
+def test_fix_modes_contains_falsy_or_zero(tmp_path):
+    assert "falsy_or_zero_elision" in FIX_MODES
+
+
+def test_falsy_or_zero_simple_var_fixed(tmp_path):
+    """score or 0 → score if score is not None else 0"""
+    f = tmp_path / "a.py"
+    f.write_text("result = score or 0\n")
+    ev = _ev("falsy_or_zero_elision", 1, "score or 0", str(f))
+    result = fix_file(str(f), [ev])
+    assert result.changed
+    assert "score if score is not None else 0" in result.patched
+    ast.parse(result.patched)
+
+
+def test_falsy_or_zero_float_zero_fixed(tmp_path):
+    """ratio or 0.0 → ratio if ratio is not None else 0.0"""
+    f = tmp_path / "a.py"
+    f.write_text("x = ratio or 0.0\n")
+    ev = _ev("falsy_or_zero_elision", 1, "ratio or 0.0", str(f))
+    result = fix_file(str(f), [ev])
+    assert result.changed
+    assert "ratio if ratio is not None else 0.0" in result.patched
+    ast.parse(result.patched)
+
+
+def test_falsy_or_zero_complex_expr_skipped(tmp_path):
+    """total / count or 0 — complex left-hand side is skipped."""
+    f = tmp_path / "a.py"
+    f.write_text("result = total / count or 0\n")
+    ev = _ev("falsy_or_zero_elision", 1, "total / count or 0", str(f))
+    result = fix_file(str(f), [ev])
+    assert not result.changed
+
+
+def test_falsy_or_zero_in_assignment_context(tmp_path):
+    """pass_rate = score or 0 — fixes inline in assignment."""
+    f = tmp_path / "a.py"
+    f.write_text("pass_rate = score or 0\n")
+    ev = _ev("falsy_or_zero_elision", 1, "score or 0", str(f))
+    result = fix_file(str(f), [ev])
+    assert result.changed
+    assert "score if score is not None else 0" in result.patched
+    ast.parse(result.patched)
