@@ -403,6 +403,21 @@ def _fix_bare_except(
             indent, _space, rest = m.groups()
             result[ev.line - 1] = f"{indent}except Exception{rest}\n"
             applied.append(ev)
+            # If the body is just `pass`, also replace it so the result
+            # doesn't immediately re-trigger the `except Exception: pass` variant.
+            except_idx = ev.line - 1
+            for i in range(except_idx + 1, min(except_idx + 6, len(result))):
+                raw_body = result[i]
+                stripped = raw_body.strip()
+                if not stripped or stripped.startswith("#"):
+                    continue
+                if stripped == "pass":
+                    body_indent = raw_body[: len(raw_body) - len(raw_body.lstrip())]
+                    result[i] = (
+                        f"{body_indent}raise"
+                        "  # pact: was pass; verify exception should be swallowed\n"
+                    )
+                break
 
         elif ev.call == "except Exception: pass":
             # The except handler is at ev.line (1-indexed).
