@@ -2,10 +2,11 @@
 TypeScript / TSX / JavaScript constraint checker (tree-sitter backed).
 
 Failure modes:
-  missing_await           — async call without await inside an async function
-  optional_dereference    — .find()/.shift()/.pop() result used without null guard
-  empty_catch             — catch (e) {} — silent error suppression
-  llm_response_unguarded  — choices[0] accessed without optional chaining (?.[0])
+  missing_await              — async call without await inside an async function
+  optional_dereference       — .find()/.shift()/.pop() result used without null guard
+  empty_catch                — catch (e) {} — silent error suppression
+  llm_response_unguarded     — choices[0] accessed without optional chaining (?.[0])
+  unvalidated_lookup_chain   — .get(key) result dereferenced without null guard
 """
 
 from __future__ import annotations
@@ -405,6 +406,49 @@ def _scan_empty_catch(root_node) -> list[tuple[int, str, str]]:
     return results
 
 
+def _scan_unvalidated_map_get(root_node) -> list[tuple[int, str, str]]:
+    """Detect .get(key) result immediately dereferenced without optional chaining.
+
+    Pattern flagged:
+        myMap.get(key).property     ← TypeError if key absent (returns undefined)
+        myMap.get(key)[index]       ← same
+
+    Safe patterns (skipped):
+        myMap.get(key)?.property    ← optional chaining — explicitly guarded
+    """
+    results = []
+
+    def walk(node):
+        # member_expression: obj.prop (or obj?.prop with optional_chain child)
+        if node.type in ("member_expression", "subscript_expression"):
+            has_optional = any(c.type == "optional_chain" for c in node.children)
+            if not has_optional:
+                obj = node.child_by_field_name("object")
+                if obj is not None and obj.type == "call_expression":
+                    func = obj.child_by_field_name("function")
+                    if func is not None and func.type == "member_expression":
+                        prop_nodes = [
+                            c for c in func.children if c.type == "property_identifier"
+                        ]
+                        if prop_nodes and prop_nodes[0].text == b"get":
+                            call_text = obj.text.decode("utf-8", errors="replace")[:80]
+                            results.append(
+                                (
+                                    node.start_point[0] + 1,
+                                    call_text,
+                                    f"'{call_text}' dereferenced without null guard — "
+                                    ".get() returns undefined if key is absent; "
+                                    "use optional chaining (?.) or check for undefined first",
+                                )
+                            )
+                            return  # don't descend into flagged node
+        for child in node.children:
+            walk(child)
+
+    walk(root_node)
+    return results
+
+
 _CHOICES_RE = re.compile(rb"\bchoices\b")
 
 
@@ -558,6 +602,17 @@ def check_ts_file(path: str) -> list:
                 call=call,
                 missing=[msg],
                 context="llm_response_unguarded",
+            )
+        )
+
+    for line, call, msg in _scan_unvalidated_map_get(root):
+        violations.append(
+            Violation(
+                file=path,
+                line=line,
+                call=call,
+                missing=[msg],
+                context="unvalidated_lookup_chain",
             )
         )
 

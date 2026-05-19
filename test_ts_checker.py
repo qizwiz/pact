@@ -217,3 +217,78 @@ def test_node_modules_files_excluded(tmp_path):
         from ts_checker import check_ts_files  # type: ignore
     viols = check_ts_files(tmp_path)
     assert all("node_modules" not in v.file for v in viols)
+
+
+# ---------------------------------------------------------------------------
+# unvalidated_lookup_chain — .get(key) result dereferenced without null guard
+# ---------------------------------------------------------------------------
+
+
+@needs_ts
+def test_ts_map_get_immediate_dereference_flagged(tmp_path):
+    """myMap.get(key).property must be flagged — get() can return undefined."""
+    src = """\
+        function getName(id: string) {
+          const user = userMap.get(id).name;
+          return user;
+        }
+    """
+    viols = _write_and_check(tmp_path, "a.ts", src)
+    ulc = [v for v in viols if v.context == "unvalidated_lookup_chain"]
+    assert ulc, "myMap.get(id).name should be flagged"
+    assert "userMap.get(id)" in ulc[0].call
+
+
+@needs_ts
+def test_ts_map_get_optional_chain_safe(tmp_path):
+    """myMap.get(key)?.property uses optional chaining — not flagged."""
+    src = """\
+        function getName(id: string) {
+          const name = userMap.get(id)?.name;
+          return name;
+        }
+    """
+    viols = _write_and_check(tmp_path, "b.ts", src)
+    ulc = [v for v in viols if v.context == "unvalidated_lookup_chain"]
+    assert not ulc, "optional chaining should not be flagged"
+
+
+@needs_ts
+def test_ts_map_get_result_stored_not_flagged(tmp_path):
+    """Storing .get() in a variable (not immediately dereferencing) is not flagged."""
+    src = """\
+        function getName(id: string) {
+          const user = userMap.get(id);
+          if (user) return user.name;
+          return null;
+        }
+    """
+    viols = _write_and_check(tmp_path, "c.ts", src)
+    ulc = [v for v in viols if v.context == "unvalidated_lookup_chain"]
+    assert not ulc, "stored result with null check should not be flagged"
+
+
+@needs_js
+def test_js_map_get_subscript_dereference_flagged(tmp_path):
+    """myMap.get(key)[0] — subscript dereference of .get() result, JS."""
+    src = """\
+        function first(key) {
+          return dataMap.get(key)[0];
+        }
+    """
+    viols = _write_and_check(tmp_path, "d.js", src)
+    ulc = [v for v in viols if v.context == "unvalidated_lookup_chain"]
+    assert ulc, "subscript dereference of .get() should be flagged"
+
+
+@needs_js
+def test_js_non_get_method_not_flagged(tmp_path):
+    """myMap.set(key).something — .set() is not .get(); not flagged."""
+    src = """\
+        function store(key, val) {
+          return dataMap.set(key, val).size;
+        }
+    """
+    viols = _write_and_check(tmp_path, "e.js", src)
+    ulc = [v for v in viols if v.context == "unvalidated_lookup_chain"]
+    assert not ulc, ".set() result dereference should not be flagged"
