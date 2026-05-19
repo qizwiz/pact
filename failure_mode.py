@@ -2871,6 +2871,141 @@ FALSY_OR_ZERO_ELISION = FailureMode(
 
 
 # ---------------------------------------------------------------------------
+# Failure mode: subprocess_exit_code_unchecked
+#
+# Detects: subprocess.run() / subprocess.call() calls where the exit code is
+# silently ignored. A non-zero exit code means the command failed; ignoring it
+# hides errors that should propagate.
+#
+# Pattern:
+#   subprocess.run(["git", "pull"])          ← result discarded, failure silent
+#   proc = subprocess.run(["make"])          ← captured but returncode never read
+#
+# Safe contexts (not flagged):
+#   - `check=True` kwarg is present  (raises CalledProcessError on non-zero)
+#   - Result assigned and `.returncode` referenced in the same block
+#   - `subprocess.check_call()` / `subprocess.check_output()` (always raise)
+# ---------------------------------------------------------------------------
+
+
+@functools.lru_cache(maxsize=None)
+def _scan_file_subprocess_exit_code(path: str) -> list[FailureEvidence]:
+    try:
+        with open(path, encoding="utf-8", errors="ignore") as fh:
+            source = fh.read()
+        if "subprocess" not in source:
+            return []
+        tree = pyast.parse(source, filename=path)
+    except (SyntaxError, OSError):
+        return []
+
+    _UNCHECKED_FUNCS = frozenset({"run", "call", "Popen"})
+
+    results: list[FailureEvidence] = []
+    source_lines = source.splitlines()
+
+    # Collect all Name/Attribute nodes that access .returncode or .poll() in the file.
+    # We use this for the assigned-variable safe path.
+    returncode_names: set[str] = set()
+    for node in pyast.walk(tree):
+        if isinstance(node, pyast.Attribute) and node.attr in ("returncode", "poll"):
+            if isinstance(node.value, pyast.Name):
+                returncode_names.add(node.value.id)
+
+    for node in pyast.walk(tree):
+        # Must be a Call node targeting subprocess.run/call/Popen
+        if not isinstance(node, pyast.Call):
+            continue
+        func = node.func
+        if not (
+            isinstance(func, pyast.Attribute)
+            and func.attr in _UNCHECKED_FUNCS
+            and isinstance(func.value, pyast.Name)
+            and func.value.id == "subprocess"
+        ):
+            continue
+
+        # Safe if check=True is in kwargs
+        if any(
+            kw.arg == "check"
+            and isinstance(kw.value, pyast.Constant)
+            and kw.value.value
+            for kw in node.keywords
+        ):
+            continue
+
+        line_idx = node.lineno - 1
+        if 0 <= line_idx < len(source_lines) and "# noqa" in source_lines[line_idx]:
+            continue
+
+        call_text = f"subprocess.{func.attr}(...)"
+
+        # Walk parent to determine context: expression statement vs assignment
+        # We rebuild a parent map for this file once (lazily via set check).
+        # For simplicity: flag if it appears as a bare Expr statement (result discarded).
+        # Assignment case: flag only if the assigned name never has .returncode accessed.
+        # We approximate "parent is Expr" by walking the tree for Expr nodes.
+        results.append(
+            FailureEvidence(
+                mode_name="subprocess_exit_code_unchecked",
+                file=path,
+                line=node.lineno,
+                call=call_text,
+                message=(
+                    f"`{call_text}` exit code is not checked — use `check=True` to "
+                    "raise on failure, or test `.returncode` explicitly"
+                ),
+            )
+        )
+
+    # Filter out cases where the result is captured and .returncode IS accessed.
+    # We already have returncode_names from the walk above. For assignments like
+    # `proc = subprocess.run(...)`, if `proc` appears in returncode_names, it's safe.
+    # We need to correlate: find the assigned name for each flagged call.
+    # Rebuild with assignment correlation:
+    safe_lines: set[int] = set()
+    for node in pyast.walk(tree):
+        if not isinstance(node, pyast.Assign):
+            continue
+        if len(node.targets) != 1:
+            continue
+        target = node.targets[0]
+        if not isinstance(target, pyast.Name):
+            continue
+        val = node.value
+        if not isinstance(val, pyast.Call):
+            continue
+        func = val.func
+        if not (
+            isinstance(func, pyast.Attribute)
+            and func.attr in _UNCHECKED_FUNCS
+            and isinstance(func.value, pyast.Name)
+            and func.value.id == "subprocess"
+        ):
+            continue
+        if target.id in returncode_names:
+            safe_lines.add(node.lineno)
+
+    # Also mark bare Expr statements that are NOT assignments as always flagged.
+    # Keep only results not in safe_lines.
+    results = [r for r in results if r.line not in safe_lines]
+    return results
+
+
+SUBPROCESS_EXIT_CODE_UNCHECKED = FailureMode(
+    name="subprocess_exit_code_unchecked",
+    description=(
+        "subprocess.run() / subprocess.call() / subprocess.Popen() called without "
+        "`check=True` and without testing `.returncode`. A non-zero exit code is "
+        "silently ignored, hiding command failures. Use `check=True` or explicitly "
+        "test `result.returncode != 0`."
+    ),
+    check=None,
+    file_check=_scan_file_subprocess_exit_code,
+)
+
+
+# ---------------------------------------------------------------------------
 # Registry — all active failure modes
 # ---------------------------------------------------------------------------
 
@@ -2888,4 +3023,5 @@ DEFAULT_MODES: list[FailureMode] = [
     PROMPT_INJECTION_RISK,
     ASYNCIO_RUN_IN_ASYNC,
     FALSY_OR_ZERO_ELISION,
+    SUBPROCESS_EXIT_CODE_UNCHECKED,
 ]

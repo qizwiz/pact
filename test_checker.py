@@ -4642,3 +4642,64 @@ def test_falsy_or_zero_elision_string_fallback_not_flagged(tmp_path):
     (tmp_path / "a.py").write_text("x = score or ''\n")
     results = check_codebase(tmp_path, modes=[FALSY_OR_ZERO_ELISION])
     assert not results, "`score or ''` fallback is not numeric — must not be flagged"
+
+
+# ---------------------------------------------------------------------------
+# subprocess_exit_code_unchecked
+# ---------------------------------------------------------------------------
+
+
+def test_subprocess_run_bare_flagged(tmp_path):
+    """subprocess.run() with result discarded must be flagged."""
+    from .failure_mode import SUBPROCESS_EXIT_CODE_UNCHECKED
+
+    (tmp_path / "a.py").write_text("import subprocess\nsubprocess.run(['ls'])\n")
+    results = check_codebase(tmp_path, modes=[SUBPROCESS_EXIT_CODE_UNCHECKED])
+    assert any(
+        r.context == "subprocess_exit_code_unchecked" for r in results
+    ), "bare subprocess.run() must be flagged"
+
+
+def test_subprocess_run_check_true_not_flagged(tmp_path):
+    """subprocess.run(check=True) is safe — raises on non-zero."""
+    from .failure_mode import SUBPROCESS_EXIT_CODE_UNCHECKED
+
+    (tmp_path / "a.py").write_text(
+        "import subprocess\nsubprocess.run(['ls'], check=True)\n"
+    )
+    results = check_codebase(tmp_path, modes=[SUBPROCESS_EXIT_CODE_UNCHECKED])
+    assert not results, "subprocess.run(check=True) must not be flagged"
+
+
+def test_subprocess_run_returncode_checked_not_flagged(tmp_path):
+    """Assigned result with .returncode access is safe."""
+    from .failure_mode import SUBPROCESS_EXIT_CODE_UNCHECKED
+
+    (tmp_path / "a.py").write_text(
+        "import subprocess\n"
+        "proc = subprocess.run(['make'])\n"
+        "if proc.returncode != 0:\n"
+        "    raise RuntimeError('build failed')\n"
+    )
+    results = check_codebase(tmp_path, modes=[SUBPROCESS_EXIT_CODE_UNCHECKED])
+    assert not results, "subprocess.run() with subsequent .returncode check must not be flagged"
+
+
+def test_subprocess_call_bare_flagged(tmp_path):
+    """subprocess.call() without check is also flagged."""
+    from .failure_mode import SUBPROCESS_EXIT_CODE_UNCHECKED
+
+    (tmp_path / "a.py").write_text("import subprocess\nsubprocess.call(['git', 'pull'])\n")
+    results = check_codebase(tmp_path, modes=[SUBPROCESS_EXIT_CODE_UNCHECKED])
+    assert any(
+        r.context == "subprocess_exit_code_unchecked" for r in results
+    ), "bare subprocess.call() must be flagged"
+
+
+def test_subprocess_no_subprocess_not_flagged(tmp_path):
+    """File with no subprocess calls produces no violations."""
+    from .failure_mode import SUBPROCESS_EXIT_CODE_UNCHECKED
+
+    (tmp_path / "a.py").write_text("x = 1 + 1\n")
+    results = check_codebase(tmp_path, modes=[SUBPROCESS_EXIT_CODE_UNCHECKED])
+    assert not results
