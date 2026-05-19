@@ -52,6 +52,7 @@ FIX_MODES = frozenset(
         "falsy_or_zero_elision",
         "prompt_injection_risk",
         "json_loads_unguarded",
+        "required_arg_missing",
     }
 )
 
@@ -1058,6 +1059,88 @@ def _fix_subprocess_exit_code(
 
 
 # ---------------------------------------------------------------------------
+# required_arg_missing fix — insert None placeholder for missing args
+# ---------------------------------------------------------------------------
+
+
+def _fix_required_arg_missing(
+    source: str,
+    lines: list[str],
+    violations: list[FailureEvidence],
+) -> tuple[list[str], list[FailureEvidence], list[FailureEvidence]]:
+    """Insert None placeholder for each missing required argument.
+
+    Before:  result = some_func(a, b)
+    After:   result = some_func(a, b, req=None)  # pact: TODO provide req
+
+    Skips multi-line calls and calls where the closing ')' is not the last
+    meaningful character on the line (chained calls, etc.).
+    """
+    result = list(lines)
+    applied: list[FailureEvidence] = []
+    skipped: list[FailureEvidence] = []
+
+    by_line: dict[int, list[FailureEvidence]] = {}
+    for ev in violations:
+        by_line.setdefault(ev.line, []).append(ev)
+
+    for line_num in sorted(by_line.keys(), reverse=True):
+        evs = by_line[line_num]
+        line_idx = line_num - 1
+        if line_idx < 0 or line_idx >= len(result):
+            skipped.extend(evs)
+            continue
+
+        raw = result[line_idx]
+
+        # Collect all missing arg names, deduplicated, preserving order
+        all_missing: list[str] = []
+        seen: set[str] = set()
+        for ev in evs:
+            for arg in ev.missing or []:
+                if arg not in seen:
+                    all_missing.append(arg)
+                    seen.add(arg)
+
+        if not all_missing:
+            skipped.extend(evs)
+            continue
+
+        callee = evs[0].call
+        call_re = re.compile(r"\b" + re.escape(callee) + r"\s*\(")
+        m = call_re.search(raw)
+        if not m:
+            skipped.extend(evs)
+            continue
+
+        open_pos = m.end()  # index just after the opening '('
+        close_pos = _find_matching_close(raw, open_pos)
+        if close_pos is None:
+            # Multi-line call — skip
+            skipped.extend(evs)
+            continue
+
+        # close_pos is one past ')'; require nothing meaningful follows on this line
+        after = raw[close_pos:].rstrip()
+        if after and not after.startswith("#"):
+            # Chained call or other trailing syntax — too complex to patch safely
+            skipped.extend(evs)
+            continue
+
+        close_idx = close_pos - 1  # index of the ')'
+        inside = raw[open_pos:close_idx].strip().rstrip(",").strip()
+        sep = ", " if inside else ""
+
+        inserts = ", ".join(f"{a}=None" for a in all_missing)
+        todo = f"  # pact: TODO provide {', '.join(all_missing)}"
+
+        result[line_idx] = raw[:close_idx] + sep + inserts + ")" + todo + "\n"
+        applied.extend(evs)
+
+    return result, applied, skipped
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -1187,6 +1270,13 @@ def fix_file(
     json_evs = [v for v in fixable if _mode(v) == "json_loads_unguarded"]
     if json_evs:
         lines, applied, skipped = _fix_json_loads_unguarded(original, lines, json_evs)
+        all_applied.extend(applied)
+        all_skipped.extend(skipped)
+
+    # Apply required_arg_missing fixes (insert arg=None placeholder)
+    req_evs = [v for v in fixable if _mode(v) == "required_arg_missing"]
+    if req_evs:
+        lines, applied, skipped = _fix_required_arg_missing(original, lines, req_evs)
         all_applied.extend(applied)
         all_skipped.extend(skipped)
 

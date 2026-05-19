@@ -1179,3 +1179,77 @@ def test_json_loads_not_json_loads_skipped(tmp_path):
     ev = _ev("json_loads_unguarded", 2, "some_other_call(text)", str(f))
     result = fix_file(str(f), [ev])
     assert not result.changed
+
+
+# ---------------------------------------------------------------------------
+# required_arg_missing
+# ---------------------------------------------------------------------------
+
+
+def _ev_req(line, call, missing, file="x.py"):
+    return FailureEvidence(
+        mode_name="required_arg_missing",
+        file=file,
+        line=line,
+        call=call,
+        message=f"missing required arg(s): {', '.join(missing)}",
+        missing=list(missing),
+    )
+
+
+def test_required_arg_missing_in_fix_modes():
+    assert "required_arg_missing" in FIX_MODES
+
+
+def test_required_arg_missing_empty_call_adds_placeholder(tmp_path):
+    """func() with missing required arg → func(req=None)  # pact: TODO"""
+    f = tmp_path / "a.py"
+    f.write_text("result = some_func()\n")
+    ev = _ev_req(1, "some_func", ["required_arg"], str(f))
+    result = fix_file(str(f), [ev])
+    assert result.changed
+    assert "required_arg=None" in result.patched
+    assert "# pact: TODO provide required_arg" in result.patched
+    assert ast.parse(result.patched)  # valid Python
+
+
+def test_required_arg_missing_with_existing_args(tmp_path):
+    """func(a, b) with missing arg → func(a, b, req=None)  # pact: TODO"""
+    f = tmp_path / "a.py"
+    f.write_text("result = compute(x, y)\n")
+    ev = _ev_req(1, "compute", ["threshold"], str(f))
+    result = fix_file(str(f), [ev])
+    assert result.changed
+    assert "compute(x, y, threshold=None)" in result.patched
+    assert "# pact: TODO provide threshold" in result.patched
+
+
+def test_required_arg_missing_multiple_args(tmp_path):
+    """Multiple missing args all inserted."""
+    f = tmp_path / "a.py"
+    f.write_text("obj = MyClass(name)\n")
+    ev = _ev_req(1, "MyClass", ["timeout", "retries"], str(f))
+    result = fix_file(str(f), [ev])
+    assert result.changed
+    assert "timeout=None" in result.patched
+    assert "retries=None" in result.patched
+    assert ast.parse(result.patched)
+
+
+def test_required_arg_missing_multiline_call_skipped(tmp_path):
+    """Multi-line calls are skipped (no closing ) on same line)."""
+    f = tmp_path / "a.py"
+    src = "result = func(\n    arg1,\n    arg2,\n)\n"
+    f.write_text(src)
+    ev = _ev_req(1, "func", ["missing_arg"], str(f))
+    result = fix_file(str(f), [ev])
+    assert not result.changed
+
+
+def test_required_arg_missing_callee_not_found_skipped(tmp_path):
+    """If callee name not found on the flagged line, violation is skipped."""
+    f = tmp_path / "a.py"
+    f.write_text("result = other_func(x)\n")
+    ev = _ev_req(1, "some_func", ["arg"], str(f))
+    result = fix_file(str(f), [ev])
+    assert not result.changed
