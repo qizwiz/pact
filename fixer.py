@@ -54,6 +54,7 @@ FIX_MODES = frozenset(
         "json_loads_unguarded",
         "required_arg_missing",
         "timeout_not_set",
+        "eager_any_guard",
     }
 )
 
@@ -830,19 +831,24 @@ def _fix_unvalidated_lookup_chain(
 _ASYNCIO_RUN_RE = re.compile(r"\basyncio\.run\(")
 
 
-def _find_matching_close(line: str, open_pos: int) -> int | None:
-    """Return the index just past the ')' that closes the '(' at open_pos-1.
+def _find_matching_close(
+    line: str,
+    open_pos: int,
+    open_char: str = "(",
+    close_char: str = ")",
+) -> int | None:
+    """Return the index just past the close_char that matches the open_char at open_pos-1.
 
-    open_pos is the position after the opening '('.  Returns None if the
-    closing paren is not found on this line (multi-line call — skip).
+    open_pos is the position after the opening bracket.  Returns None if the
+    closing bracket is not found on this line (multi-line call — skip).
     """
     depth = 1
     pos = open_pos
     while pos < len(line) and depth > 0:
         ch = line[pos]
-        if ch == "(":
+        if ch == open_char:
             depth += 1
-        elif ch == ")":
+        elif ch == close_char:
             depth -= 1
         pos += 1
     return pos if depth == 0 else None
@@ -1265,6 +1271,112 @@ def _fix_timeout_not_set(
 
 
 # ---------------------------------------------------------------------------
+# eager_any_guard fix
+# ---------------------------------------------------------------------------
+# any([expr1, expr2, ...]) → expr1 or expr2 or ...
+# all([expr1, expr2, ...]) → expr1 and expr2 and ...
+#
+# Only handles single-line any([...]) calls. Multi-line skipped for safety.
+# ---------------------------------------------------------------------------
+
+_ANY_ALL_RE = re.compile(r"\b(any|all)\s*\(\[")
+
+
+def _split_list_elements(text: str) -> list[str]:
+    """Split comma-separated list elements respecting nested parens/brackets."""
+    elements = []
+    depth = 0
+    current: list[str] = []
+    for ch in text:
+        if ch in "([{":
+            depth += 1
+        elif ch in ")]}":
+            depth -= 1
+        if ch == "," and depth == 0:
+            elements.append("".join(current).strip())
+            current = []
+        else:
+            current.append(ch)
+    if current:
+        elements.append("".join(current).strip())
+    return [e for e in elements if e]
+
+
+def _fix_eager_any_guard(
+    source: str,
+    lines: list[str],
+    violations: list[FailureEvidence],
+) -> tuple[list[str], list[FailureEvidence], list[FailureEvidence]]:
+    """Convert any([a, b]) → a or b  /  all([a, b]) → a and b.
+
+    Only applies to single-line calls. Multi-line calls are skipped.
+    """
+    import ast as _ast
+
+    result = list(lines)
+    applied: list[FailureEvidence] = []
+    skipped: list[FailureEvidence] = []
+
+    for ev in sorted(violations, key=lambda e: e.line, reverse=True):
+        line_idx = ev.line - 1
+        if line_idx < 0 or line_idx >= len(result):
+            skipped.append(ev)
+            continue
+
+        raw = result[line_idx]
+        m = _ANY_ALL_RE.search(raw)
+        if not m:
+            skipped.append(ev)
+            continue
+
+        fn_name = m.group(1)
+        list_open = m.end()  # points to first char after '['
+
+        # Find matching ']' for the inner list
+        bracket_close = _find_matching_close(
+            raw, list_open, open_char="[", close_char="]"
+        )
+        if bracket_close is None:
+            skipped.append(ev)
+            continue
+
+        # Verify the ')' follows immediately (possibly with whitespace)
+        after_bracket = raw[bracket_close:].lstrip()
+        if not after_bracket.startswith(")"):
+            skipped.append(ev)
+            continue
+
+        paren_close_rel = raw.index(")", bracket_close)
+
+        list_src = raw[list_open - 1 : bracket_close]  # includes '[' and ']'
+        try:
+            list_node = _ast.parse(list_src, mode="eval").body
+        except SyntaxError:
+            skipped.append(ev)
+            continue
+
+        if not isinstance(list_node, _ast.List):
+            skipped.append(ev)
+            continue
+
+        elts_text = list_src[1:-1]  # strip '[' and ']'
+        elts = _split_list_elements(elts_text)
+        if len(elts) < 2:
+            skipped.append(ev)
+            continue
+
+        joiner = " or " if fn_name == "any" else " and "
+        replacement = joiner.join(elts)
+
+        prefix = raw[: m.start()]
+        suffix = raw[paren_close_rel + 1 :]
+        result[line_idx] = prefix + replacement + suffix
+        applied.append(ev)
+
+    return result, applied, skipped
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -1408,6 +1520,13 @@ def fix_file(
     timeout_evs = [v for v in fixable if _mode(v) == "timeout_not_set"]
     if timeout_evs:
         lines, applied, skipped = _fix_timeout_not_set(original, lines, timeout_evs)
+        all_applied.extend(applied)
+        all_skipped.extend(skipped)
+
+    # Apply eager_any_guard fixes (any([a,b]) → a or b)
+    eager_evs = [v for v in fixable if _mode(v) == "eager_any_guard"]
+    if eager_evs:
+        lines, applied, skipped = _fix_eager_any_guard(original, lines, eager_evs)
         all_applied.extend(applied)
         all_skipped.extend(skipped)
 

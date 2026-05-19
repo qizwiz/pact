@@ -3274,6 +3274,93 @@ TIMEOUT_NOT_SET = FailureMode(
 
 
 # ---------------------------------------------------------------------------
+# eager_any_guard — any([expr_with_subscript, ...]) defeats short-circuit
+# ---------------------------------------------------------------------------
+# any([a, b, c]) evaluates ALL elements before calling any().
+# If b or c contains a subscript access (e.g. x[0].attr), it will raise
+# IndexError/KeyError even when a is True — defeating the guard's purpose.
+# Correct form: `a or b or c` (short-circuit evaluation).
+#
+# Detected pattern:
+#   Call(func=Name('any'|'all'), args=[List([..., Subscript(...), ...])])
+# ---------------------------------------------------------------------------
+
+
+@functools.lru_cache(maxsize=None)
+def _scan_file_eager_any_guard(path: str) -> list[FailureEvidence]:
+    try:
+        with open(path, encoding="utf-8", errors="ignore") as fh:
+            source = fh.read()
+    except OSError:
+        return []
+
+    if "any(" not in source and "all(" not in source:
+        return []
+
+    try:
+        tree = pyast.parse(source, filename=path)
+    except SyntaxError:
+        return []
+
+    def _contains_subscript(node) -> bool:
+        for child in pyast.walk(node):
+            if isinstance(child, pyast.Subscript):
+                return True
+        return False
+
+    results: list[FailureEvidence] = []
+    for node in pyast.walk(tree):
+        if not isinstance(node, pyast.Call):
+            continue
+        func = node.func
+        if not isinstance(func, pyast.Name) or func.id not in ("any", "all"):
+            continue
+        if not node.args or not isinstance(node.args[0], pyast.List):
+            continue
+        list_node = node.args[0]
+        if len(list_node.elts) < 2:
+            continue
+        # Flag if any element contains a Subscript — eager evaluation will
+        # raise before any() can short-circuit
+        if any(_contains_subscript(elt) for elt in list_node.elts):
+            fn_name = func.id
+            results.append(
+                FailureEvidence(
+                    mode_name="eager_any_guard",
+                    file=path,
+                    line=node.lineno,
+                    call=f"{fn_name}([...])",
+                    message=(
+                        f"{fn_name}() called with a list literal containing subscript "
+                        "accesses — the list is fully evaluated before short-circuiting "
+                        f"can occur; use `{' or ' if fn_name == 'any' else ' and '}` instead"
+                    ),
+                )
+            )
+    return results
+
+
+def _check_eager_any_guard(
+    call: CallSite,
+    models: dict[str, ModelManifest],
+    functions: dict[str, FunctionManifest],
+) -> list[FailureEvidence]:
+    return []
+
+
+EAGER_ANY_GUARD = FailureMode(
+    name="eager_any_guard",
+    description=(
+        "any([expr1, expr2, ...]) with subscript accesses — list literal is "
+        "fully evaluated before any() is called, so subscripts raise before "
+        "the guard fires. Use `expr1 or expr2 or ...` instead."
+    ),
+    check=_check_eager_any_guard,
+    file_check=_scan_file_eager_any_guard,
+)
+
+
+# ---------------------------------------------------------------------------
 # Registry — all active failure modes
 # ---------------------------------------------------------------------------
 
@@ -3295,4 +3382,5 @@ DEFAULT_MODES: list[FailureMode] = [
     SHEAF_LLM_UNGUARDED,
     JSON_LOADS_UNGUARDED,
     TIMEOUT_NOT_SET,
+    EAGER_ANY_GUARD,
 ]

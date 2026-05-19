@@ -14,6 +14,7 @@ from pathlib import Path
 from .failure_mode import (
     _scan_file_asyncio_run_in_async,
     _scan_file_bare_except,
+    _scan_file_eager_any_guard,
     _scan_file_falsy_or_zero_elision,
     _scan_file_json_loads_unguarded,
     _scan_file_missing_await,
@@ -178,3 +179,17 @@ def test_timeout_not_set_round_trip(tmp_path):
     )
     assert initial >= 1
     assert remaining == 0, f"timeout_not_set: {remaining} violations remain after fix"
+
+
+def test_eager_any_guard_round_trip(tmp_path):
+    src = """\
+        def check(response):
+            if any([not response.choices, not response.choices[0].message]):
+                raise ValueError("empty response")
+            return response.choices[0].message.content
+    """
+    initial, remaining = _round_trip(
+        tmp_path, src, _scan_file_eager_any_guard, "eager_any_guard"
+    )
+    assert initial >= 1
+    assert remaining == 0, f"eager_any_guard: {remaining} violations remain after fix"

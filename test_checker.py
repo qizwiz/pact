@@ -4876,3 +4876,52 @@ def test_timeout_session_not_flagged(tmp_path):
     results = check_codebase(tmp_path, modes=[TIMEOUT_NOT_SET])
     # session.get: func.value is Name("session"), not Name("requests") — not flagged
     assert not any(r.context == "timeout_not_set" for r in results)
+
+
+# ---------------------------------------------------------------------------
+# eager_any_guard
+# ---------------------------------------------------------------------------
+
+
+def test_eager_any_with_subscript_flagged(tmp_path):
+    """any([not x.choices, not x.choices[0].message]) is flagged — list is eagerly evaluated."""
+    from .failure_mode import EAGER_ANY_GUARD
+
+    (tmp_path / "a.py").write_text(
+        "def guard(r):\n"
+        "    if any([not r.choices, not r.choices[0].message]):\n"
+        "        raise ValueError('empty')\n"
+    )
+    results = check_codebase(tmp_path, modes=[EAGER_ANY_GUARD])
+    assert any(r.context == "eager_any_guard" for r in results)
+
+
+def test_eager_any_generator_not_flagged(tmp_path):
+    """any(x > 0 for x in items) uses a generator — short-circuits correctly, not flagged."""
+    from .failure_mode import EAGER_ANY_GUARD
+
+    (tmp_path / "a.py").write_text(
+        "def check(items):\n    return any(x > 0 for x in items)\n"
+    )
+    results = check_codebase(tmp_path, modes=[EAGER_ANY_GUARD])
+    assert not any(r.context == "eager_any_guard" for r in results)
+
+
+def test_eager_any_no_subscript_not_flagged(tmp_path):
+    """any([not a, not b]) without subscripts is not flagged (no IndexError risk)."""
+    from .failure_mode import EAGER_ANY_GUARD
+
+    (tmp_path / "a.py").write_text("def check(a, b):\n    return any([not a, not b])\n")
+    results = check_codebase(tmp_path, modes=[EAGER_ANY_GUARD])
+    assert not any(r.context == "eager_any_guard" for r in results)
+
+
+def test_eager_all_with_subscript_flagged(tmp_path):
+    """all([items, items[0].attr]) is also flagged — same eagerness issue."""
+    from .failure_mode import EAGER_ANY_GUARD
+
+    (tmp_path / "a.py").write_text(
+        "def check(items):\n    return all([items, items[0].valid])\n"
+    )
+    results = check_codebase(tmp_path, modes=[EAGER_ANY_GUARD])
+    assert any(r.context == "eager_any_guard" for r in results)

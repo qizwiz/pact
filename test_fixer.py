@@ -1341,3 +1341,45 @@ def test_timeout_httpx_fixed(tmp_path):
     result = fix_file(str(f), [ev])
     assert result.changed
     assert "httpx.get(url, timeout=30)" in result.patched
+
+
+# ---------------------------------------------------------------------------
+# eager_any_guard
+# ---------------------------------------------------------------------------
+
+
+def test_eager_any_guard_in_fix_modes():
+    assert "eager_any_guard" in FIX_MODES
+
+
+def test_eager_any_list_converted_to_or(tmp_path):
+    src = "if any([not r.choices, not r.choices[0].message]):\n    raise ValueError()\n"
+    f = tmp_path / "ex.py"
+    f.write_text(src)
+    ev = _ev("eager_any_guard", 1, "any([...])", str(f))
+    result = fix_file(str(f), [ev])
+    assert result.changed
+    assert "not r.choices or not r.choices[0].message" in result.patched
+    assert "any([" not in result.patched
+
+
+def test_eager_all_list_converted_to_and(tmp_path):
+    src = "ok = all([items, items[0].valid])\n"
+    f = tmp_path / "ex.py"
+    f.write_text(src)
+    ev = _ev("eager_any_guard", 1, "all([...])", str(f))
+    result = fix_file(str(f), [ev])
+    assert result.changed
+    assert "items and items[0].valid" in result.patched
+    assert "all([" not in result.patched
+
+
+def test_eager_any_generator_skipped(tmp_path):
+    """any(x > 0 for x in items) — no list literal, nothing to fix."""
+    src = "result = any(x > 0 for x in items)\n"
+    f = tmp_path / "ex.py"
+    f.write_text(src)
+    ev = _ev("eager_any_guard", 1, "any([...])", str(f))
+    result = fix_file(str(f), [ev])
+    assert not result.changed
+    assert len(result.skipped) == 1
