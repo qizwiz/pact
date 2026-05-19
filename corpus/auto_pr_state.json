@@ -4,7 +4,8 @@
     "run-llama/llama_index",
     "langchain-ai/langchain",
     "infiniflow/ragflow",
-    "Significant-Gravitas/AutoGPT"
+    "Significant-Gravitas/AutoGPT",
+    "google/adk-python"
   ],
   "skipped": [
     "Aider-AI/aider"
