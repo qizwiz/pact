@@ -76,6 +76,56 @@ def test_llm_guard_malformed_call_skipped(tmp_path):
     assert len(result.skipped) == 1
 
 
+def test_llm_guard_multilevel_choices_message(tmp_path):
+    """call='response.choices[0].message' — guard on choices still inserted."""
+    src = textwrap.dedent("""\
+        def get_msg(response):
+            content = response.choices[0].message
+            return content
+    """)
+    f = tmp_path / "ex.py"
+    f.write_text(src)
+    ev = _ev("llm_response_unguarded", 2, "response.choices[0].message", str(f))
+    result = fix_file(str(f), [ev])
+    assert result.changed
+    assert "if not response.choices:" in result.patched
+    assert len(result.applied) == 1
+    assert len(result.skipped) == 0
+
+
+def test_llm_guard_multilevel_choices_message_content(tmp_path):
+    """call='response.choices[0].message.content' — guard on choices still inserted."""
+    src = textwrap.dedent("""\
+        def get_content(response):
+            return response.choices[0].message.content
+    """)
+    f = tmp_path / "ex.py"
+    f.write_text(src)
+    ev = _ev("llm_response_unguarded", 2, "response.choices[0].message.content", str(f))
+    result = fix_file(str(f), [ev])
+    assert result.changed
+    assert "if not response.choices:" in result.patched
+    import ast as _ast
+
+    _ast.parse(result.patched)  # must be syntactically valid
+    assert len(result.applied) == 1
+
+
+def test_llm_guard_multilevel_preserves_indentation(tmp_path):
+    src = textwrap.dedent("""\
+        async def run(response):
+            if condition:
+                msg = response.choices[0].message.content
+    """)
+    f = tmp_path / "ex.py"
+    f.write_text(src)
+    ev = _ev("llm_response_unguarded", 3, "response.choices[0].message.content", str(f))
+    result = fix_file(str(f), [ev])
+    lines = result.patched.splitlines()
+    guard = next(ln for ln in lines if "if not response.choices" in ln)
+    assert guard.startswith("        ")  # 8 spaces
+
+
 # ---------------------------------------------------------------------------
 # missing_await
 # ---------------------------------------------------------------------------

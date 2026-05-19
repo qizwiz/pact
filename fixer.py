@@ -154,7 +154,8 @@ def _fix_llm_unguarded(
     applied: list[FailureEvidence] = []
     skipped: list[FailureEvidence] = []
 
-    _pat = re.compile(r"^(\w+)\.(\w+)\[0\]$")
+    # Matches: var.attr[0]  OR  var.attr[0].subattr  OR  var.attr[0].sub.sub ...
+    _pat = re.compile(r"^(\w+)\.(\w+)\[0\](\.\w+)*$")
     stmt_index = _build_stmt_index(source)
 
     # Map each violation to its enclosing statement start line
