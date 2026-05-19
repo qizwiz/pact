@@ -45,6 +45,7 @@ FIX_MODES = frozenset(
         "save_without_update_fields",
         "unvalidated_lookup_chain",
         "asyncio_run_in_async",
+        "subprocess_exit_code_unchecked",
     }
 )
 
@@ -832,6 +833,58 @@ def _fix_asyncio_run_in_async(
     return result, applied, skipped
 
 
+_SUBPROCESS_RUN_RE = re.compile(r"\bsubprocess\.(run|call|Popen)\s*\(")
+
+
+def _fix_subprocess_exit_code(
+    source: str,  # noqa: ARG001
+    lines: list[str],
+    violations: list[FailureEvidence],
+) -> tuple[list[str], list[FailureEvidence], list[FailureEvidence]]:
+    """Add check=True to subprocess.run/call() calls missing an exit-code check.
+
+    Only fixes single-line calls where the closing ) is on the same line.
+    Skips calls that already contain 'check=' (shouldn't appear per detector,
+    but defensive) and multi-line calls.
+    """
+    result = list(lines)
+    applied: list[FailureEvidence] = []
+    skipped: list[FailureEvidence] = []
+
+    for ev in sorted(violations, key=lambda e: e.line, reverse=True):
+        line_idx = ev.line - 1
+        if line_idx < 0 or line_idx >= len(result):
+            skipped.append(ev)
+            continue
+
+        raw = result[line_idx]
+        m = _SUBPROCESS_RUN_RE.search(raw)
+        if not m:
+            skipped.append(ev)
+            continue
+
+        if "check=" in raw:
+            skipped.append(ev)
+            continue
+
+        open_pos = m.end()  # position after the opening '('
+        close_pos = _find_matching_close(raw, open_pos)
+        if close_pos is None:
+            skipped.append(ev)
+            continue
+
+        # close_pos points one past the ')' character
+        inner = raw[open_pos : close_pos - 1].rstrip()
+        if inner:
+            new_inner = inner + ", check=True"
+        else:
+            new_inner = "check=True"
+        result[line_idx] = raw[:open_pos] + new_inner + raw[close_pos - 1 :]
+        applied.append(ev)
+
+    return result, applied, skipped
+
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
@@ -925,6 +978,15 @@ def fix_file(
     if async_run_evs:
         lines, applied, skipped = _fix_asyncio_run_in_async(
             original, lines, async_run_evs
+        )
+        all_applied.extend(applied)
+        all_skipped.extend(skipped)
+
+    # Apply subprocess_exit_code_unchecked fixes (add check=True)
+    subproc_evs = [v for v in fixable if _mode(v) == "subprocess_exit_code_unchecked"]
+    if subproc_evs:
+        lines, applied, skipped = _fix_subprocess_exit_code(
+            original, lines, subproc_evs
         )
         all_applied.extend(applied)
         all_skipped.extend(skipped)

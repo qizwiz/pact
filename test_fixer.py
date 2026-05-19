@@ -911,3 +911,56 @@ def test_asyncio_run_result_syntactically_valid(tmp_path):
     result = fix_file(str(f), [ev])
     assert result.changed
     ast.parse(result.patched)
+
+
+# ---------------------------------------------------------------------------
+# subprocess_exit_code_unchecked fixer
+# ---------------------------------------------------------------------------
+
+
+def test_fix_modes_contains_subprocess(tmp_path):
+    assert "subprocess_exit_code_unchecked" in FIX_MODES
+
+
+def test_subprocess_run_bare_gets_check_true(tmp_path):
+    """subprocess.run(['ls']) → subprocess.run(['ls'], check=True)"""
+    f = tmp_path / "a.py"
+    f.write_text("import subprocess\nsubprocess.run(['ls'])\n")
+    ev = _ev("subprocess_exit_code_unchecked", 2, "subprocess.run(...)", str(f))
+    result = fix_file(str(f), [ev])
+    assert result.changed
+    assert "check=True" in result.patched
+    ast.parse(result.patched)
+
+
+def test_subprocess_run_with_args_gets_check_true(tmp_path):
+    """subprocess.run(['git', 'pull'], capture_output=True) → adds check=True."""
+    f = tmp_path / "a.py"
+    f.write_text(
+        "import subprocess\nsubprocess.run(['git', 'pull'], capture_output=True)\n"
+    )
+    ev = _ev("subprocess_exit_code_unchecked", 2, "subprocess.run(...)", str(f))
+    result = fix_file(str(f), [ev])
+    assert result.changed
+    assert "check=True" in result.patched
+    ast.parse(result.patched)
+
+
+def test_subprocess_call_bare_gets_check_true(tmp_path):
+    """subprocess.call(['make']) → subprocess.call(['make'], check=True)"""
+    f = tmp_path / "a.py"
+    f.write_text("import subprocess\nsubprocess.call(['make'])\n")
+    ev = _ev("subprocess_exit_code_unchecked", 2, "subprocess.call(...)", str(f))
+    result = fix_file(str(f), [ev])
+    assert result.changed
+    assert "check=True" in result.patched
+    ast.parse(result.patched)
+
+
+def test_subprocess_already_check_true_skipped(tmp_path):
+    """subprocess.run(['ls'], check=True) already safe — fixer skips it."""
+    f = tmp_path / "a.py"
+    f.write_text("import subprocess\nsubprocess.run(['ls'], check=True)\n")
+    ev = _ev("subprocess_exit_code_unchecked", 2, "subprocess.run(...)", str(f))
+    result = fix_file(str(f), [ev])
+    assert not result.changed
