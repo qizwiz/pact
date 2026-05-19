@@ -8,6 +8,7 @@
   "skipped": [
     "google/adk-python",
     "google/adk-python",
-    "Aider-AI/aider"
+    "Aider-AI/aider",
+    "Significant-Gravitas/AutoGPT"
   ]
 }
