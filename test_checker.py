@@ -4707,3 +4707,39 @@ def test_subprocess_no_subprocess_not_flagged(tmp_path):
     (tmp_path / "a.py").write_text("x = 1 + 1\n")
     results = check_codebase(tmp_path, modes=[SUBPROCESS_EXIT_CODE_UNCHECKED])
     assert not results
+
+
+def test_sheaf_llm_unguarded_flagged(tmp_path):
+    """Unguarded choices[0] access detected by sheaf checker."""
+    from .failure_mode import SHEAF_LLM_UNGUARDED
+
+    (tmp_path / "a.py").write_text(
+        "def get_text(response):\n" "    return response.choices[0].message.content\n"
+    )
+    results = check_codebase(tmp_path, modes=[SHEAF_LLM_UNGUARDED])
+    assert any(
+        r.context == "sheaf_llm_unguarded" for r in results
+    ), "unguarded choices[0] must be flagged by sheaf checker"
+
+
+def test_sheaf_llm_unguarded_guarded_not_flagged(tmp_path):
+    """Guarded choices access is not flagged by sheaf checker."""
+    from .failure_mode import SHEAF_LLM_UNGUARDED
+
+    (tmp_path / "a.py").write_text(
+        "def get_text(response):\n"
+        "    if not response.choices:\n"
+        "        raise ValueError('empty')\n"
+        "    return response.choices[0].message.content\n"
+    )
+    results = check_codebase(tmp_path, modes=[SHEAF_LLM_UNGUARDED])
+    assert not results, "guarded choices[0] must not be flagged"
+
+
+def test_sheaf_llm_unguarded_no_choices_skipped(tmp_path):
+    """File without choices/content is fast-path skipped."""
+    from .failure_mode import SHEAF_LLM_UNGUARDED
+
+    (tmp_path / "a.py").write_text("x = 1 + 1\n")
+    results = check_codebase(tmp_path, modes=[SHEAF_LLM_UNGUARDED])
+    assert not results, "file with no LLM access patterns must not be flagged"

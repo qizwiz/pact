@@ -3006,6 +3006,74 @@ SUBPROCESS_EXIT_CODE_UNCHECKED = FailureMode(
 
 
 # ---------------------------------------------------------------------------
+# Failure mode: sheaf_llm_unguarded (interprocedural)
+#
+# Detects: LLM response attribute accesses (.choices[0], .content[0]) that are
+# unguarded even after propagating guards across call boundaries using sheaf-
+# cohomological transport (Ȟ¹ rank on the guard site graph).
+#
+# This mode complements llm_response_unguarded: it catches cases where the
+# guard is inside a helper function rather than at the access site.
+#
+# Pre-check: files without 'choices' or 'content' text are skipped instantly
+# to keep full-codebase scan speed acceptable.
+# ---------------------------------------------------------------------------
+
+
+@functools.lru_cache(maxsize=None)
+def _scan_file_sheaf_llm_unguarded(path: str) -> list[FailureEvidence]:
+    try:
+        with open(path, encoding="utf-8", errors="ignore") as fh:
+            source = fh.read()
+    except OSError:
+        return []
+
+    # Fast skip — sheaf only looks for LLM response attribute access patterns
+    if "choices" not in source and "content" not in source:
+        return []
+
+    try:
+        from .pact_sheaf import check_file as _sheaf_check
+    except ImportError:
+        try:
+            from pact_sheaf import check_file as _sheaf_check  # type: ignore[no-redef]
+        except ImportError:
+            return []
+
+    results: list[FailureEvidence] = []
+    for v in _sheaf_check(path, interprocedural=True):
+        if v.guarded:
+            continue
+        results.append(
+            FailureEvidence(
+                mode_name="sheaf_llm_unguarded",
+                file=v.file,
+                line=v.line,
+                call=f"{v.var_name}.{v.attr}[0]",
+                message=(
+                    f"Ȟ¹={v.h1_rank}: '{v.var_name}.{v.attr}[0]' is unguarded "
+                    f"across call boundaries in '{v.func}' — "
+                    "sheaf transport finds no guard in this function or its callers"
+                ),
+                spec_id=v.spec_id,
+            )
+        )
+    return results
+
+
+SHEAF_LLM_UNGUARDED = FailureMode(
+    name="sheaf_llm_unguarded",
+    description=(
+        "LLM response attribute access (.choices[0], .content[0]) that is unguarded "
+        "even after propagating guards interprocedurally via sheaf-cohomological "
+        "transport. Ȟ¹ > 0 means at least one independent guard is missing."
+    ),
+    check=None,
+    file_check=_scan_file_sheaf_llm_unguarded,
+)
+
+
+# ---------------------------------------------------------------------------
 # Registry — all active failure modes
 # ---------------------------------------------------------------------------
 
@@ -3024,4 +3092,5 @@ DEFAULT_MODES: list[FailureMode] = [
     ASYNCIO_RUN_IN_ASYNC,
     FALSY_OR_ZERO_ELISION,
     SUBPROCESS_EXIT_CODE_UNCHECKED,
+    SHEAF_LLM_UNGUARDED,
 ]
