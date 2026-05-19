@@ -1027,14 +1027,14 @@ def test_fix_modes_contains_prompt_injection_risk():
 
 
 def test_prompt_injection_bare_var_sanitized(tmp_path):
-    """{user_input} → {user_input.replace(chr(10), " ")} inside content f-string."""
+    """{user_input} → {user_input.replace(chr(10), chr(32))} inside content f-string."""
     src = 'content = f"Answer: {user_input}"\n'
     f = tmp_path / "a.py"
     f.write_text(src)
     ev = _ev("prompt_injection_risk", 1, 'f"...{user_input}..."', str(f))
     result = fix_file(str(f), [ev])
     assert result.changed
-    assert 'user_input.replace(chr(10), " ")' in result.patched
+    assert "user_input.replace(chr(10), chr(32))" in result.patched
     ast.parse(result.patched)
 
 
@@ -1056,7 +1056,7 @@ def test_prompt_injection_subscript_and_bare_mixed(tmp_path):
     ev = _ev("prompt_injection_risk", 1, 'f"...{message}..."', str(f))
     result = fix_file(str(f), [ev])
     assert result.changed
-    assert 'message.replace(chr(10), " ")' in result.patched
+    assert "message.replace(chr(10), chr(32))" in result.patched
     ast.parse(result.patched)
 
 
@@ -1084,5 +1084,5 @@ def test_prompt_injection_result_is_valid_python(tmp_path):
     ev = _ev("prompt_injection_risk", 3, 'f"...{user_query}..."', str(f))
     result = fix_file(str(f), [ev])
     assert result.changed
-    assert 'user_query.replace(chr(10), " ")' in result.patched
+    assert "user_query.replace(chr(10), chr(32))" in result.patched
     ast.parse(result.patched)

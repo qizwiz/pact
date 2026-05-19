@@ -903,9 +903,10 @@ def _fix_prompt_injection_risk(
 ) -> tuple[list[str], list[FailureEvidence], list[FailureEvidence]]:
     """Inline newline sanitization into f-string vars passed to LLM content.
 
-    Rewrites `{varname}` → `{varname.replace(chr(10), " ")}` for simple bare
-    variable names extracted from ev.call.  Skips if the variable already has
-    attribute access or if the call-site line can't be located.
+    Rewrites `{varname}` → `{varname.replace(chr(10), chr(32))}` for simple
+    bare variable names extracted from ev.call.  Uses chr() for both args to
+    avoid introducing string literals that would conflict with the outer
+    f-string quotes on Python <3.12.  Skips attribute/subscript expressions.
     """
     result = list(lines)
     applied: list[FailureEvidence] = []
@@ -931,7 +932,7 @@ def _fix_prompt_injection_risk(
             skipped.append(ev)
             continue
 
-        replacement = "{" + varname + '.replace(chr(10), " ")}'
+        replacement = "{" + varname + ".replace(chr(10), chr(32))}"
         result[line_idx] = bare_re.sub(replacement, raw)
         applied.append(ev)
 
