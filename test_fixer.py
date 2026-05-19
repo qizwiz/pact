@@ -1050,7 +1050,8 @@ def test_prompt_injection_attribute_access_skipped(tmp_path):
 
 def test_prompt_injection_subscript_and_bare_mixed(tmp_path):
     """{message} is a bare name in a line that also has subscript access."""
-    src = 'content = f"Hello {data["user"]}: {message}"\n'
+    # Use single-quote f-string so data["user"] is valid on Python <3.12
+    src = "content = f'Hello {data[\"user\"]}: {message}'\n"
     f = tmp_path / "a.py"
     f.write_text(src)
     ev = _ev("prompt_injection_risk", 1, 'f"...{message}..."', str(f))
