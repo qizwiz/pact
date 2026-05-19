@@ -96,6 +96,25 @@ QUEUE = [
         "priority": 8,
         "notes": "STRONG: 2 missing_await in webhook trigger handlers (integrations/router.py:596,600)",
     },
+    {
+        "repo": "run-llama/llama_index",
+        "issue": 18900,
+        "issue_title": "[Bug]: json.decoder.JSONDecodeError in OpenSearchVectorStore When Using Metadata Filters",
+        "mode": "json_loads_unguarded",
+        "stars": 49385,
+        "priority": 9,
+        "notes": "EXACT: json.loads(str(f.value)) unguarded in OpenSearch vector store filter path",
+    },
+    {
+        "repo": "BerriAI/litellm",
+        "issue": 25985,
+        "issue_title": "[Bug]: Ollama chat transformation fails with JSONDecodeError when parsing tool call arguments",
+        "mode": "json_loads_unguarded",
+        "stars": 26000,
+        "priority": 10,
+        "notes": "EXACT: json.loads(typed_tool['function']['arguments']) at transformation.py:276 unguarded",
+        "skip": True,  # CLA pending on BerriAI/litellm — check cla-assistant.io/BerriAI/litellm?pullRequest=28148
+    },
 ]
 
 STATE_FILE = Path(__file__).parent.parent / "corpus" / "auto_pr_state.json"
@@ -131,8 +150,124 @@ def _get_token() -> str:
 
 
 _FIXABLE_MODES = frozenset(
-    {"llm_response_unguarded", "sheaf_llm_unguarded", "missing_await"}
+    {
+        "llm_response_unguarded",
+        "sheaf_llm_unguarded",
+        "missing_await",
+        "json_loads_unguarded",
+    }
 )
+
+_BRANCH_NAMES = {
+    "llm_response_unguarded": "fix/pact-llm-response-guards",
+    "sheaf_llm_unguarded": "fix/pact-llm-response-guards",
+    "missing_await": "fix/pact-missing-await",
+    "json_loads_unguarded": "fix/pact-json-loads-guards",
+}
+
+
+def _pr_content(target: dict, n_viols: int, changed: list[str]) -> tuple[str, str, str]:
+    """Return (branch, commit_msg, pr_body) for the target's mode."""
+    issue = target["issue"]
+    mode = target.get("mode", "llm_response_unguarded")
+    files_str = "\n".join(f"- `{f}`" for f in changed)
+
+    if mode == "json_loads_unguarded":
+        title = f"fix: guard json.loads() against JSONDecodeError (fixes #{issue})"
+        commit = (
+            f"fix: wrap json.loads() calls in try/except JSONDecodeError\n\n"
+            f"Fixes {n_viols} unguarded json.loads() calls that crash with JSONDecodeError\n"
+            f"when the input is malformed, truncated, or an unexpected type.\n"
+            f"Detected by pact (open-source Python static analysis tool)."
+        )
+        body = f"""## What this fixes
+
+Resolves #{issue}: `json.loads()` raises `JSONDecodeError` when the input
+string is malformed, empty, or contains an unexpected native type.
+
+This PR wraps each of the {n_viols} unguarded call sites:
+
+```python
+# Before
+data = json.loads(text)
+
+# After
+try:
+    data = json.loads(text)
+except json.JSONDecodeError as exc:
+    raise ValueError(f"Invalid JSON: {{exc}}") from exc
+```
+
+**Files changed:**
+{files_str}
+
+## Why it crashes in practice
+
+`json.loads()` raises `json.JSONDecodeError` (a subclass of `ValueError`)
+when the input is:
+- An empty string (e.g., empty API response or SSE event with no data field)
+- Malformed/truncated JSON (partial streaming chunk)
+- A plain string that is not JSON-encoded (native Python type passed as-is)
+
+None of these are programming errors — they're runtime conditions the caller
+must handle.
+
+## How this was found
+
+Detected by [pact](https://github.com/qizwiz/pact), an open-source static
+checker for Python LLM and AI code. The `json_loads_unguarded` mode flags
+`json.loads()` calls not wrapped in `try/except json.JSONDecodeError`.
+
+## Test plan
+- [ ] Existing test suite passes
+- [ ] Confirm behaviour with a mock that returns an empty or malformed JSON string
+"""
+        return title, commit, body
+
+    # Default: LLM response / missing_await modes
+    title = f"fix: prevent IndexError on empty LLM response (fixes #{issue})"
+    commit = (
+        f"fix: guard LLM response access against empty choices\n\n"
+        f"Fixes {n_viols} unguarded response.choices[0] accesses detected by pact\n"
+        f"(sheaf-cohomological checker, Z3 UNSAT certificate)."
+    )
+    body = f"""## What this fixes
+
+Resolves #{issue}: `response.choices[0]` raises `IndexError` (and
+`response.choices[0].message` raises `AttributeError`) when the LLM returns an
+empty `choices` list. This happens under rate limiting, safety filtering, or
+incomplete streaming responses.
+
+This PR adds a guard at each of the {n_viols} unguarded access sites:
+
+```python
+if not response.choices or response.choices[0].message is None:
+    raise ValueError("LLM returned empty response")
+```
+
+**Files changed:**
+{files_str}
+
+## Why it crashes in practice
+
+LLM providers return `choices: []` when:
+- Quota or rate limits cut off the response mid-stream
+- Content filters reject the generation
+- A transient network error truncates the response body
+
+None of these are caller errors — they're provider-side events the client must handle.
+
+## How this was found
+
+Detected by [pact](https://github.com/qizwiz/pact), an open-source static
+checker for Python LLM code. The same pattern has been fixed in 10+ other
+projects including microsoft/autogen, crewai, and langchain.
+
+## Test plan
+- [ ] Existing test suite passes
+- [ ] Confirm behaviour with a mock provider that returns `{{"choices": []}}`
+"""
+    return title, commit, body
 
 
 def _scan_repo(repo_dir: str, repo_slug: str) -> list[dict]:
@@ -323,8 +458,9 @@ def process_one(target: dict, token: str) -> bool:
         # Set upstream
         _run(f"git remote add upstream {upstream_url}", cwd=tmpdir)
 
-        # Create fix branch
-        branch = "fix/pact-llm-response-guards"
+        # Create fix branch — name depends on mode
+        mode = target.get("mode", "llm_response_unguarded")
+        branch = _BRANCH_NAMES.get(mode, "fix/pact-guards")
         _run(f"git checkout -b {branch}", cwd=tmpdir)
 
         # Scan the cloned repo fresh with pact
@@ -351,59 +487,23 @@ def process_one(target: dict, token: str) -> bool:
         _run(f"git add {' '.join(changed)}", cwd=tmpdir)
 
         n_viols = sum(1 for v in violations if v["file"] in changed)
-        _run(
-            f'git commit -s -m "fix: guard LLM response access against empty choices\\n\\n'
-            f"Fixes {n_viols} unguarded response.choices[0] accesses detected by pact\\n"
-            f'(sheaf-cohomological checker, Z3 UNSAT certificate)."',
-            cwd=tmpdir,
-        )
+        pr_title, commit_msg, pr_body = _pr_content(target, n_viols, changed)
+
+        import tempfile as _tf
+
+        with _tf.NamedTemporaryFile(
+            mode="w", suffix=".txt", delete=False, encoding="utf-8"
+        ) as msg_f:
+            msg_f.write(commit_msg)
+            msg_path = msg_f.name
+
+        _run(f"git commit -s -F {msg_path}", cwd=tmpdir)
 
         # Push
         print("Pushing...")
         _run(f"git push --force origin {branch}", cwd=tmpdir, env=gh_env)
 
-        # File PR
-        files_changed_str = "\n".join(f"- `{f}`" for f in changed)
-        pr_body = f"""## What this fixes
-
-Resolves #{issue}: `response.choices[0]` raises `IndexError` (and
-`response.choices[0].message` raises `AttributeError`) when the LLM returns an
-empty `choices` list. This happens under rate limiting, safety filtering, or
-incomplete streaming responses.
-
-This PR adds a guard at each of the {n_viols} unguarded access sites:
-
-```python
-if not response.choices or response.choices[0].message is None:
-    raise ValueError("LLM returned empty response")
-```
-
-**Files changed:**
-{files_changed_str}
-
-## Why it crashes in practice
-
-LLM providers return `choices: []` when:
-- Quota or rate limits cut off the response mid-stream
-- Content filters reject the generation
-- A transient network error truncates the response body
-
-None of these are caller errors — they're provider-side events the client must handle.
-
-## How this was found
-
-Detected by [pact](https://github.com/qizwiz/pact), an open-source static
-checker for Python LLM code. The same pattern has been fixed in 10+ other
-projects including microsoft/autogen, crewai, and langchain.
-
-## Test plan
-- [ ] Existing test suite passes
-- [ ] Confirm behaviour with a mock provider that returns `{{"choices": []}}`
-"""
-
-        # Write body to temp file to avoid shell escaping issues
-        import tempfile as _tf
-
+        # Write PR body to temp file to avoid shell escaping issues
         with _tf.NamedTemporaryFile(
             mode="w", suffix=".md", delete=False, encoding="utf-8"
         ) as body_f:
@@ -412,7 +512,7 @@ projects including microsoft/autogen, crewai, and langchain.
 
         pr_url = _run(
             f"gh pr create --repo {repo} "
-            f'--title "fix: prevent IndexError on empty LLM response (fixes #{issue})" '
+            f'--title "{pr_title}" '
             f"--body-file {body_path} "
             f'--head "{fork_owner}:{branch}" '
             f"--base {default_branch}",
