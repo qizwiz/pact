@@ -1087,3 +1087,34 @@ def test_prompt_injection_result_is_valid_python(tmp_path):
     assert result.changed
     assert "user_query.replace(chr(10), chr(32))" in result.patched
     ast.parse(result.patched)
+
+
+# sheaf_llm_unguarded fixer
+def test_sheaf_llm_unguarded_in_fix_modes():
+    assert "sheaf_llm_unguarded" in FIX_MODES
+
+
+def test_sheaf_llm_unguarded_guard_inserted(tmp_path):
+    """sheaf_llm_unguarded routes through same guard logic as llm_response_unguarded."""
+    f = tmp_path / "a.py"
+    f.write_text(
+        "def get_text(response):\n" "    return response.choices[0].message.content\n"
+    )
+    ev = _ev("sheaf_llm_unguarded", 2, "response.choices[0]", str(f))
+    result = fix_file(str(f), [ev])
+    assert result.changed
+    assert "if not response.choices" in result.patched
+    import ast as _ast
+
+    _ast.parse(result.patched)
+
+
+def test_sheaf_llm_unguarded_invalid_call_skipped(tmp_path):
+    """sheaf mode violations with unparseable call text are skipped."""
+    f = tmp_path / "a.py"
+    f.write_text(
+        "def get_text(response):\n" "    return response.choices[0].message.content\n"
+    )
+    ev = _ev("sheaf_llm_unguarded", 2, "not-a-valid-call", str(f))
+    result = fix_file(str(f), [ev])
+    assert not result.changed, "unparseable call text must be skipped"

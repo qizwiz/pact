@@ -5,6 +5,7 @@ Produces unified diffs (or applies in-place) for violations where the
 correct fix is mechanically derivable from the AST. Modes supported:
 
   llm_response_unguarded       Insert `if not var.attr: raise ValueError(...)` guard
+  sheaf_llm_unguarded          Same guard — interprocedural case found by sheaf checker
   missing_await                Prepend `await` to the unawaited call
   optional_dereference         Insert None guard before nullable dereference
   bare_except                  Replace bare `except:` with `except Exception:`
@@ -38,6 +39,7 @@ from .failure_mode import FailureEvidence
 FIX_MODES = frozenset(
     {
         "llm_response_unguarded",
+        "sheaf_llm_unguarded",
         "missing_await",
         "optional_dereference",
         "bare_except",
@@ -1027,8 +1029,12 @@ def fix_file(
     unfixable = [v for v in violations if _mode(v) not in FIX_MODES]
     all_skipped.extend(unfixable)
 
-    # Apply llm_response_unguarded fixes
-    llm_evs = [v for v in fixable if _mode(v) == "llm_response_unguarded"]
+    # Apply llm_response_unguarded + sheaf_llm_unguarded fixes (same guard pattern)
+    llm_evs = [
+        v
+        for v in fixable
+        if _mode(v) in {"llm_response_unguarded", "sheaf_llm_unguarded"}
+    ]
     if llm_evs:
         lines, applied, skipped = _fix_llm_unguarded(original, lines, llm_evs)
         all_applied.extend(applied)
