@@ -232,6 +232,7 @@ class SynthesisResult:
     verify_verdict: str = "PENDING"
     cegis_iters: int = 1
     applied: bool = False
+    oracle_confirmed: bool = False  # True when --test-cmd oracle passed
 
 
 @dataclass
@@ -250,6 +251,32 @@ class HealResult:
 
 def _read_source(path: Path) -> list[str]:
     return path.read_text(encoding="utf-8", errors="replace").splitlines(keepends=True)
+
+
+def _run_oracle(test_cmd: str, cwd: Path, verbose: bool) -> tuple[bool, str]:
+    """Run the target project's test suite as oracle. Returns (passed, last-2000-chars-of-output)."""
+    import subprocess
+
+    if verbose:
+        print(f"    oracle: {test_cmd!r} in {cwd}")
+    try:
+        r = subprocess.run(
+            test_cmd,
+            shell=True,
+            cwd=str(cwd),
+            capture_output=True,
+            text=True,
+            timeout=180,
+        )
+        out = (r.stdout + r.stderr)[-2000:]
+        passed = r.returncode == 0
+        if verbose:
+            print(f"    oracle: {'PASS' if passed else 'FAIL'} (exit={r.returncode})")
+        return passed, out
+    except subprocess.TimeoutExpired:
+        if verbose:
+            print("    oracle: TIMEOUT")
+        return False, "oracle timed out after 180s"
 
 
 def _context_window(
@@ -498,8 +525,10 @@ def _heal_violation(
     model: str,
     key: str,
     verbose: bool,
+    test_cmd: Optional[str] = None,
+    project_root: Optional[Path] = None,
 ) -> Optional[SynthesisResult]:
-    """CEGIS: synthesize → verify → feedback → synthesize ... MAX_CEGIS_ITERS."""
+    """CEGIS: synthesize → verify → [oracle] → feedback → synthesize ... MAX_CEGIS_ITERS."""
     feedback = ""
     result = None
 
@@ -532,7 +561,38 @@ def _heal_violation(
             print(f"    verify: {verdict} (score={score:.2f})")
 
         if verdict == "ACCEPT" and score >= 0.8:
-            return result
+            if test_cmd and project_root:
+                # Tentatively apply, run oracle, revert on failure
+                path = Path(result.file)
+                original_source = path.read_text(encoding="utf-8")
+                patched = apply_patch(
+                    original_source, result.patch.original, result.patch.replacement
+                )
+                if patched is None:
+                    feedback = "patch did not apply cleanly — original block not found verbatim"
+                    continue
+
+                path.write_text(patched, encoding="utf-8")
+                passed, test_out = _run_oracle(test_cmd, project_root, verbose)
+
+                if passed:
+                    result.applied = True
+                    result.oracle_confirmed = True
+                    return result
+
+                # Oracle rejected — revert and feed failure back
+                path.write_text(original_source, encoding="utf-8")
+                feedback = (
+                    f"ORACLE_FAIL (iter {i+1}): patch applied but test suite failed.\n"
+                    f"Last output:\n{test_out}"
+                )
+                if verbose:
+                    print(
+                        "    oracle rejected — reverting, retrying with test feedback"
+                    )
+                continue
+
+            return result  # LLM-only mode (no oracle)
 
         feedback = fb
         if verdict == "REJECT" and not feedback:
@@ -656,9 +716,15 @@ def heal_project(
     improve: bool = False,
     output: Optional[Path] = None,
     verbose: bool = False,
+    test_cmd: Optional[str] = None,
+    project_root: Optional[Path] = None,
 ) -> HealResult:
     """
     Load violations from intent output, synthesize patches, verify with CEGIS.
+
+    If test_cmd is provided, each LLM-accepted patch is tentatively applied and
+    the test suite is run as an impartial oracle.  Failures revert the file and
+    feed the test output back into the CEGIS loop.
     """
     key = _get_key(api_key)
 
@@ -711,7 +777,16 @@ def heal_project(
 
         source_lines = _read_source(path)
 
-        result = _heal_violation(v, inv, source_lines, model, key, verbose)
+        result = _heal_violation(
+            v,
+            inv,
+            source_lines,
+            model,
+            key,
+            verbose,
+            test_cmd=test_cmd,
+            project_root=project_root,
+        )
 
         if result is None:
             if verbose:
@@ -721,15 +796,25 @@ def heal_project(
 
         heal.results.append(result)
 
-        if result.verify_verdict == "ACCEPT" and result.verify_score >= 0.8:
+        accepted = result.verify_verdict == "ACCEPT" and result.verify_score >= 0.8
+        if test_cmd:
+            accepted = accepted and result.oracle_confirmed
+
+        if accepted:
             heal.patches_accepted += 1
-            if apply:
+            if apply and not result.applied:
+                # oracle loop already applied if test_cmd was set
                 _apply_to_disk(result, verbose)
         else:
             heal.patches_rejected += 1
             if verbose:
+                oracle_note = (
+                    " (oracle rejected)"
+                    if test_cmd and not result.oracle_confirmed
+                    else ""
+                )
                 print(
-                    f"  patch not accepted ({result.verify_verdict}, {result.verify_score:.2f})"
+                    f"  patch not accepted ({result.verify_verdict}, {result.verify_score:.2f}){oracle_note}"
                 )
 
     if improve:
@@ -770,6 +855,8 @@ def main(argv=None):
               pact heal . --violations intent_pact.json --verbose
               pact heal . --violations intent_pact.json --severity high --apply
               pact heal . --violations intent_pact.json --out heal.json
+              pact heal ~/src/click --violations click_intent.json --apply \\
+                --test-cmd "python3.11 -m pytest tests/ -x -q" --verbose
         """),
     )
     p.add_argument("path", type=Path, help="project root (for context)")
@@ -794,6 +881,15 @@ def main(argv=None):
         action="store_true",
         help="rewrite heal.md prompt if accept rate < 85%% (self-improvement)",
     )
+    p.add_argument(
+        "--test-cmd",
+        metavar="CMD",
+        help=(
+            "shell command to run as impartial oracle (e.g. 'pytest tests/ -x -q'). "
+            "Each LLM-accepted patch is applied, CMD is run from --path; "
+            "exit 0 = ACCEPT, non-zero = REJECT (revert + retry with failure output)."
+        ),
+    )
     p.add_argument("-v", "--verbose", action="store_true")
 
     args = p.parse_args(argv)
@@ -807,6 +903,8 @@ def main(argv=None):
         improve=args.improve,
         output=args.out,
         verbose=args.verbose,
+        test_cmd=args.test_cmd,
+        project_root=args.path.resolve() if args.test_cmd else None,
     )
 
 
