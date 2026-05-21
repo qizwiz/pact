@@ -61,6 +61,65 @@ def _get_key(api_key: Optional[str]) -> str:
     return key
 
 
+_READ_FILE_TOOL = {
+    "name": "read_file_lines",
+    "description": (
+        "Read a range of lines from a source file. "
+        "Line numbers are 1-indexed. Omit end_line to read to end of file."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "path": {
+                "type": "string",
+                "description": "Absolute or relative path to the file",
+            },
+            "start_line": {
+                "type": "integer",
+                "description": "First line to read (1-indexed)",
+                "default": 1,
+            },
+            "end_line": {
+                "type": "integer",
+                "description": "Last line to read (1-indexed, inclusive)",
+            },
+        },
+        "required": ["path"],
+    },
+}
+
+
+def _execute_read_file(inp: dict) -> str:
+    """Execute a read_file_lines tool call and return formatted lines."""
+    try:
+        path = Path(inp["path"])
+        if not path.exists():
+            return f"[error: file not found: {path}]"
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines(
+            keepends=True
+        )
+        start = max(0, int(inp.get("start_line", 1)) - 1)
+        end_raw = inp.get("end_line")
+        end = int(end_raw) if end_raw is not None else len(lines)
+        chunk = lines[start:end]
+        return "".join(f"{start + i + 1:4d}  {line}" for i, line in enumerate(chunk))
+    except Exception as exc:
+        return f"[error reading file: {exc}]"
+
+
+def _parse_response_text(text: str) -> dict:
+    text = text.strip()
+    if text.startswith("```"):
+        text = text.split("\n", 1)[1] if "\n" in text else text[3:]
+        import re
+
+        text = re.sub(r"```\s*$", "", text).strip()
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"Non-JSON response (pos {exc.pos}): {text[:400]}") from exc
+
+
 def _call(prompt: str, model: str, key: str, max_tokens: int = 8192) -> dict:
     import anthropic
 
@@ -74,15 +133,60 @@ def _call(prompt: str, model: str, key: str, max_tokens: int = 8192) -> dict:
     if not response.content:
         raise RuntimeError("API returned empty content")
     text = response.content[0].text.strip()
-    if text.startswith("```"):
-        text = text.split("\n", 1)[1] if "\n" in text else text[3:]
-        import re
+    return _parse_response_text(text)
 
-        text = re.sub(r"```\s*$", "", text).strip()
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError as exc:
-        raise RuntimeError(f"Non-JSON response (pos {exc.pos}): {text[:400]}") from exc
+
+def _call_with_tools(
+    prompt: str,
+    model: str,
+    key: str,
+    max_tokens: int = 8192,
+    max_tool_rounds: int = 6,
+) -> dict:
+    """
+    Call the model with a read_file_lines tool. The model can read any source
+    file on demand — no source injection, no truncation.
+    """
+    import anthropic
+
+    client = anthropic.Anthropic(api_key=key)
+    messages: list[dict] = [{"role": "user", "content": prompt}]
+
+    for _ in range(max_tool_rounds):
+        response = client.messages.create(
+            model=model,
+            max_tokens=max_tokens,
+            system=_SYSTEM,
+            tools=[_READ_FILE_TOOL],
+            messages=messages,
+        )
+
+        if response.stop_reason == "tool_use":
+            tool_results = []
+            for block in response.content:
+                if block.type == "tool_use":
+                    result_text = _execute_read_file(block.input)
+                    tool_results.append(
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": block.id,
+                            "content": result_text,
+                        }
+                    )
+            messages.append({"role": "assistant", "content": response.content})
+            messages.append({"role": "user", "content": tool_results})
+
+        elif response.stop_reason in ("end_turn", "stop_sequence", None):
+            text = ""
+            for block in response.content:
+                if hasattr(block, "text"):
+                    text += block.text
+            return _parse_response_text(text)
+
+        else:
+            raise RuntimeError(f"Unexpected stop_reason: {response.stop_reason}")
+
+    raise RuntimeError(f"Tool loop exhausted after {max_tool_rounds} rounds")
 
 
 # ---------------------------------------------------------------------------
@@ -237,7 +341,8 @@ def _synthesize(
     feedback: str = "",
 ) -> Optional[SynthesisResult]:
     line = int(violation.get("line", 1))
-    ctx, ctx_start, ctx_end = _context_window(source_lines, line)
+    _, ctx_start, ctx_end = _context_window(source_lines, line)
+    file_path = str(Path(violation.get("file", "?")).resolve())
 
     template = _load_prompt("heal")
     extra = f"\n\n## Feedback from previous attempt\n{feedback}" if feedback else ""
@@ -248,17 +353,22 @@ def _synthesize(
         invariant_statement=invariant.get("statement", ""),
         invariant_formal=invariant.get("formal", ""),
         invariant_derived_from=invariant.get("derived_from", ""),
-        file=violation.get("file", "?"),
+        file_path=file_path,
         line=line,
         severity=violation.get("severity", "?"),
         evidence=violation.get("evidence", ""),
         explanation=violation.get("explanation", ""),
-        source_context=ctx,
         context_start=ctx_start,
         context_end=ctx_end,
     )
 
-    raw = _call(prompt, model, key, max_tokens=8192)
+    raw = _call_with_tools(prompt, model, key, max_tokens=8192)
+
+    # Model reported it could not find the block — propagate as synthesis failure
+    if "error" in raw and "diagnosis" not in raw:
+        raise RuntimeError(
+            f"block_not_found: {raw.get('why_not_found', raw.get('error', '?'))}"
+        )
 
     diag_raw = raw.get("diagnosis", {})
     patch_raw = raw.get("patch", {})
@@ -434,6 +544,79 @@ def _heal_violation(
 
 
 # ---------------------------------------------------------------------------
+# Self-improvement (heal_improve.md rubric)
+# ---------------------------------------------------------------------------
+
+
+def _improve_heal_prompt(
+    results: list[SynthesisResult], model: str, key: str, verbose: bool
+) -> None:
+    """Score heal prompt performance and rewrite if avg quality < 0.8."""
+    if not results:
+        return
+
+    accepted = [
+        r for r in results if r.verify_verdict == "ACCEPT" and r.verify_score >= 0.8
+    ]
+    rejected = [
+        r for r in results if r.verify_verdict != "ACCEPT" or r.verify_score < 0.8
+    ]
+
+    if not rejected:
+        return  # nothing to improve
+
+    accept_rate = len(accepted) / len(results)
+    if accept_rate >= 0.85:
+        return  # already good enough
+
+    # Aggregate rejection reasons
+    rejection_reasons: list[str] = []
+    for r in rejected:
+        if r.verify_score == 0.0 and not r.patch.original:
+            rejection_reasons.append("block_not_found: synthesis returned empty patch")
+        else:
+            rejection_reasons.append(
+                f"{r.file}:{r.line} score={r.verify_score:.2f} verdict={r.verify_verdict}"
+            )
+
+    def _to_sample(r: SynthesisResult) -> dict:
+        return {
+            "file": r.file,
+            "line": r.line,
+            "fix_class": r.diagnosis.fix_class,
+            "score": r.verify_score,
+            "verdict": r.verify_verdict,
+            "patch_original_len": len(r.patch.original),
+        }
+
+    try:
+        template = _load_prompt("heal_improve")
+        prompt = _render(
+            template,
+            prompt_text=_load_prompt("heal"),
+            accepted_samples=json.dumps(
+                [_to_sample(r) for r in accepted[:3]], indent=2
+            ),
+            rejected_samples=json.dumps(
+                [_to_sample(r) for r in rejected[:5]], indent=2
+            ),
+            rejection_reasons="\n".join(rejection_reasons[:10]),
+        )
+        raw = _call(prompt, model, key, max_tokens=8192)
+        improved = raw.get("improved_prompt", "")
+        overall = raw.get("overall_score", 0.0)
+        if improved and overall < 0.8:
+            (_PROMPT_DIR / "heal.md").write_text(improved, encoding="utf-8")
+            if verbose:
+                print(
+                    f"\n[heal] ✓ heal prompt rewritten (score was {overall:.2f}, accept_rate {accept_rate:.0%})"
+                )
+    except Exception as exc:
+        if verbose:
+            print(f"\n[heal] prompt improvement failed: {exc}")
+
+
+# ---------------------------------------------------------------------------
 # Apply patch to disk
 # ---------------------------------------------------------------------------
 
@@ -470,6 +653,7 @@ def heal_project(
     api_key: Optional[str] = None,
     severity_filter: Optional[list[str]] = None,
     apply: bool = False,
+    improve: bool = False,
     output: Optional[Path] = None,
     verbose: bool = False,
 ) -> HealResult:
@@ -548,6 +732,9 @@ def heal_project(
                     f"  patch not accepted ({result.verify_verdict}, {result.verify_score:.2f})"
                 )
 
+    if improve:
+        _improve_heal_prompt(heal.results, model, key, verbose)
+
     if output:
         out_path = output if not output.is_dir() else output / "heal.json"
         import dataclasses
@@ -602,6 +789,11 @@ def main(argv=None):
     p.add_argument("--out", type=Path, help="write heal.json output")
     p.add_argument("--model", default=_DEFAULT_MODEL, help="Claude model to use")
     p.add_argument("--api-key", help="Anthropic API key (or set ANTHROPIC_API_KEY)")
+    p.add_argument(
+        "--improve",
+        action="store_true",
+        help="rewrite heal.md prompt if accept rate < 85%% (self-improvement)",
+    )
     p.add_argument("-v", "--verbose", action="store_true")
 
     args = p.parse_args(argv)
@@ -612,6 +804,7 @@ def main(argv=None):
         api_key=args.api_key,
         severity_filter=args.severity,
         apply=args.apply,
+        improve=args.improve,
         output=args.out,
         verbose=args.verbose,
     )

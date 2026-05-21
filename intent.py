@@ -275,6 +275,64 @@ def _get_key(api_key: Optional[str] = None) -> str:
     return key
 
 
+_READ_FILE_TOOL = {
+    "name": "read_file_lines",
+    "description": (
+        "Read a range of lines from a source file. "
+        "Line numbers are 1-indexed. Omit end_line to read to end of file."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "path": {
+                "type": "string",
+                "description": "Absolute or relative path to the file",
+            },
+            "start_line": {
+                "type": "integer",
+                "description": "First line (1-indexed)",
+                "default": 1,
+            },
+            "end_line": {
+                "type": "integer",
+                "description": "Last line (1-indexed, inclusive)",
+            },
+        },
+        "required": ["path"],
+    },
+}
+
+
+def _execute_read_file(inp: dict) -> str:
+    try:
+        path = Path(inp["path"])
+        if not path.exists():
+            return f"[error: file not found: {path}]"
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines(
+            keepends=True
+        )
+        start = max(0, int(inp.get("start_line", 1)) - 1)
+        end_raw = inp.get("end_line")
+        end = int(end_raw) if end_raw is not None else len(lines)
+        chunk = lines[start:end]
+        return "".join(f"{start + i + 1:4d}  {line}" for i, line in enumerate(chunk))
+    except Exception as exc:
+        return f"[error reading file: {exc}]"
+
+
+def _parse_text(text: str) -> dict:
+    text = text.strip()
+    if text.startswith("```"):
+        text = text.split("\n", 1)[1] if "\n" in text else text[3:]
+        text = re.sub(r"```\s*$", "", text).strip()
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(
+            f"Non-JSON response (parse error at pos {exc.pos}): {text[:500]}"
+        ) from exc
+
+
 def _call(prompt: str, model: str, key: str, max_tokens: int = 4096) -> dict:
     import anthropic
 
@@ -287,17 +345,55 @@ def _call(prompt: str, model: str, key: str, max_tokens: int = 4096) -> dict:
     )
     if not response.content:
         raise RuntimeError("API returned empty content")
-    text = response.content[0].text.strip()
-    # Strip markdown fences
-    if text.startswith("```"):
-        text = text.split("\n", 1)[1] if "\n" in text else text[3:]
-        text = re.sub(r"```\s*$", "", text).strip()
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError as exc:
-        raise RuntimeError(
-            f"Non-JSON response (parse error at pos {exc.pos}): {text[:500]}"
-        ) from exc
+    return _parse_text(response.content[0].text)
+
+
+def _call_with_tools(
+    prompt: str,
+    model: str,
+    key: str,
+    max_tokens: int = 8192,
+    max_tool_rounds: int = 6,
+) -> dict:
+    """Call with read_file_lines tool — model reads source on demand, no truncation."""
+    import anthropic
+
+    client = anthropic.Anthropic(api_key=key)
+    messages: list[dict] = [{"role": "user", "content": prompt}]
+
+    for _ in range(max_tool_rounds):
+        response = client.messages.create(
+            model=model,
+            max_tokens=max_tokens,
+            system=_SYSTEM,
+            tools=[_READ_FILE_TOOL],
+            messages=messages,
+        )
+
+        if response.stop_reason == "tool_use":
+            tool_results = []
+            for block in response.content:
+                if block.type == "tool_use":
+                    tool_results.append(
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": block.id,
+                            "content": _execute_read_file(block.input),
+                        }
+                    )
+            messages.append({"role": "assistant", "content": response.content})
+            messages.append({"role": "user", "content": tool_results})
+
+        elif response.stop_reason in ("end_turn", "stop_sequence", None):
+            text = "".join(
+                block.text for block in response.content if hasattr(block, "text")
+            )
+            return _parse_text(text)
+
+        else:
+            raise RuntimeError(f"Unexpected stop_reason: {response.stop_reason}")
+
+    raise RuntimeError(f"Tool loop exhausted after {max_tool_rounds} rounds")
 
 
 # ---------------------------------------------------------------------------
@@ -359,11 +455,13 @@ def _understand_module(
         template,
         project_essence=project_essence,
         filename=path.name,
+        file_path=str(path.resolve()),
         source=source,
         truncation_note=trunc_note,
     )
 
-    raw = _call(prompt, model, key, max_tokens=8192)
+    # Use tool-enabled call — model can read beyond truncation point if needed
+    raw = _call_with_tools(prompt, model, key, max_tokens=8192)
 
     u = raw.get("understanding", {})
     understanding = ProjectUnderstanding(
@@ -616,6 +714,7 @@ def extract_project_intent(
         intent.key_files = key_files
     except Exception as exc:
         import warnings
+
         warnings.warn(
             f"extract_project_intent triage failed; all modules will be analyzed without "
             f"project-level context, reducing invariant/violation quality: {exc}",
@@ -668,6 +767,7 @@ def extract_project_intent(
             intent.modules.append(module)
         except Exception as exc:
             import warnings
+
             warnings.warn(
                 f"extract_project_intent: skipped {f.name}: {exc}",
                 RuntimeWarning,

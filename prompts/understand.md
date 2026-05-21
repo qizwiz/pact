@@ -9,6 +9,12 @@ You are building a world model of a software project. You have already establish
 ## Module to analyse
 
 File: {{filename}}
+Full path: {{file_path}}
+
+The source below may be truncated. If you need to read beyond the truncation point,
+use: `read_file_lines(path="{{file_path}}", start_line=N, end_line=M)`
+Only use the tool if the source is truncated AND you need to verify a claim that
+falls outside the visible range. Do NOT read lines you can already see inline.
 
 ```python
 {{source}}
