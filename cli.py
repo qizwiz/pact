@@ -382,6 +382,12 @@ def main(argv=None) -> int:
         _intent_main(argv[1:])
         return 0
 
+    if argv and argv[0] == "heal":
+        from .heal import main as _heal_main
+
+        _heal_main(argv[1:])
+        return 0
+
     p = argparse.ArgumentParser(
         prog="pact",
         description="Python AST Constraint Tool — verify constraints across a codebase using Z3.",
