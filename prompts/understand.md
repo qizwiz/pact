@@ -1,8 +1,6 @@
 # Prompt: Module Understanding
 
-You are building a world model of a software project. You have already
-established the project's essence (below). Now you are building a deep
-understanding of one specific module within it.
+You are building a world model of a software project. You have already established the project's essence (below). Now you are building a deep understanding of one specific module within it.
 
 ## Project context
 
@@ -20,99 +18,351 @@ File: {{filename}}
 
 ---
 
-## Your task — three parts, in strict order
+## THE ONE UNRECOVERABLE FAILURE: FABRICATION
 
-Do NOT jump ahead. Complete Part 1 fully before writing Part 2.
-Complete Part 2 fully before writing Part 3.
+The source block above may be truncated. **Writing anything about code you cannot see is the only unrecoverable failure.** A short honest analysis of 2 visible functions is worth more than a complete-looking analysis that invents 8 more.
 
-### PART 1 — UNDERSTAND (do this first)
+**Before writing any claim, apply this two-part test:**
+1. Does the function/class/constant name appear as an actual `def`, `class`, or assignment in the source block?
+2. Can you quote the exact source line that supports the claim?
 
-Read every line. Then write:
+If NO to either: write `[not visible in truncated source]`. Do NOT describe its behavior, parameters, logic, or purpose under any circumstances.
 
-**purpose**
-What specific problem does THIS module solve within the larger project?
-Why does it exist as a separate file — what would break or become incoherent
-if it were merged into another module? Name the actual functions, classes,
-and constants that make it what it is. Write 3-5 paragraphs. Generic answers
-like "this module processes data" are wrong — be specific to this code.
+**Four fabrication traps — memorize these:**
+- **Docstring trap**: A name mentioned in a docstring or module-level comment is NOT defined. A `def` line must exist.
+- **Specificity trap**: Writing specific-sounding invented details (invented variable names, invented except clauses, invented call patterns, invented thresholds) is worse than writing nothing.
+- **Completion trap**: When source truncates mid-function, do NOT infer what the rest of the function does. Stop analysis at the truncation point and say where it stops.
+- **Inference trap**: Do NOT infer a function exists because the module docstring describes a pipeline step, or because a dataclass field implies a method. Only `def` lines create definitions.
 
-**design_intent**
-What design decisions are visible in this code? Examples of what to look for:
-- Why LRU cache? (performance? correctness? both?)
-- Why dataclass not dict? (what invariant does that enforce?)
-- Why frozenset not list? (immutability — what does that protect against?)
-- Why module-level constants not class attributes?
-- Why AST not regex? (what class of errors does AST catch that regex misses?)
-Explain what the structure of this code tells you about what the author was
-optimizing for. 2-4 paragraphs.
+---
 
-**key_abstractions**
-What are the main types, concepts, and data flows in this module?
-Name them explicitly. How do they relate to each other? What does an instance
-of the core type look like in memory? What transformations does this module
-perform on data as it flows through?
+## CRITICAL OUTPUT REQUIREMENT: COMPLETE VALID JSON
 
-**behavioral_contract**
-What does this module promise its callers? Be precise:
-- What can callers RELY on? (not "it works correctly" — specific guarantees)
-- What will this module NEVER do? (what errors does it absorb vs propagate?)
-- What are the return type guarantees? (always a list? never None? always sorted?)
-- What are the side effect guarantees? (always pure? mutates in place? idempotent?)
+**An unclosed JSON object is a critical failure equal to fabrication.**
 
-**failure_modes**
-What can go wrong? Look at the actual error handling in the code:
-- What errors are explicitly caught and handled here?
-- What errors are intentionally propagated to callers?
-- What edge cases does this code handle? (empty inputs? None values? missing keys?)
-- What edge cases does this code NOT handle — trusting callers to prevent them?
+**A missing top-level key is a critical failure equal to fabrication.**
 
-**assumptions**
-What does this code believe about its inputs, environment, and callers?
-Look for implicit assumptions — things the code does without checking:
-- Accesses dict keys without .get()? → assumes key always present
-- Calls .strip() directly? → assumes value is not None
-- Uses [0] indexing? → assumes list is non-empty
-List these explicitly. These are the load-bearing beliefs of the module.
+**An extra top-level key (e.g., `"path"`, `"file"`, `"module"`) is a structural failure equal to fabrication.**
 
-### PART 2 — INVARIANTS (derived from Part 1 only)
+### SCHEMA LOCK
 
-Based ONLY on what you understood in Part 1 — not on general Python
-conventions — what must be true for this module to work as its author intended?
+The output JSON object has EXACTLY FOUR top-level keys, in this order:
+1. `truncation_audit`
+2. `invariants`
+3. `violations`
+4. `understanding`
+
+### PRE-FLIGHT: COMPUTE YOUR BUDGET BEFORE WRITING ANYTHING
+
+Before writing a single JSON character, do this silently:
+1. Count the names you will place in `visible_definitions`. Call this N.
+2. If N ≤ 5: each `understanding` field ≤ 120 words. If 6–12: ≤ 70 words. If 13+: ≤ 50 words.
+3. Mentally confirm: "I have N visible definitions. My per-field budget is W words. I will emit invariants/violations placeholders before opening understanding."
+4. If you skip this step, you will over-write `understanding` and truncate invariants — which has happened before and produces a broken output.
+
+### MANDATORY WRITE ORDER — DO NOT DEVIATE
+
+**STEP 1**: Open the outer `{`.
+
+**STEP 2**: Emit `"truncation_audit": { ... }` — close the object with `}`.
+
+**STEP 3 — EMIT PLACEHOLDERS NOW**: Write these two lines literally:
+```
+"invariants": [],
+"violations": [],
+```
+This guarantees both keys exist even if the model exhausts tokens inside `understanding`. **Do not skip this step. Do not defer it. Skipping this step has produced broken outputs in the past.**
+
+**STEP 4**: Open `"understanding": {` — write each field as a SHORT, COMPLETE string within your pre-computed budget. If you are mid-sentence and approaching the word limit, close the sentence immediately and close the field string. Never let a field string run open.
+
+**STEP 5**: Close `"understanding": }` then replace `"invariants": []` with the real array.
+
+**STEP 6**: Replace `"violations": []` with the real array.
+
+**STEP 7**: Emit the closing `}` of the outer object.
+
+**BUDGET EMERGENCY PROTOCOL**: If at any point you estimate fewer than 300 tokens remain:
+1. Immediately close the current field string with `[budget reached]"` if inside a string.
+2. Close `understanding` with `}`.
+3. Emit whatever invariants and violations you have assembled, even if the arrays are short.
+4. Emit closing `}`.
+
+**Self-check before emitting the final `}`**:
+1. Every `{` has a matching `}`
+2. Every `[` has a matching `]`
+3. All FOUR top-level keys are present in order: `truncation_audit`, `invariants`, `violations`, `understanding`
+4. NO extra top-level keys
+5. `truncation_audit.visible_definitions` is a non-empty array (or `["(none visible)"]` if source is empty)
+6. No `understanding` field string is unclosed
+7. Confidence scores span at least 0.25 of range (if invariants array is non-empty)
+8. `key_abstractions` field is NOT empty — if any visible definitions exist, this field must contain content
+9. `invariants` array is non-empty if ANY `except`, `None` check, guard, or constant is visible in the source — an empty invariants array when such patterns exist is a failure
+10. `violations` array is non-empty if ANY bare `except Exception:` or `except:` block is visible — swallowed exceptions are always violations
+
+---
+
+## PART 0 — TRUNCATION AUDIT
+
+JSON field: `truncation_audit`
+
+Answer exactly:
+1. **last_complete_unit**: The last syntactic unit (function, class, or statement) that is 100% complete in the source block. Quote its `def`, `class`, or assignment line verbatim.
+2. **cutoff_line**: The exact last line of the source block, quoted verbatim, character for character.
+3. **visible_definitions**: Every name that has an actual `def`, `class`, or top-level assignment in the source block. **Include module-level constants** (e.g., `_SKIP_DIRS = frozenset(...)`, `_HAS_TS = True`) — these are definitions too. This list GATES all subsequent analysis.
+4. **docstring_only_names**: Names mentioned in module docstrings or comments that lack a `def`, `class`, or assignment line in the source block.
+
+**Partial definition rule**: A function whose `def` line is visible but whose body is truncated belongs in `visible_definitions` AND must have its analysis stop at the truncation point, named explicitly.
+
+**After writing `truncation_audit`, IMMEDIATELY emit the two placeholders** — `"invariants": []` and `"violations": []` — before opening `understanding`.
+
+Example:
+```json
+{
+  "last_complete_unit": "_SKIP_DIRS = frozenset({...}) — complete assignment ending with })",
+  "cutoff_line": "       ",
+  "visible_definitions": ["_HAS_TS", "_HAS_JS", "_SKIP_DIRS", "_KNOWN_ASYNC_APIS", "_KNOWN_ASYNC_METHODS"],
+  "docstring_only_names": ["missing_await", "optional_dereference"]
+}
+```
+
+---
+
+## PART 1 — UNDERSTAND
+
+**Gate check before writing each sentence**: Is every name in this sentence from `truncation_audit.visible_definitions`? If not, replace with `[not visible in truncated source]`.
+
+**Sentence structure requirement**: Every sentence in `understanding` must contain at least one backtick-quoted code fragment that appears verbatim in the source block. Generic sentences with no quoted code fail this requirement.
+
+**FORBIDDEN preamble**: Do NOT begin `purpose` with a list of all visible names.
+
+**Dynamic word budget**: Count N = number of names in `visible_definitions`. If N ≤ 5: ≤ 120 words per field. If 6–12: ≤ 70 words per field. If 13+: ≤ 50 words per field.
+
+### purpose
+What specific problem does THIS module solve, based ONLY on visible definitions? Group visible functions/classes by their role. **Do not restate the module docstring** — add specificity the docstring omits. Acknowledge truncation explicitly.
+
+GOOD: "`_HAS_TS` and `_HAS_JS` are set inside `try/except Exception:` blocks — if tree-sitter imports fail, both are `False` and all downstream analysis silently returns empty results. `_KNOWN_ASYNC_APIS` explicitly excludes `setTimeout` (comment: 'return timer IDs, NOT Promises') and `request` (comment: 'too ambiguous') — these exclusions are load-bearing design decisions."
+
+BAD: "The module checks TypeScript files for constraint violations" — restates the docstring without code-specific detail.
+
+### design_intent
+Name exactly 2 specific visible design decisions. For each: state the exact construct (quote it), the choice made, and the alternative that was rejected. Explain WHY and what breaks if the alternative were used.
+
+REQUIRED DEPTH: A design decision must explain the specific consequence of the choice. "Uses frozenset for performance" scores zero.
+
+GOOD: "`_KNOWN_ASYNC_METHODS` includes `'get'` — this means any `.get(...)` call on any object (including plain dict `.get(key, default)`) will match the async method heuristic. The alternative of using a qualified name like `axios.get` was rejected in favor of split root/method matching, but the split creates false-positive risk for Map/dict `.get()` calls. If a codebase uses `myMap.get(key)` heavily, `_scan_missing_await` will flag every such call."
+
+BAD: "Uses frozenset for O(1) lookup" — too shallow.
+
+### key_abstractions
+**This field must NOT be empty if any visible definitions exist.**
+
+For every name in `visible_definitions`, provide: (a) for constants — their type, value, and role including any inline comments explaining exclusions; (b) for booleans set by try/except — what they gate and what happens when False; (c) for functions — their signature and key local variables/branches; (d) for truncated definitions — describe the visible portion and quote the exact last visible line.
+
+**TRUNCATION RULE FOR THIS FIELD**: If the source truncates mid-analysis, close the field with `[source truncated at: <last_visible_line>]"` — never leave the string open.
+
+GOOD: "`_HAS_TS`: bool, set `True` inside `try` importing `tree_sitter` and `tree_sitter_typescript`; `False` on any `Exception` — gates all TS/TSX parsing. `_SKIP_DIRS`: `frozenset` of 18 directory names including `node_modules`, `.next`, `vendor` — mirrors extractor._SKIP_DIRS per comment. `_KNOWN_ASYNC_APIS`: `frozenset` of 9 names; inline comment explains `setTimeout`/`request` exclusions. `_KNOWN_ASYNC_METHODS`: `frozenset` containing `'get'`, `'json'`, `'query'`, `'save'` among others — [source truncated at: '       ']"
+
+BAD: `""` — empty field is always wrong.
+
+### behavioral_contract
+Quote ONLY exact lines from the visible source that create guarantees. If no behavioral enforcement is visible, say so explicitly.
+
+**SWALLOWED-IMPORT CONTRACTS**: When a top-level `try/except` sets a boolean flag (`_HAS_TS = False`), this creates an implicit contract: all functions that check this flag will silently no-op when the import failed. Name this contract explicitly — it is invisible to callers.
+
+**CONSTANT-AS-CONTRACT**: When a `frozenset` constant explicitly excludes values (visible in inline comments), quote the comment — it documents an intentional behavioral boundary.
+
+GOOD: "`_HAS_TS = False` on `except Exception:` — any caller of analysis functions receives empty results with no error signal when tree-sitter is absent. The `_KNOWN_ASYNC_APIS` comment `# removed from _KNOWN_ASYNC_APIS: setTimeout/setInterval — return timer IDs, NOT Promises` is a behavioral contract: these names will never trigger missing_await violations regardless of context."
+
+BAD: Describing contracts for functions with no visible `def` line.
+
+**WORD LIMIT ENFORCEMENT**: At dynamic limit minus 10 words, close the current sentence, add `[field budget reached]`, and close the string.
+
+### failure_modes
+Quote each try/except block verbatim from the VISIBLE source. If none exist, say so. For each None/empty check, quote it and state what edge case it guards.
+
+**SWALLOWED-EXCEPTION RULE — THIS IS MANDATORY**: Any `except Exception:` or bare `except:` that does not log or re-raise MUST be called out. For EACH such block, provide ALL FIVE of these:
+1. The function/scope containing it (top-level, or function name)
+2. The exact except clause quoted verbatim
+3. What upstream trigger causes it to fire (e.g., missing pip package)
+4. What the caller receives instead (e.g., _HAS_TS=False)
+5. What false output the user sees (e.g., zero violations on all TS files with no warning)
+
+Failing to call out a visible swallowed exception is treated as fabrication.
+
+GOOD: "Top-level import guard: `except Exception: _HAS_TS = False` (lines ~19-20) — fires when `tree_sitter` or `tree_sitter_typescript` pip package is missing or version-incompatible; all TS/TSX analysis functions receive `_HAS_TS=False`; user sees zero violations on TypeScript files with no warning that analysis was skipped. Second guard: `except Exception: pass` in the JS import block — identical failure mode for JS/JSX files; `_HAS_JS` remains False."
+
+BAD: Ignoring visible `except Exception:` blocks.
+
+### assumptions
+List implicit assumptions embedded in the VISIBLE code only. For each, quote the exact expression that reveals the assumption and explain what breaks if violated.
+
+**THE MOST VALUABLE ASSUMPTIONS** for this type of module:
+- **False-negative assumptions**: What values in constants are assumed to be exhaustive? (e.g., `_KNOWN_ASYNC_APIS` assumes the listed names cover all promise-returning APIs — any unlisted async API produces false negatives)
+- **False-positive assumptions**: What values in constants assume non-collision? (e.g., `_KNOWN_ASYNC_METHODS` containing `'get'` assumes `.get()` is always async — dict/Map `.get()` calls will be false positives)
+- **Import-success assumptions**: Code after the try/except blocks assumes `_HAS_TS`/`_HAS_JS` will be checked before use — what breaks if a function forgets the check?
+
+**HARD BUDGET RULE**: This field has caused truncation in previous outputs. You MUST close this field's string value within the dynamic word limit. If you reach the limit mid-sentence, write `[field budget reached]` and close the string immediately.
+
+GOOD: "`_KNOWN_ASYNC_METHODS` includes `'get'` without qualification — assumes any `.get(...)` call is async; `dict.get(key, default)` and `Map.get(key)` are sync and will produce false positives in `_scan_missing_await`. `_SKIP_DIRS` comment says 'mirrors extractor._SKIP_DIRS' — assumes both stay in sync; if extractor adds a skip dir without updating this module, that directory gets analyzed unnecessarily. The bare `except Exception: pass` for JS assumes a missing JS parser is non-fatal — if the user expects JS analysis, they get no error."
+
+BAD: Assumptions about functions not in `visible_definitions`.
+
+---
+
+## PART 2 — INVARIANTS
+
+Based ONLY on `visible_definitions`. Every invariant must pass the fabrication test: you must be able to quote the exact source line in `derived_from`.
+
+**MANDATORY INVARIANT SOURCES**: The following patterns in visible source ALWAYS produce invariants — if you see them and produce no invariant, that is a failure:
+1. **bare `except Exception:` or `except:`** that sets a flag or passes → error_contract invariant about silent failure
+2. **`frozenset` constant with inline exclusion comments** → data_flow invariant about what is intentionally excluded
+3. **Two constants that cover the same domain** (e.g., `_KNOWN_ASYNC_APIS` + `_KNOWN_ASYNC_METHODS`) → invariant about their interaction or collision risk
+4. **Boolean flag set by import try/except** → guard_requirement invariant that all callers must check the flag
+
+**INVARIANT QUALITY TEST**: Ask "Could this invariant have been written from a description of the module, without reading the actual code?" If yes, rewrite it to reference a specific line, threshold, type annotation, or structural choice visible in the code.
 
 For each invariant:
-- **id**: inv_NNN (sequential)
-- **type**: nullable_contract | async_contract | error_contract | guard_requirement | data_flow | uniqueness | other
+- **id**: inv_NNN
+- **type**: nullable_contract | async_contract | error_contract | guard_requirement | data_flow | uniqueness | cache_contract | other
 - **statement**: plain English — what must always be true
-- **applies_to**: list of actual function/class names from this code
-- **formal**: semi-formal (∀ calls to f. result ≠ None  /  always: x checked before y)
-- **derived_from**: quote the specific part of your Part 1 analysis that implies this
-- **confidence**: 0.0–1.0 — how certain are you this is a real invariant vs a pattern you imposed?
+- **applies_to**: names verbatim from `visible_definitions` ONLY
+- **formal**: semi-formal (∀ / always: / never:)
+- **derived_from**: QUOTE the exact line from the visible source. If you cannot quote it, do not list the invariant.
+- **confidence**: 0.0–1.0
 
-Do not list invariants with confidence < 0.6. Do not list more than 8.
+**Calibration rules**:
+- 0.90–1.00: structurally enforced by a visible line you are quoting
+- 0.70–0.89: strongly implied by a visible pattern requiring one inferential step
+- 0.60–0.69: plausible from visible structure but enforcement mechanism not directly quoted
+- Below 0.60: do not list
+- **Scores MUST span at least 0.25 of range.** All scores within 0.10 of each other = calibration failure.
 
-### PART 3 — VIOLATIONS (derived from Part 2 only)
+**Count rules**: 2–8 invariants. Heavily truncated source: 2–4 maximum. Do not pad by inventing invariants about invisible code. If you cannot produce 2 from visible code, write `[]`.
 
-For each invariant in Part 2, examine the actual code:
-Does the code satisfy this invariant everywhere it applies?
+GOOD INVARIANT (swallowed-exception, high confidence):
+```json
+{
+  "id": "inv_001",
+  "type": "error_contract",
+  "statement": "If tree_sitter or tree_sitter_typescript fails to import, _HAS_TS is silently set False and all TS/TSX analysis returns empty results with no error signal to the caller",
+  "applies_to": ["_HAS_TS"],
+  "formal": "always: import failure → _HAS_TS=False → downstream analysis no-ops silently",
+  "derived_from": "except Exception:\n    _HAS_TS = False",
+  "confidence": 0.97
+}
+```
 
-For each violation found:
-- **invariant_id**: which invariant is violated
-- **line**: exact line number
-- **evidence**: quote the specific code that violates the invariant
-- **severity**: critical (crashes in production) | high (data corruption or silent failure) | medium (degraded behavior) | low (edge case)
-- **explanation**: given THIS module's stated intent — not external conventions —
-  why does this violation matter? What specifically breaks if it triggers?
+GOOD INVARIANT (false-positive risk, moderate confidence):
+```json
+{
+  "id": "inv_002",
+  "type": "data_flow",
+  "statement": "_KNOWN_ASYNC_METHODS contains 'get' with no object-type qualifier — synchronous dict.get() and Map.get() calls will match the async heuristic, producing false-positive missing_await violations",
+  "applies_to": ["_KNOWN_ASYNC_METHODS"],
+  "formal": "always: any .get(...) call matches _KNOWN_ASYNC_METHODS regardless of object type",
+  "derived_from": "\"get\",",
+  "confidence": 0.72
+}
+```
 
-Only report violations you are confident about. A missing None check that the
-module's own behavioral_contract says should never happen is a violation.
-A missing None check on an input the module's assumptions say will always be
-non-None is NOT a violation.
+BAD INVARIANT — generic, could be written from a description alone:
+```json
+{
+  "statement": "The module skips certain directories during file scanning",
+  "derived_from": "_SKIP_DIRS = frozenset({...})"
+}
+```
+
+---
+
+## PART 3 — VIOLATIONS
+
+For each invariant: does the visible code actually satisfy it?
+
+For each violation:
+- **invariant_id**: which invariant
+- **line**: exact line number in the source block
+- **evidence**: quote the specific code verbatim
+- **severity**: critical | high | medium | low
+- **explanation**: answer three questions explicitly: (1) Which function/caller is affected? (2) What does the caller receive when the invariant is violated? (3) What is the user-visible symptom? If you cannot answer all three from visible code, say so rather than fabricating.
+
+**MANDATORY VIOLATION SOURCES**: The following ALWAYS produce violation entries if visible:
+1. Any `except Exception:` or bare `except:` that does not log or re-raise → always at least `medium`, typically `high` for analysis modules because the user receives incorrect (silent) results
+2. Any constant containing values that collide with common non-async patterns (e.g., `'get'` in `_KNOWN_ASYNC_METHODS`) → `medium` false-positive risk
+3. Two constants claimed to mirror each other (e.g., `# mirrors extractor._SKIP_DIRS`) with no enforcement mechanism → `low` staleness risk
+
+Failing to report a violation for a visible swallowed exception is treated as fabrication.
+
+**Truncation rule**: Do NOT report violations in code you cannot see.
+
+GOOD VIOLATION:
+```json
+{
+  "invariant_id": "inv_001",
+  "line": 19,
+  "evidence": "except Exception:\n    _HAS_TS = False",
+  "severity": "high",
+  "explanation": "(1) Any caller of TS/TSX analysis functions. (2) Caller receives empty violation list []. (3) User sees zero TypeScript violations on every file with no warning that tree-sitter failed to load — a broken install produces identical output to a clean codebase."
+}
+```
+
+GOOD VIOLATION (false-positive):
+```json
+{
+  "invariant_id": "inv_002",
+  "line": 95,
+  "evidence": "\"get\",",
+  "severity": "medium",
+  "explanation": "(1) _scan_missing_await (not yet visible) uses _KNOWN_ASYNC_METHODS. (2) Any .get() call — including synchronous dict.get() — matches the async heuristic. (3) User sees spurious missing_await violations on dict/Map .get() calls, eroding trust in the checker."
+}
+```
+
+BAD VIOLATION — invented line number and evidence:
+```json
+{
+  "invariant_id": "inv_003",
+  "line": 0,
+  "evidence": "if score.overall < 0.8:",
+  "severity": "high",
+  "explanation": "uses hardcoded 0.8 threshold"
+}
+```
+
+---
+
+## FINAL SELF-CHECK
+
+Before writing the closing `}`, verify:
+1. `truncation_audit` is present and closed
+2. `invariants` array is present and closed — even if empty
+3. `violations` array is present and closed — even if empty
+4. `understanding` has all six fields, each a closed string within the dynamic word limit
+5. `key_abstractions` is NOT an empty string
+6. The outer `}` closes the entire object
+7. No field references a name absent from `truncation_audit.visible_definitions`
+8. Every `derived_from` is a verbatim quote from the source block
+9. Confidence scores span at least 0.25 of range (if invariants non-empty)
+10. No `understanding` field exceeds its dynamic word limit
+11. `purpose` does NOT open with a list of all visible definition names
+12. No extra top-level keys — exactly four: `truncation_audit`, `invariants`, `violations`, `understanding`
+13. `assumptions` field string is CLOSED — previous outputs have truncated here without closing
+14. No invariant or violation references a function not in `visible_definitions`
+15. If ANY `except Exception:` or `except:` block is visible in source → `invariants` is non-empty AND `violations` is non-empty
+16. `key_abstractions` field closes with either complete analysis or `[source truncated at: <last_visible_line>]` — never an open string
 
 ---
 
 Return JSON only — no markdown fences, no explanation outside the JSON:
 
 {
+  "truncation_audit": {
+    "last_complete_unit": "...",
+    "cutoff_line": "exact last line quoted verbatim",
+    "visible_definitions": ["..."],
+    "docstring_only_names": ["..."]
+  },
+  "invariants": [],
+  "violations": [],
   "understanding": {
     "purpose": "...",
     "design_intent": "...",
@@ -120,7 +370,5 @@ Return JSON only — no markdown fences, no explanation outside the JSON:
     "behavioral_contract": "...",
     "failure_modes": "...",
     "assumptions": "..."
-  },
-  "invariants": [...],
-  "violations": [...]
+  }
 }

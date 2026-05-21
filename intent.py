@@ -121,12 +121,21 @@ class ImprovementScore:
 
 
 @dataclass
+class TruncationAudit:
+    last_complete_unit: str = ""
+    cutoff_line: str = ""
+    visible_definitions: list[str] = field(default_factory=list)
+    docstring_only_names: list[str] = field(default_factory=list)
+
+
+@dataclass
 class ModuleIntent:
     path: str
     understanding: ProjectUnderstanding
     invariants: list[Invariant] = field(default_factory=list)
     violations: list[Violation] = field(default_factory=list)
     prompt_score: Optional[ImprovementScore] = None
+    truncation_audit: Optional[TruncationAudit] = None
 
 
 @dataclass
@@ -286,7 +295,9 @@ def _call(prompt: str, model: str, key: str, max_tokens: int = 4096) -> dict:
     try:
         return json.loads(text)
     except json.JSONDecodeError as exc:
-        raise RuntimeError(f"Non-JSON response: {text[:300]}") from exc
+        raise RuntimeError(
+            f"Non-JSON response (parse error at pos {exc.pos}): {text[:500]}"
+        ) from exc
 
 
 # ---------------------------------------------------------------------------
@@ -307,7 +318,7 @@ def _triage(root: Path, model: str, key: str, verbose: bool) -> tuple[str, list[
         readme_excerpt=_collect_readme(root),
     )
 
-    raw = _call(prompt, model, key, max_tokens=2048)
+    raw = _call(prompt, model, key, max_tokens=4096)
     essence = raw.get("project_essence", "")
     key_files = [f["path"] for f in raw.get("key_files", [])]
 
@@ -352,7 +363,7 @@ def _understand_module(
         truncation_note=trunc_note,
     )
 
-    raw = _call(prompt, model, key)
+    raw = _call(prompt, model, key, max_tokens=8192)
 
     u = raw.get("understanding", {})
     understanding = ProjectUnderstanding(
@@ -389,11 +400,24 @@ def _understand_module(
         for v in raw.get("violations", [])
     ]
 
+    ta_raw = raw.get("truncation_audit", {})
+    truncation_audit = (
+        TruncationAudit(
+            last_complete_unit=ta_raw.get("last_complete_unit", ""),
+            cutoff_line=ta_raw.get("cutoff_line", ""),
+            visible_definitions=ta_raw.get("visible_definitions", []),
+            docstring_only_names=ta_raw.get("docstring_only_names", []),
+        )
+        if ta_raw
+        else None
+    )
+
     return ModuleIntent(
         path=str(path),
         understanding=understanding,
         invariants=invariants,
         violations=violations,
+        truncation_audit=truncation_audit,
     )
 
 
@@ -424,7 +448,7 @@ def _improve_prompt(
     )
 
     try:
-        raw = _call(prompt, model, key, max_tokens=4096)
+        raw = _call(prompt, model, key, max_tokens=8192)
     except Exception as exc:
         if verbose:
             print(f"    improvement scoring failed: {exc}")
