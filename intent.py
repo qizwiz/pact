@@ -1,31 +1,22 @@
 """
 pact intent -- LLM-powered semantic world-model extraction.
 
-Stage 1 of the intent-first verification pipeline:
+Pipeline:
+  1. Triage  — identify which files encode essential design decisions
+  2. Understand — extract deep world model per module (purpose, design intent,
+                  key abstractions, behavioral contract, failure modes, assumptions)
+  3. Invariants — derived from the module's own stated intent
+  4. Violations — contradictions with the module's own intent
+  5. Improve — score output quality, rewrite prompts that underperformed
 
-  1. UNDERSTAND the project holistically — what it is, why it exists,
-     what problems it solves, what design decisions were made and why,
-     what the key abstractions are and how they relate.
-
-  2. EXTRACT invariants that must hold for the project to work correctly —
-     derived from the project's own stated and implied intent, not from
-     external coding conventions.
-
-  3. IDENTIFY violations — places where the code appears to contradict
-     its own intent.
-
-The output (intent.json) is the "world model" that feeds pact's verify
-pipeline. Nothing downstream should run until this exists.
+Prompts live in prompts/*.md and self-improve: each run scores its output and
+rewrites weak prompts. The prompts converge toward optimal through use.
 
 Usage:
-    # Analyse a single file
-    pact intent <file.py>
-
-    # Analyse a whole project (top N files by substance)
-    pact intent <directory> --out intent.json
-
-    # Use a specific model
-    pact intent <directory> --model claude-opus-4-7 --out intent.json
+    pact intent <file.py>                   # single file
+    pact intent <dir> --out intent.json     # full project
+    pact intent <dir> --improve             # also update prompts after run
+    pact intent <dir> --model claude-opus-4-7 --improve
 """
 
 from __future__ import annotations
@@ -33,41 +24,64 @@ from __future__ import annotations
 import ast
 import json
 import os
+import re
 import textwrap
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Optional
 
 # ---------------------------------------------------------------------------
-# Schema — world model first, invariants second
+# Prompt loading — prompts are files, not hardcoded strings
+# ---------------------------------------------------------------------------
+
+_PROMPT_DIR = Path(__file__).parent / "prompts"
+
+
+def _load_prompt(name: str) -> str:
+    """Load a prompt template from prompts/<name>.md."""
+    p = _PROMPT_DIR / f"{name}.md"
+    if not p.exists():
+        raise FileNotFoundError(f"Prompt not found: {p}")
+    return p.read_text(encoding="utf-8")
+
+
+def _save_prompt(name: str, text: str) -> None:
+    """Overwrite prompts/<name>.md with improved text."""
+    p = _PROMPT_DIR / f"{name}.md"
+    p.write_text(text, encoding="utf-8")
+
+
+def _render(template: str, **kwargs) -> str:
+    """Replace {{key}} placeholders in a prompt template."""
+    for k, v in kwargs.items():
+        template = template.replace("{{" + k + "}}", str(v))
+    return template
+
+
+# ---------------------------------------------------------------------------
+# Schema
 # ---------------------------------------------------------------------------
 
 
 @dataclass
 class ProjectUnderstanding:
-    """
-    Rich natural-language understanding of what a project IS and WHY it exists.
-    This is the world model. Everything else is derived from this.
-    """
-
-    purpose: str  # What problem does this project/module solve?
-    design_intent: str  # What key design decisions were made, and why?
-    key_abstractions: str  # What are the main concepts/types and how do they relate?
-    behavioral_contract: str  # How is it supposed to behave? What must always happen?
-    failure_modes: str  # What can go wrong, and how is it supposed to handle that?
-    assumptions: str  # What does this code assume about its inputs/environment?
+    purpose: str
+    design_intent: str
+    key_abstractions: str
+    behavioral_contract: str
+    failure_modes: str
+    assumptions: str
 
 
 @dataclass
 class Invariant:
     id: str
-    type: str  # nullable_contract | async_contract | error_contract |
-    # guard_requirement | data_flow | uniqueness | other
-    statement: str  # plain English — what must always be true
-    applies_to: list[str]  # function/class names this applies to
-    formal: str  # semi-formal (∀, →, ≠ None, always/never notation)
-    derived_from: str  # which part of the project understanding implies this
-    confidence: float  # 0.0–1.0
+    type: str
+    statement: str
+    applies_to: list[str]
+    formal: str
+    derived_from: str
+    confidence: float
 
 
 @dataclass
@@ -75,9 +89,35 @@ class Violation:
     invariant_id: str
     file: str
     line: int
-    evidence: str  # specific code that contradicts the invariant
-    severity: str  # critical | high | medium | low
-    explanation: str  # why this matters given the project's intent
+    evidence: str
+    severity: str
+    explanation: str
+
+
+@dataclass
+class ImprovementScore:
+    specificity: float
+    groundedness: float
+    calibration: float
+    completeness: float
+    actionability: float
+    non_obviousness: float
+
+    @property
+    def overall(self) -> float:
+        return (
+            sum(
+                [
+                    self.specificity,
+                    self.groundedness,
+                    self.calibration,
+                    self.completeness,
+                    self.actionability,
+                    self.non_obviousness,
+                ]
+            )
+            / 6
+        )
 
 
 @dataclass
@@ -86,6 +126,7 @@ class ModuleIntent:
     understanding: ProjectUnderstanding
     invariants: list[Invariant] = field(default_factory=list)
     violations: list[Violation] = field(default_factory=list)
+    prompt_score: Optional[ImprovementScore] = None
 
 
 @dataclass
@@ -93,19 +134,18 @@ class ProjectIntent:
     project: str
     generated_at: str
     source_model: str
-    # Project-level understanding (from README/entry points/key modules)
     project_summary: str = ""
+    key_files: list[str] = field(default_factory=list)
     modules: list[ModuleIntent] = field(default_factory=list)
 
     def to_json(self, indent: int = 2) -> str:
         return json.dumps(asdict(self), indent=indent)
 
     def violations_by_severity(self) -> dict[str, list[dict]]:
-        """All violations across modules, grouped by severity."""
-        result: dict[str, list] = {"critical": [], "high": [], "medium": [], "low": []}
+        out: dict[str, list] = {"critical": [], "high": [], "medium": [], "low": []}
         for m in self.modules:
             for v in m.violations:
-                result.setdefault(v.severity, []).append(
+                out.setdefault(v.severity, []).append(
                     {
                         "file": v.file,
                         "line": v.line,
@@ -114,11 +154,15 @@ class ProjectIntent:
                         "explanation": v.explanation,
                     }
                 )
-        return result
+        return out
+
+    def avg_prompt_score(self) -> Optional[float]:
+        scores = [m.prompt_score.overall for m in self.modules if m.prompt_score]
+        return sum(scores) / len(scores) if scores else None
 
 
 # ---------------------------------------------------------------------------
-# File selection
+# File handling
 # ---------------------------------------------------------------------------
 
 _SKIP_DIRS = frozenset(
@@ -134,11 +178,10 @@ _SKIP_DIRS = frozenset(
         ".eggs",
     }
 )
-_MAX_FILE_BYTES = 40_000  # ~500 lines; truncate larger files with signature summary
+_MAX_FILE_BYTES = 40_000
 
 
 def _iter_python_files(root: Path) -> list[Path]:
-    """Return .py files under root, skipping caches/test files/vendored dirs."""
     results = []
     for p in sorted(root.rglob("*.py")):
         if any(part in _SKIP_DIRS or part.endswith(".egg-info") for part in p.parts):
@@ -157,7 +200,6 @@ def _read_truncated(path: Path) -> tuple[str, bool]:
 
 
 def _signature_summary(source: str) -> str:
-    """Compact signature+docstring summary for oversized files."""
     try:
         tree = ast.parse(source)
     except SyntaxError:
@@ -180,93 +222,22 @@ def _signature_summary(source: str) -> str:
     return "\n".join(lines)
 
 
-# ---------------------------------------------------------------------------
-# Prompts
-# ---------------------------------------------------------------------------
-
-_SYSTEM = textwrap.dedent("""\
-    You are performing semantic intent extraction for a formal verification pipeline.
-
-    Your PRIMARY task is to deeply understand what the code IS and WHY it exists —
-    its purpose, design intent, key abstractions, behavioral contracts, and
-    assumptions. This understanding is the "world model" that everything else
-    derives from.
-
-    Only AFTER establishing that understanding should you extract invariants
-    and violations — and those must be derived from the code's OWN intent,
-    not from external coding conventions.
-
-    Return ONLY valid JSON. No markdown fences, no explanation outside the JSON.
-""")
-
-_MODULE_SCHEMA = textwrap.dedent("""\
-    {
-      "understanding": {
-        "purpose": "Multi-paragraph description of what problem this module solves and why it exists",
-        "design_intent": "What key design decisions were made (e.g. why AST not regex, why LRU cache, why dataclass not dict) and the reasoning behind them",
-        "key_abstractions": "The main types/concepts (e.g. FailureEvidence, FailureMode, FIX_MODES) and how they relate to each other",
-        "behavioral_contract": "How this module is supposed to behave — what it must always do, what it must never do, what callers can rely on",
-        "failure_modes": "What can go wrong, how the code is supposed to handle it, and what failure modes are intentionally unhandled",
-        "assumptions": "What this code assumes about its inputs, environment, and callers"
-      },
-      "invariants": [
-        {
-          "id": "inv_001",
-          "type": "nullable_contract | async_contract | error_contract | guard_requirement | data_flow | uniqueness | other",
-          "statement": "Plain English: what must always be true",
-          "applies_to": ["function_name", "ClassName.method"],
-          "formal": "Semi-formal: ∀ calls to f. result ≠ None  or  always: x is checked before y",
-          "derived_from": "Which part of the understanding implies this invariant",
-          "confidence": 0.9
-        }
-      ],
-      "violations": [
-        {
-          "invariant_id": "inv_001",
-          "file": "module_name.py",
-          "line": 42,
-          "evidence": "Specific code that contradicts the invariant",
-          "severity": "critical | high | medium | low",
-          "explanation": "Why this violation matters given the module's intent"
-        }
-      ]
-    }
-""")
-
-_PROJECT_SCHEMA = textwrap.dedent("""\
-    {
-      "project_summary": "Multi-paragraph description of the whole project — what it is, why it exists, what problems it solves, who uses it and how, what the key architectural decisions are",
-      "key_files": ["list of the most important files for understanding this project"]
-    }
-""")
+def _file_listing(root: Path) -> str:
+    files = _iter_python_files(root)
+    lines = []
+    for f in sorted(files):
+        rel = f.relative_to(root)
+        size = f.stat().st_size
+        lines.append(f"  {rel}  ({size:,} bytes)")
+    return "\n".join(lines)
 
 
-def _build_module_prompt(path: Path, source: str, truncated: bool) -> str:
-    suffix = ""
-    if truncated:
-        suffix = (
-            "\n\n[FILE TRUNCATED — signature summary follows:]\n"
-            + _signature_summary(source)
-        )
-    return (
-        f"## Module: {path.name}\n\n"
-        "```python\n" + source + suffix + "\n```\n\n"
-        "Extract the semantic intent. Return JSON matching this schema exactly:\n\n"
-        + _MODULE_SCHEMA
-    )
-
-
-def _build_project_prompt(readme: str, entry_points: str) -> str:
-    parts = []
-    if readme:
-        parts.append(f"## README\n\n{readme[:6000]}")
-    if entry_points:
-        parts.append(f"## Entry point signatures\n\n```python\n{entry_points}\n```")
-    parts.append(
-        "\nExtract the project-level understanding. Return JSON matching:\n\n"
-        + _PROJECT_SCHEMA
-    )
-    return "\n\n".join(parts)
+def _collect_readme(root: Path) -> str:
+    for name in ("README.md", "README.rst", "README.txt", "README"):
+        p = root / name
+        if p.exists():
+            return p.read_text(encoding="utf-8", errors="replace")[:6000]
+    return ""
 
 
 # ---------------------------------------------------------------------------
@@ -274,6 +245,10 @@ def _build_project_prompt(readme: str, entry_points: str) -> str:
 # ---------------------------------------------------------------------------
 
 _DEFAULT_MODEL = "claude-sonnet-4-6"
+_SYSTEM = (
+    "You are performing semantic analysis for a formal verification pipeline. "
+    "Return ONLY valid JSON. No markdown fences, no explanation outside the JSON."
+)
 
 
 def _get_key(api_key: Optional[str] = None) -> str:
@@ -286,7 +261,7 @@ def _get_key(api_key: Optional[str] = None) -> str:
         raise RuntimeError(
             "ANTHROPIC_API_KEY not set.\n"
             "  export ANTHROPIC_API_KEY=sk-ant-...   then re-run.\n"
-            "  Or pass --api-key <key> on the command line."
+            "  Or pass --api-key <key>."
         )
     return key
 
@@ -304,38 +279,80 @@ def _call(prompt: str, model: str, key: str, max_tokens: int = 4096) -> dict:
     if not response.content:
         raise RuntimeError("API returned empty content")
     text = response.content[0].text.strip()
-    # Strip markdown fences if model wraps output
+    # Strip markdown fences
     if text.startswith("```"):
         text = text.split("\n", 1)[1] if "\n" in text else text[3:]
-        if "```" in text:
-            text = text[: text.rfind("```")]
+        text = re.sub(r"```\s*$", "", text).strip()
     try:
-        return json.loads(text.strip())
+        return json.loads(text)
     except json.JSONDecodeError as exc:
-        raise RuntimeError(
-            f"Non-JSON response (first 300 chars): {text[:300]}"
-        ) from exc
+        raise RuntimeError(f"Non-JSON response: {text[:300]}") from exc
 
 
 # ---------------------------------------------------------------------------
-# Public API
+# Step 1: Triage
 # ---------------------------------------------------------------------------
 
 
-def extract_file_intent(
-    path: Path,
-    model: str = _DEFAULT_MODEL,
-    api_key: Optional[str] = None,
-    verbose: bool = False,
-) -> ModuleIntent:
-    """Extract semantic intent from a single Python file."""
-    key = _get_key(api_key)
-    source, truncated = _read_truncated(path)
+def _triage(root: Path, model: str, key: str, verbose: bool) -> tuple[str, list[str]]:
+    """Return (project_essence, ordered_key_files)."""
     if verbose:
-        size_note = f"{len(source)} bytes{', truncated' if truncated else ''}"
-        print(f"  → {path.name} ({size_note})")
+        print("[intent] step 1: triage — identifying key files...")
 
-    raw = _call(_build_module_prompt(path, source, truncated), model, key)
+    template = _load_prompt("triage")
+    prompt = _render(
+        template,
+        project_name=root.name,
+        file_listing=_file_listing(root),
+        readme_excerpt=_collect_readme(root),
+    )
+
+    raw = _call(prompt, model, key, max_tokens=2048)
+    essence = raw.get("project_essence", "")
+    key_files = [f["path"] for f in raw.get("key_files", [])]
+
+    if verbose and essence:
+        print(f"  essence: {essence[:180].replace(chr(10), ' ')}...")
+        print(
+            f"  key files ({len(key_files)}): {', '.join(key_files[:5])}{'...' if len(key_files) > 5 else ''}"
+        )
+
+    return essence, key_files
+
+
+# ---------------------------------------------------------------------------
+# Step 2–4: Module understanding + invariants + violations
+# ---------------------------------------------------------------------------
+
+
+def _understand_module(
+    path: Path,
+    project_essence: str,
+    model: str,
+    key: str,
+    verbose: bool,
+) -> ModuleIntent:
+    source, truncated = _read_truncated(path)
+    trunc_note = (
+        "\n[FILE TRUNCATED — remaining signatures:]\n" + _signature_summary(source)
+        if truncated
+        else ""
+    )
+
+    if verbose:
+        size = f"{len(source):,} bytes{', truncated' if truncated else ''}"
+        print(f"  → {path.name} ({size})")
+
+    template = _load_prompt("understand")
+    prompt = _render(
+        template,
+        project_essence=project_essence,
+        filename=path.name,
+        source=source,
+        truncation_note=trunc_note,
+    )
+
+    raw = _call(prompt, model, key)
 
     u = raw.get("understanding", {})
     understanding = ProjectUnderstanding(
@@ -380,23 +397,106 @@ def extract_file_intent(
     )
 
 
-def _collect_project_context(root: Path) -> tuple[str, str]:
-    """Return (readme_text, entry_point_signatures)."""
-    readme = ""
-    for name in ("README.md", "README.rst", "README.txt", "README"):
-        p = root / name
-        if p.exists():
-            readme = p.read_text(encoding="utf-8", errors="replace")[:8000]
-            break
+# ---------------------------------------------------------------------------
+# Step 5: Prompt self-improvement
+# ---------------------------------------------------------------------------
 
-    # Pull signatures from likely entry points
-    entry_sigs = []
-    for name in ("__main__.py", "cli.py", "main.py", "__init__.py"):
-        p = root / name
-        if p.exists():
-            src = p.read_text(encoding="utf-8", errors="replace")
-            entry_sigs.append(f"# {name}\n" + _signature_summary(src))
-    return readme, "\n\n".join(entry_sigs[:3])
+
+def _improve_prompt(
+    prompt_name: str,
+    source_excerpt: str,
+    output: dict,
+    model: str,
+    key: str,
+    verbose: bool,
+) -> Optional[ImprovementScore]:
+    """Score the output and rewrite the prompt if it underperformed. Returns scores."""
+    if verbose:
+        print(f"    scoring output quality for {prompt_name}...")
+
+    template = _load_prompt("improve")
+    current_prompt = _load_prompt(prompt_name)
+    prompt = _render(
+        template,
+        prompt_text=current_prompt,
+        source_excerpt=source_excerpt[:3000],
+        output=json.dumps(output, indent=2)[:3000],
+    )
+
+    try:
+        raw = _call(prompt, model, key, max_tokens=4096)
+    except Exception as exc:
+        if verbose:
+            print(f"    improvement scoring failed: {exc}")
+        return None
+
+    scores_raw = raw.get("scores", {})
+
+    def _s(key_: str) -> float:
+        v = scores_raw.get(key_, {})
+        return float(v.get("score", 0) if isinstance(v, dict) else v) / 10.0
+
+    score = ImprovementScore(
+        specificity=_s("specificity"),
+        groundedness=_s("groundedness"),
+        calibration=_s("calibration"),
+        completeness=_s("completeness"),
+        actionability=_s("actionability"),
+        non_obviousness=_s("non_obviousness"),
+    )
+
+    if verbose:
+        print(
+            f"    scores — specificity:{score.specificity:.1f} "
+            f"groundedness:{score.groundedness:.1f} "
+            f"calibration:{score.calibration:.1f} "
+            f"completeness:{score.completeness:.1f} "
+            f"overall:{score.overall:.2f}"
+        )
+
+    # Rewrite prompt if overall score < 0.8
+    improved = raw.get("improved_prompt", "")
+    if improved and score.overall < 0.8:
+        _save_prompt(prompt_name, improved)
+        if verbose:
+            print(f"    ✓ prompt '{prompt_name}' rewritten (was {score.overall:.2f})")
+    elif verbose:
+        print(f"    prompt '{prompt_name}' good enough ({score.overall:.2f}), kept")
+
+    return score
+
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
+
+
+def extract_file_intent(
+    path: Path,
+    project_essence: str = "",
+    model: str = _DEFAULT_MODEL,
+    api_key: Optional[str] = None,
+    improve: bool = False,
+    verbose: bool = False,
+) -> ModuleIntent:
+    """Extract world model + invariants + violations from one Python file."""
+    key = _get_key(api_key)
+    source, _ = _read_truncated(path)
+
+    module = _understand_module(path, project_essence, model, key, verbose)
+
+    if improve:
+        score = _improve_prompt(
+            "understand",
+            source,
+            asdict(module),
+            model,
+            key,
+            verbose,
+        )
+        module.prompt_score = score
+
+    return module
 
 
 def extract_project_intent(
@@ -404,53 +504,69 @@ def extract_project_intent(
     model: str = _DEFAULT_MODEL,
     api_key: Optional[str] = None,
     output: Optional[Path] = None,
+    improve: bool = False,
     verbose: bool = False,
     max_files: int = 15,
 ) -> ProjectIntent:
     """
-    Extract intent from a whole project directory.
-
-    Step 1: build project-level summary from README + entry points.
-    Step 2: extract per-module intent from the top N files by size.
+    Full pipeline: triage → understand each key module → (optionally) improve prompts.
     """
     import datetime
 
     key = _get_key(api_key)
+
     intent = ProjectIntent(
         project=root.name,
         generated_at=datetime.datetime.utcnow().isoformat() + "Z",
         source_model=model,
     )
 
-    # Step 1 — project summary
-    if verbose:
-        print(f"[pact intent] extracting project summary for '{root.name}'...")
-    readme, entry_sigs = _collect_project_context(root)
-    if readme or entry_sigs:
-        try:
-            raw = _call(
-                _build_project_prompt(readme, entry_sigs), model, key, max_tokens=2048
-            )
-            intent.project_summary = raw.get("project_summary", "")
-            if verbose and intent.project_summary:
-                preview = intent.project_summary[:200].replace("\n", " ")
-                print(f"  project: {preview}...")
-        except Exception as exc:
-            if verbose:
-                print(f"  project summary failed: {exc}")
+    # Step 1: triage
+    try:
+        essence, key_files = _triage(root, model, key, verbose)
+        intent.project_summary = essence
+        intent.key_files = key_files
+    except Exception as exc:
+        if verbose:
+            print(f"  triage failed: {exc}")
+        essence = ""
+        key_files = []
 
-    # Step 2 — per-module intent
-    files = _iter_python_files(root)
-    # Prefer larger files (more substance); skip trivial ones < 500 bytes
-    files = [f for f in files if f.stat().st_size > 500]
-    files = sorted(files, key=lambda p: p.stat().st_size, reverse=True)[:max_files]
+    # Resolve key files to paths; fall back to top-N by size
+    if key_files:
+        resolved = []
+        for rel in key_files:
+            p = root / rel
+            if p.exists():
+                resolved.append(p)
+        if not resolved:
+            resolved = sorted(
+                [f for f in _iter_python_files(root) if f.stat().st_size > 500],
+                key=lambda f: f.stat().st_size,
+                reverse=True,
+            )[:max_files]
+        files = resolved[:max_files]
+    else:
+        files = sorted(
+            [f for f in _iter_python_files(root) if f.stat().st_size > 500],
+            key=lambda f: f.stat().st_size,
+            reverse=True,
+        )[:max_files]
 
+    # Step 2–4: understand each module
     if verbose:
-        print(f"[pact intent] analysing {len(files)} modules...")
+        print(f"[intent] step 2-4: understanding {len(files)} modules...")
 
     for f in files:
         try:
-            module = extract_file_intent(f, model=model, api_key=key, verbose=verbose)
+            module = extract_file_intent(
+                f,
+                project_essence=essence,
+                model=model,
+                api_key=key,
+                improve=improve,
+                verbose=verbose,
+            )
             intent.modules.append(module)
         except Exception as exc:
             if verbose:
@@ -462,10 +578,13 @@ def extract_project_intent(
         if verbose:
             n_inv = sum(len(m.invariants) for m in intent.modules)
             n_viol = sum(len(m.violations) for m in intent.modules)
-            print(f"\n[pact intent] wrote {out_path}")
+            avg = intent.avg_prompt_score()
+            print(f"\n[intent] wrote {out_path}")
             print(
-                f"  modules: {len(intent.modules)}, invariants: {n_inv}, violations: {n_viol}"
+                f"  modules:{len(intent.modules)}  invariants:{n_inv}  violations:{n_viol}"
             )
+            if avg is not None:
+                print(f"  avg prompt score: {avg:.2f}")
 
     return intent
 
@@ -480,10 +599,12 @@ def main(argv=None):
 
     p = argparse.ArgumentParser(
         prog="pact intent",
-        description=(
-            "Extract semantic intent, invariants, and violations from Python source.\n"
-            "Builds a world model of the project before running any verification."
-        ),
+        description="Build a semantic world model of a Python project.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=textwrap.dedent("""\
+            Prompts live in prompts/*.md and self-improve with --improve.
+            Each run scores output quality and rewrites underperforming prompts.
+        """),
     )
     p.add_argument("path", help="Python file or project directory")
     p.add_argument("--out", metavar="PATH", help="write intent.json here")
@@ -492,23 +613,26 @@ def main(argv=None):
         default=_DEFAULT_MODEL,
         help=f"Claude model (default: {_DEFAULT_MODEL})",
     )
+    p.add_argument("--max-files", type=int, default=15, metavar="N")
     p.add_argument(
-        "--max-files",
-        type=int,
-        default=15,
-        metavar="N",
-        help="max modules to analyse when given a directory (default: 15)",
+        "--improve",
+        action="store_true",
+        help="score output and rewrite underperforming prompts after each module",
     )
-    p.add_argument("--api-key", metavar="KEY", help="Anthropic API key")
+    p.add_argument("--api-key", metavar="KEY")
     p.add_argument("-v", "--verbose", action="store_true")
     args = p.parse_args(argv)
 
     target = Path(args.path).expanduser().resolve()
-    output = Path(args.out).expanduser().resolve() if args.out else None
+    out = Path(args.out).expanduser().resolve() if args.out else None
 
     if target.is_file():
         result = extract_file_intent(
-            target, model=args.model, api_key=args.api_key, verbose=True
+            target,
+            model=args.model,
+            api_key=args.api_key,
+            improve=args.improve,
+            verbose=True,
         )
         print(json.dumps(asdict(result), indent=2))
     else:
@@ -516,11 +640,12 @@ def main(argv=None):
             target,
             model=args.model,
             api_key=args.api_key,
-            output=output,
+            output=out,
+            improve=args.improve,
             verbose=True,
             max_files=args.max_files,
         )
-        if not output:
+        if not out:
             print(result.to_json())
 
 
