@@ -801,6 +801,9 @@ def _fix_unvalidated_lookup_chain(
 
     for ev in sorted(violations, key=lambda e: e.line, reverse=True):
         call = ev.call  # "collection[var]"
+        if "[" not in call:
+            skipped.append(ev)
+            continue
         bracket_pos = call.index("[")
         collection = call[:bracket_pos]
         var = call[bracket_pos + 1 :].rstrip("]")
