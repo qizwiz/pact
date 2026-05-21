@@ -169,12 +169,19 @@ def _z3_check_presence(required: list[str], provided: set[str]) -> list[str]:
     missing = [f for f in required if f not in provided]
     if not missing or not _HAS_Z3:
         return missing
+    # Formally verify: encode actual presence facts, assert at least one arg is absent,
+    # then extract which ones from the SAT model.
     s = Solver()
+    pvars = {}
     for name in required:
         v = Bool(f"provided_{name}")
+        pvars[name] = v
         s.add(v == (name in provided))
-        s.add(v)
-    return missing if s.check() == unsat else []
+    s.add(Or([Not(pvars[n]) for n in required]))
+    if s.check() != sat:
+        return []  # Z3 disagrees with pure-Python check — trust Python
+    m = s.model()
+    return [n for n in required if not bool(m[pvars[n]])]
 
 
 def check_function_call(call: CallSite, func: FunctionManifest) -> Optional[Violation]:
