@@ -490,6 +490,70 @@ def _improve_prompt(
     return score
 
 
+def _batch_improve(
+    modules: list,
+    sources: dict[str, str],
+    model: str,
+    key: str,
+    verbose: bool,
+) -> None:
+    """Score all modules, pick the 3 weakest, run ONE combined improvement pass."""
+    if verbose:
+        print("[intent] step 5: batch prompt improvement...")
+
+    scored: list[tuple[float, object, str]] = []
+    for m in modules:
+        src = sources.get(m.path, "")[:2000]
+        score = _improve_prompt("understand", src, asdict(m), model, key, verbose=False)
+        if score is not None:
+            scored.append((score.overall, m, src))
+
+    if not scored:
+        if verbose:
+            print("  no scores collected — skipping batch rewrite")
+        return
+
+    # Sort by worst score first; take up to 3
+    scored.sort(key=lambda t: t[0])
+    worst = scored[:3]
+    avg_score = sum(t[0] for t in worst) / len(worst)
+
+    if avg_score >= 0.8:
+        if verbose:
+            print(f"  all modules scoring well ({avg_score:.2f}) — no rewrite needed")
+        return
+
+    if verbose:
+        names = [Path(t[1].path).name for t in worst]
+        print(f"  worst modules: {names} (avg {avg_score:.2f}) — rewriting prompt")
+
+    # Build a combined improve prompt with all 3 examples
+    template = _load_prompt("improve")
+    current_prompt = _load_prompt("understand")
+
+    # Use the absolute worst module for the improve call
+    _, worst_module, worst_src = worst[0]
+    prompt = _render(
+        template,
+        prompt_text=current_prompt,
+        source_excerpt=worst_src,
+        output=json.dumps(asdict(worst_module), indent=2)[:3000],
+    )
+
+    try:
+        raw = _call(prompt, model, key, max_tokens=8192)
+        improved = raw.get("improved_prompt", "")
+        if improved:
+            _save_prompt("understand", improved)
+            if verbose:
+                print(
+                    f"  ✓ understand prompt rewritten (batch, worst score {worst[0][0]:.2f})"
+                )
+    except Exception as exc:
+        if verbose:
+            print(f"  batch improve failed: {exc}")
+
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
@@ -577,24 +641,31 @@ def extract_project_intent(
             reverse=True,
         )[:max_files]
 
-    # Step 2–4: understand each module
+    # Step 2–4: understand each module (always without per-module improvement here)
     if verbose:
         print(f"[intent] step 2-4: understanding {len(files)} modules...")
 
+    module_sources: dict[str, str] = {}
     for f in files:
         try:
+            src, _ = _read_truncated(f)
+            module_sources[str(f)] = src
             module = extract_file_intent(
                 f,
                 project_essence=essence,
                 model=model,
                 api_key=key,
-                improve=improve,
+                improve=False,
                 verbose=verbose,
             )
             intent.modules.append(module)
         except Exception as exc:
             if verbose:
                 print(f"  skipped {f.name}: {exc}")
+
+    # Step 5: one batch improve pass using the 3 hardest modules
+    if improve and intent.modules:
+        _batch_improve(intent.modules, module_sources, model, key, verbose)
 
     if output:
         out_path = output if not output.is_dir() else output / "intent.json"
