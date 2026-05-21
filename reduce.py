@@ -58,12 +58,21 @@ from dataclasses import dataclass
 from .extractor import CallSite, FunctionManifest
 from .encoder import Violation
 
+import warnings
+
 try:
     import networkx as nx
 
     _HAS_NX = True
 except ImportError:
     _HAS_NX = False
+    warnings.warn(
+        "networkx is not installed — all structural graph findings (SCCs, "
+        "blast radii, hubs, passthroughs, fitness) will be silently skipped. "
+        "Install networkx to enable full analysis.",
+        UserWarning,
+        stacklevel=2,
+    )
 
 
 # ---------------------------------------------------------------------------

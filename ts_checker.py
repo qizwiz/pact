@@ -22,7 +22,13 @@ try:
     _TS_LANGUAGE = _ts.Language(_tstype.language_typescript())
     _TSX_LANGUAGE = _ts.Language(_tstype.language_tsx())
     _HAS_TS = True
-except Exception:
+except Exception as _ts_exc:
+    import warnings
+    warnings.warn(
+        f"tree-sitter TypeScript unavailable — TS/TSX checks are disabled: {_ts_exc}",
+        RuntimeWarning,
+        stacklevel=2,
+    )
     _HAS_TS = False
 
 _HAS_JS = False

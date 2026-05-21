@@ -257,7 +257,13 @@ class _SpecVisitor(ast.NodeVisitor):
 
 def _is_cache_obj(node: ast.expr) -> bool:
     if isinstance(node, ast.Name):
-        return "cache" in node.id.lower() or "redis" in node.id.lower()
+        _id = node.id.lower()
+        return (
+            "cache" in _id
+            or "redis" in _id
+            or "memcache" in _id
+            or _id in ("r", "mc", "store", "kv", "cache_client", "redis_client")
+        )
     if isinstance(node, ast.Attribute):
         return "cache" in node.attr.lower() or "redis" in node.attr.lower()
     return False

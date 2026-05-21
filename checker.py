@@ -139,8 +139,14 @@ def check_codebase(
             if key not in seen:
                 seen.add(key)
                 violations.append(v)
-    except ImportError:
-        pass
+    except ImportError as _ts_import_err:
+        import logging as _logging
+        _logging.getLogger(__name__).warning(
+            "ts_checker could not be loaded (%s); "
+            "TypeScript files will not be checked. "
+            "Install tree-sitter to enable TS support.",
+            _ts_import_err,
+        )
 
     # Z3 Fixedpoint confirmation for model_constraint violations.
     # PactEngine runs a Datalog proof over the same extracted facts; any
@@ -180,8 +186,25 @@ def check_codebase(
                                 spec_id="z3:datalog",
                             )
                         )
-        except Exception:
-            pass  # Z3 unavailable or proof failed — AST results stand
+        except ImportError as _z3_import_err:
+            import logging as _logging
+            _logging.getLogger(__name__).warning(
+                "z3_engine could not be loaded (%s); "
+                "model_constraint violations will not be Z3-confirmed and "
+                "Z3-only violations will not be reported. "
+                "Install z3-solver to enable Datalog proof support.",
+                _z3_import_err,
+            )
+        except Exception as _z3_err:
+            import logging as _logging
+            _logging.getLogger(__name__).warning(
+                "Z3 Datalog proof failed (%s: %s); "
+                "model_constraint violations are unconfirmed and "
+                "Z3-only violations may be missing. "
+                "AST results are returned unchanged.",
+                type(_z3_err).__name__,
+                _z3_err,
+            )
 
     return violations
 

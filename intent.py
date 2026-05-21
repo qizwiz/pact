@@ -615,6 +615,13 @@ def extract_project_intent(
         intent.project_summary = essence
         intent.key_files = key_files
     except Exception as exc:
+        import warnings
+        warnings.warn(
+            f"extract_project_intent triage failed; all modules will be analyzed without "
+            f"project-level context, reducing invariant/violation quality: {exc}",
+            UserWarning,
+            stacklevel=2,
+        )
         if verbose:
             print(f"  triage failed: {exc}")
         essence = ""
@@ -660,6 +667,12 @@ def extract_project_intent(
             )
             intent.modules.append(module)
         except Exception as exc:
+            import warnings
+            warnings.warn(
+                f"extract_project_intent: skipped {f.name}: {exc}",
+                RuntimeWarning,
+                stacklevel=2,
+            )
             if verbose:
                 print(f"  skipped {f.name}: {exc}")
 

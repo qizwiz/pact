@@ -452,12 +452,19 @@ def prove_bare_except() -> ProofCertificate:
       - Fix: caller_sees_failure = True on all paths (UNSAT for silent failure)
     """
     if not _HAS_Z3:
+        import warnings
+        warnings.warn(
+            "z3-solver is not installed; formal proof was NOT computed. "
+            "Install z3-solver for a verified certificate.",
+            UserWarning,
+            stacklevel=2,
+        )
         return ProofCertificate(
             mode="bare_except",
-            bug_sat=True,
-            fix_unsat=True,
+            bug_sat=False,
+            fix_unsat=False,
             witness={},
-            axioms=["Z3 not installed — certificate is asserted, not computed."],
+            axioms=["Z3 not installed — certificate is NOT verified."],
             conclusion="Install z3-solver to compute the formal certificate.",
         )
 

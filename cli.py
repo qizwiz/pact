@@ -546,7 +546,11 @@ def main(argv=None) -> int:
 
     incremental_stats: dict = {}
     if args.incremental is not None:
+        try:
         changed = _changed_files_on_branch(args.incremental, cwd=root)
+    except DiffResolutionError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        sys.exit(1)
         violations, incremental_stats = check_codebase_incremental(
             root,
             changed,
