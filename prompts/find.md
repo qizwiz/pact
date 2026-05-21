@@ -6,6 +6,15 @@ to invariant violations.
 
 Full path: {{file_path}}
 
+## Prior: confirmed signals from git history and changelog
+
+The following violations have already been confirmed real by maintainers or Hypothesis.
+Weight your property search toward functions and invariants mentioned here.
+
+```json
+{{git_context}}
+```
+
 ## Source
 
 ```python
@@ -17,46 +26,57 @@ Full path: {{file_path}}
 Use `read_file_lines` if the source above is truncated or you need surrounding
 context. Do not assert properties about code you haven't seen.
 
-## PART 1: FIND BREAKING INPUTS
+## PART 1: THINK (internal only — 3 sentences max per function)
 
-For each function or method in this file:
+For each function: what input silently breaks the contract?
+Do NOT write out your reasoning. Think it, then immediately output JSON.
 
-1. Ask: what is the implicit contract? (what must callers provide? what does it promise?)
-2. Ask: what input or state would BREAK that contract silently — not raise, but produce
-   wrong output, swallow an error, or leave state inconsistent?
-3. Express the breaking input as a concrete Hypothesis strategy.
+## PART 2: OUTPUT — DO THIS NOW
 
-Focus on violations that are **semantically real**:
-- Silent failure (exception swallowed, wrong result returned)
-- Guard missing at boundary (caller sends X, callee assumes not-X)
-- State left inconsistent after partial failure
+**Your entire response must be one JSON object. No prose. No reasoning. No markdown.
+Start your response with `{`. End with `}`. Nothing else.**
 
-Do NOT invent violation categories. The violation IS the counterexample.
+For `hypothesis_strategy` and `hypothesis_predicate`: these MUST be filled in.
+Use `st.just(value)` when you have a specific counterexample. Use a lambda that
+returns `False` when the invariant is violated (Hypothesis will call it with `x`).
 
-## PART 2: OUTPUT
+**Worked example** — for a function `clamp(x, lo, hi)` that should return a value
+in `[lo, hi]` but silently returns wrong values when `lo > hi`:
+```
+{
+  "function": "clamp",
+  "line": 12,
+  "statement": "Result must be within [lo, hi] for all inputs",
+  "why_it_matters": "When lo > hi the function returns lo unchecked",
+  "counterexample_hint": "clamp(5, 10, 1)",
+  "hypothesis_strategy": "st.tuples(st.integers(), st.integers(), st.integers())",
+  "hypothesis_predicate": "lambda args: not (args[1] > args[2]) or (args[1] <= clamp(*args) <= args[2])",
+  "severity": "high"
+}
+```
 
-Return JSON only. No text outside the JSON.
+Now output the JSON for {{file_path}}:
 
-```json
+```
 {
   "file": "{{file_path}}",
   "properties": [
     {
-      "function": "name of the function",
-      "line": 42,
-      "statement": "one sentence: what invariant should hold",
-      "why_it_matters": "what goes wrong silently if violated",
-      "counterexample_hint": "the literal Python expression or value that breaks it",
-      "hypothesis_strategy": "st.text() | st.binary() | ... — runnable strategy",
-      "hypothesis_predicate": "lambda x: <expression that should be True but isn't>",
+      "function": "...",
+      "line": 0,
+      "statement": "...",
+      "why_it_matters": "...",
+      "counterexample_hint": "...",
+      "hypothesis_strategy": "st.just(...) or st.tuples(...) — REQUIRED, not empty",
+      "hypothesis_predicate": "lambda x: ... — REQUIRED, returns False when violated",
       "severity": "critical | high | medium"
     }
   ]
 }
 ```
 
-Rules:
-- `hypothesis_strategy` must be a valid Hypothesis `st.*` expression, importable with `from hypothesis import strategies as st`
-- `hypothesis_predicate` must be a Python lambda that returns False when the invariant is violated
-- `counterexample_hint` must be a literal value, not a description
-- If you cannot find a real breaking input, omit the property — do not fabricate
+Focus only on **semantically real** violations: silent failure, missing guard at
+boundary, state left inconsistent. Omit any property you cannot express as a
+concrete `counterexample_hint`. Do not fabricate.
+
+**OUTPUT THE JSON NOW. No preamble.**

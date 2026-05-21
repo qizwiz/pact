@@ -183,6 +183,7 @@ def find_violations(
     api_key: Optional[str] = None,
     output: Optional[Path] = None,
     verbose: bool = False,
+    use_context: bool = True,
 ) -> dict:
     key = api_key or os.environ.get("ANTHROPIC_API_KEY", "")
     if not key:
@@ -210,8 +211,22 @@ def find_violations(
         if verbose:
             print(f"  → {fpath.name} ({len(source):,} bytes)")
 
-        prompt = template.replace("{{file_path}}", str(fpath)).replace(
-            "{{source}}", source
+        # Pull git/changelog/comment signals as a prior
+        git_context = "{}"
+        if use_context:
+            try:
+                from .context import extract_context
+
+                ctx = extract_context(fpath, model=model, api_key=key, verbose=verbose)
+                git_context = json.dumps(ctx, indent=2)
+            except Exception as exc:
+                if verbose:
+                    print(f"    context skipped: {exc}")
+
+        prompt = (
+            template.replace("{{file_path}}", str(fpath))
+            .replace("{{source}}", source)
+            .replace("{{git_context}}", git_context)
         )
 
         try:

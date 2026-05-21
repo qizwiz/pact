@@ -394,6 +394,12 @@ def main(argv=None) -> int:
         _find_main(argv[1:])
         return 0
 
+    if argv and argv[0] == "context":
+        from .context import main as _context_main
+
+        _context_main(argv[1:])
+        return 0
+
     p = argparse.ArgumentParser(
         prog="pact",
         description="Python AST Constraint Tool — verify constraints across a codebase using Z3.",
