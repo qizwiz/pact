@@ -365,7 +365,7 @@ def _extract_top_level_imports(root: Path) -> dict[str, str]:
 
 
 def main(argv=None) -> int:
-    # Top-level: if first arg is "spec" or "fix", delegate to subcommand
+    # Top-level: if first arg is "spec", "fix", "preflight", or "intent", delegate
     if argv is None:
         argv = sys.argv[1:]
     if argv and argv[0] == "spec":
@@ -376,6 +376,11 @@ def main(argv=None) -> int:
         from .preflight import main as _preflight_main
 
         return _preflight_main(argv[1:])
+    if argv and argv[0] == "intent":
+        from .intent import main as _intent_main
+
+        _intent_main(argv[1:])
+        return 0
 
     p = argparse.ArgumentParser(
         prog="pact",
