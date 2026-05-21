@@ -25,7 +25,6 @@ import ast
 import json
 import os
 import re
-import textwrap
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Optional
@@ -653,6 +652,185 @@ def _batch_improve(
 
 
 # ---------------------------------------------------------------------------
+# Project-level synthesis — adversarial oracle pattern
+# ---------------------------------------------------------------------------
+
+
+def _module_summary(m: ModuleIntent) -> dict:
+    """Compact summary of a module for project-level prompts."""
+    return {
+        "path": m.path,
+        "purpose": m.understanding.purpose[:200],
+        "invariants": [
+            {"id": inv.id, "statement": inv.statement, "confidence": inv.confidence}
+            for inv in m.invariants
+        ],
+        "violations": [
+            {"invariant_id": v.invariant_id, "line": v.line, "severity": v.severity}
+            for v in m.violations
+        ],
+    }
+
+
+def _invariant_skeptic(
+    proposed_invariants: list[dict],
+    module_summaries: list[dict],
+    model: str,
+    key: str,
+    verbose: bool,
+) -> tuple[list[str], list[str]]:
+    """
+    Adversarial oracle: second LLM call tries to falsify each proposed invariant.
+    Returns (surviving_ids, falsified_ids).
+
+    The two LLMs don't share context — the skeptic only sees the claim and the
+    evidence base, not the proposer's reasoning. This prevents collusion.
+    """
+    if not proposed_invariants:
+        return [], []
+
+    template = _load_prompt("invariant_skeptic")
+    prompt = _render(
+        template,
+        proposed_invariants=json.dumps(proposed_invariants, indent=2),
+        module_summaries=json.dumps(module_summaries, indent=2)[:8000],
+    )
+
+    try:
+        raw = _call_with_tools(prompt, model, key, max_tokens=4096)
+        surviving = raw.get("surviving_invariants", [])
+        falsified = raw.get("falsified_invariants", [])
+        if verbose and falsified:
+            print(
+                f"  oracle falsified {len(falsified)} project invariants: {falsified}"
+            )
+        return surviving, falsified
+    except Exception as exc:
+        if verbose:
+            print(f"  invariant_skeptic failed: {exc}")
+        return [inv["id"] for inv in proposed_invariants], []
+
+
+def _project_intent(
+    intent: "ProjectIntent", model: str, key: str, verbose: bool
+) -> None:
+    """
+    Step 5: synthesize project-level invariants from all module analyses,
+    then run adversarial oracle to falsify weak ones.
+
+    Mutates intent.project_summary with cross-module context if it improves.
+    Stores oracle-validated invariants in intent.project_invariants (added dynamically).
+    """
+    if verbose:
+        print("[intent] step 5: project-level synthesis + adversarial oracle...")
+
+    summaries = [_module_summary(m) for m in intent.modules]
+
+    template = _load_prompt("project_intent")
+    prompt = _render(
+        template,
+        project_name=intent.project,
+        triage_file="(inline — see module_summaries)",
+        module_summaries=json.dumps(summaries, indent=2)[:10000],
+    )
+
+    try:
+        raw = _call_with_tools(prompt, model, key, max_tokens=6144)
+    except Exception as exc:
+        if verbose:
+            print(f"  project_intent synthesis failed: {exc}")
+        return
+
+    proposed = raw.get("project_invariants", [])
+    clusters = raw.get("violation_clusters", [])
+    priority = raw.get("analysis_priority", {})
+
+    if verbose:
+        print(
+            f"  proposed {len(proposed)} project invariants, {len(clusters)} clusters"
+        )
+
+    # Adversarial oracle: second independent call tries to falsify proposed invariants
+    surviving_ids, falsified_ids = _invariant_skeptic(
+        proposed, summaries, model, key, verbose
+    )
+
+    oracle_validated = [inv for inv in proposed if inv.get("id") in surviving_ids]
+
+    # Store on intent object (extend schema dynamically — no dataclass change needed)
+    intent.__dict__["project_invariants"] = oracle_validated
+    intent.__dict__["violation_clusters"] = clusters
+    intent.__dict__["analysis_priority"] = priority
+    intent.__dict__["oracle_falsified"] = falsified_ids
+
+    if verbose:
+        print(
+            f"  oracle validated {len(oracle_validated)}/{len(proposed)} project invariants"
+        )
+        if priority.get("highest_risk_violation"):
+            hrv = priority["highest_risk_violation"]
+            print(
+                f"  highest-risk violation: {hrv.get('location')} — {hrv.get('reason','')[:80]}"
+            )
+
+
+# ---------------------------------------------------------------------------
+# Dead code audit
+# ---------------------------------------------------------------------------
+
+
+def dead_code_audit(
+    root: Path,
+    intent_path: Path,
+    model: str = _DEFAULT_MODEL,
+    api_key: Optional[str] = None,
+    verbose: bool = False,
+) -> dict:
+    """
+    Identify structurally superseded code given the current architecture.
+    Returns dict with dead_code_candidates, removal_patches, high_risk_flags.
+    """
+    key = _get_key(api_key)
+
+    raw_intent = json.loads(intent_path.read_text(encoding="utf-8"))
+    summaries = raw_intent.get("modules", [])
+    essence = raw_intent.get("project_summary", "")
+
+    # Build a description of known architecture transitions
+    transitions = raw_intent.get("violation_clusters", [])
+    transition_text = (
+        json.dumps(transitions, indent=2)[:3000]
+        if transitions
+        else ("No explicit transitions recorded — infer from module analyses.")
+    )
+
+    template = _load_prompt("dead_code")
+    prompt = _render(
+        template,
+        project_essence=essence[:1000],
+        architecture_transitions=transition_text,
+        module_summaries=json.dumps(summaries, indent=2)[:8000],
+    )
+
+    try:
+        result = _call_with_tools(prompt, model, key, max_tokens=6144)
+        if verbose:
+            candidates = result.get("dead_code_candidates", [])
+            patches = result.get("removal_patches", [])
+            flags = result.get("high_risk_flags", [])
+            print(
+                f"[dead_code] {len(candidates)} candidates, "
+                f"{len(patches)} removal patches, "
+                f"{len(flags)} high-risk flags"
+            )
+        return result
+    except Exception as exc:
+        if verbose:
+            print(f"[dead_code] failed: {exc}")
+        return {}
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -776,7 +954,15 @@ def extract_project_intent(
             if verbose:
                 print(f"  skipped {f.name}: {exc}")
 
-    # Step 5: one batch improve pass using the 3 hardest modules
+    # Step 5: project-level synthesis (oracle-validated invariants)
+    if intent.modules:
+        try:
+            _project_intent(intent, model, key, verbose)
+        except Exception as exc:
+            if verbose:
+                print(f"  project_intent failed: {exc}")
+
+    # Step 6: one batch improve pass using the 3 hardest modules
     if improve and intent.modules:
         _batch_improve(intent.modules, module_sources, model, key, verbose)
 
@@ -805,32 +991,66 @@ def extract_project_intent(
 def main(argv=None):
     import argparse
 
-    p = argparse.ArgumentParser(
-        prog="pact intent",
-        description="Build a semantic world model of a Python project.",
+    top = argparse.ArgumentParser(prog="pact intent")
+    sub = top.add_subparsers(dest="cmd")
+
+    # --- pact intent analyze ---
+    analyze = sub.add_parser(
+        "analyze",
+        help="Build semantic world model + oracle-validated project invariants",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog=textwrap.dedent("""\
-            Prompts live in prompts/*.md and self-improve with --improve.
-            Each run scores output quality and rewrites underperforming prompts.
-        """),
     )
-    p.add_argument("path", help="Python file or project directory")
-    p.add_argument("--out", metavar="PATH", help="write intent.json here")
-    p.add_argument(
-        "--model",
-        default=_DEFAULT_MODEL,
-        help=f"Claude model (default: {_DEFAULT_MODEL})",
-    )
-    p.add_argument("--max-files", type=int, default=15, metavar="N")
-    p.add_argument(
+    analyze.add_argument("path", help="Python file or project directory")
+    analyze.add_argument("--out", metavar="PATH", help="write intent.json here")
+    analyze.add_argument("--model", default=_DEFAULT_MODEL)
+    analyze.add_argument("--max-files", type=int, default=15, metavar="N")
+    analyze.add_argument(
         "--improve",
         action="store_true",
-        help="score output and rewrite underperforming prompts after each module",
+        help="rewrite underperforming prompts after run",
     )
-    p.add_argument("--api-key", metavar="KEY")
-    p.add_argument("-v", "--verbose", action="store_true")
-    args = p.parse_args(argv)
+    analyze.add_argument("--api-key", metavar="KEY")
+    analyze.add_argument("-v", "--verbose", action="store_true")
 
+    # --- pact intent dead-code ---
+    dc = sub.add_parser(
+        "dead-code",
+        help="Identify structurally superseded code given current architecture",
+    )
+    dc.add_argument("path", help="Project directory")
+    dc.add_argument(
+        "--intent",
+        metavar="PATH",
+        required=True,
+        help="intent.json from a prior pact intent analyze run",
+    )
+    dc.add_argument("--out", metavar="PATH", help="write dead_code.json here")
+    dc.add_argument("--model", default=_DEFAULT_MODEL)
+    dc.add_argument("--api-key", metavar="KEY")
+    dc.add_argument("-v", "--verbose", action="store_true")
+
+    # Backward compat: if no subcommand given, treat positional as analyze
+    args, remaining = top.parse_known_args(argv)
+    if args.cmd is None:
+        argv2 = ["analyze"] + (argv or [])
+        args = top.parse_args(argv2)
+
+    if args.cmd == "dead-code":
+        result = dead_code_audit(
+            root=Path(args.path).expanduser().resolve(),
+            intent_path=Path(args.intent).expanduser().resolve(),
+            model=args.model,
+            api_key=args.api_key,
+            verbose=args.verbose,
+        )
+        out_text = json.dumps(result, indent=2)
+        if args.out:
+            Path(args.out).write_text(out_text, encoding="utf-8")
+        else:
+            print(out_text)
+        return
+
+    # analyze subcommand (or backward compat)
     target = Path(args.path).expanduser().resolve()
     out = Path(args.out).expanduser().resolve() if args.out else None
 
