@@ -33,6 +33,7 @@ dev = ["pytest", "hypothesis", "z3-solver", "anthropic", "tree-sitter>=0.21", "t
 
 [project.scripts]
 pact = "pact.cli:main"
+pact-mcp = "pact.mcp_server:main"
 
 [tool.setuptools]
 packages = ["pact"]
