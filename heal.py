@@ -108,16 +108,29 @@ def _execute_read_file(inp: dict) -> str:
 
 
 def _parse_response_text(text: str) -> dict:
+    import re
+
     text = text.strip()
     if text.startswith("```"):
         text = text.split("\n", 1)[1] if "\n" in text else text[3:]
-        import re
-
         text = re.sub(r"```\s*$", "", text).strip()
     try:
         return json.loads(text)
-    except json.JSONDecodeError as exc:
-        raise RuntimeError(f"Non-JSON response (pos {exc.pos}): {text[:400]}") from exc
+    except json.JSONDecodeError:
+        pass
+    start = text.find("{")
+    if start > 0:
+        try:
+            return json.loads(text[start:])
+        except json.JSONDecodeError:
+            pass
+    m = re.search(r"```(?:json)?\s*(\{.*?)\s*```", text, re.DOTALL)
+    if m:
+        try:
+            return json.loads(m.group(1))
+        except json.JSONDecodeError:
+            pass
+    raise RuntimeError(f"Non-JSON response (no valid JSON found): {text[:400]}")
 
 
 def _call(prompt: str, model: str, key: str, max_tokens: int = 8192) -> dict:

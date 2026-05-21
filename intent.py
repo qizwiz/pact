@@ -326,10 +326,23 @@ def _parse_text(text: str) -> dict:
         text = re.sub(r"```\s*$", "", text).strip()
     try:
         return json.loads(text)
-    except json.JSONDecodeError as exc:
-        raise RuntimeError(
-            f"Non-JSON response (parse error at pos {exc.pos}): {text[:500]}"
-        ) from exc
+    except json.JSONDecodeError:
+        pass
+    # Model wrote reasoning before the JSON — find the first top-level { and parse from there.
+    start = text.find("{")
+    if start > 0:
+        try:
+            return json.loads(text[start:])
+        except json.JSONDecodeError:
+            pass
+    # Try extracting from a ```json fence that may appear mid-text
+    m = re.search(r"```(?:json)?\s*(\{.*?)\s*```", text, re.DOTALL)
+    if m:
+        try:
+            return json.loads(m.group(1))
+        except json.JSONDecodeError:
+            pass
+    raise RuntimeError(f"Non-JSON response (no valid JSON found): {text[:500]}")
 
 
 def _call(prompt: str, model: str, key: str, max_tokens: int = 4096) -> dict:
