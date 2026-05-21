@@ -388,6 +388,12 @@ def main(argv=None) -> int:
         _heal_main(argv[1:])
         return 0
 
+    if argv and argv[0] == "find":
+        from .find import main as _find_main
+
+        _find_main(argv[1:])
+        return 0
+
     p = argparse.ArgumentParser(
         prog="pact",
         description="Python AST Constraint Tool — verify constraints across a codebase using Z3.",
@@ -547,10 +553,10 @@ def main(argv=None) -> int:
     incremental_stats: dict = {}
     if args.incremental is not None:
         try:
-        changed = _changed_files_on_branch(args.incremental, cwd=root)
-    except DiffResolutionError as exc:
-        print(f"error: {exc}", file=sys.stderr)
-        sys.exit(1)
+            changed = _changed_files_on_branch(args.incremental, cwd=root)
+        except DiffResolutionError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            sys.exit(1)
         violations, incremental_stats = check_codebase_incremental(
             root,
             changed,
