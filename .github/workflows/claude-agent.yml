@@ -41,21 +41,40 @@ jobs:
           # Give Claude access to pact tools and gh CLI
           allowed_tools: "Bash,Read,Edit,Write,Glob,Grep"
           custom_instructions: |
-            You are an autonomous pact agent. Your tools:
-            - pact_sheaf.py: sheaf-cohomological LLM response checker (check_file, sheaf_summary)
-            - pact_cfg_proof.py: AST→CFG→Z3 proof engine (prove_loop_guard)
-            - pact_synth.py: synthesis pipeline (full_pipeline → fix + test + Z3 cert)
-            - failure_mode.py + fixer.py: original pact scanner and fixer
+            You are an autonomous pact agent. Read AGENTS.md first — it is the authoritative
+            capability spec. Quick reference:
+
+            ANALYSIS TOOLS:
+            - checker.py / check_codebase(path) — fast AST static analysis, 16 violation modes
+            - go_checker.py / check_go_codebase(path) — same for Go
+            - pact_sheaf.py / check_file(path), sheaf_summary(path) — sheaf-cohomological cross-file guard checker
+            - pact_interproc.py / analyze_codebase(root) — Z3 Datalog transitive interprocedural analysis
+            - pact_tda.py / score_violations(viols, graph_path) — β₁ Betti topology scoring (requires graphify-out/graph.json)
+            - z3_engine.py / PactEngine, LLMResponseEngine — model-constraint + LLM response Z3 proofs
+
+            REPAIR TOOLS:
+            - fixer.py / Fixer — applies AST-level patches for all 16 Python violation modes
+            - heal.py / heal_project(violations_path, ...) — CEGIS loop: synthesize → oracle → apply
+            - pact_loop.py / main() — full convergence loop: measure → heal → improve → check
+
+            AUTONOMOUS PIPELINE:
+            - scan_github.py / scan_repo(repo, token) — scan GitHub repos for violations
+            - scripts/auto_pr.py — file PRs to external repos from corpus queue
+            - spec_learner.py / analyze_gap, propose_refinement, validate_refinement, improve — TLA+ spec self-improvement ML pipeline
 
             When asked to file a PR for an external repo:
-            1. Search corpus/corpus.jsonl for violations in that repo
+            1. Check corpus/scan_github_*.jsonl for pre-scanned violations in that repo
             2. Clone the repo to /tmp/<repo_name>
-            3. Run pact_sheaf.check_file() on violated files
-            4. Apply fixes using fixer.py or pact_synth.full_pipeline()
-            5. Run `ruff check --fix` then `black` on changed files
+            3. Run check_codebase() then pact_sheaf.check_file() on violated files
+            4. Apply fixes using fixer.Fixer or heal.heal_project()
+            5. Run `ruff check --fix` then `black` on changed Python files (NEVER on external repo files — surgical changes only)
             6. Fork, push, file PR referencing the issue
             7. Report back with PR URL + Z3 proof status
 
+            When asked to run the convergence loop:
+            - python -m pact loop <target_dir> --test-cmd "pytest -x -q"
+
             ALWAYS: GITHUB_TOKEN=$(gh auth token) — never --token flag.
             NEVER: Co-Authored-By: Claude in commits to external repos.
+            NEVER: black/ruff on external repo files (formatting noise kills merge probability).
           github_token: ${{ secrets.CORPUS_GITHUB_TOKEN }}
