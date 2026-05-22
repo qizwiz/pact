@@ -194,6 +194,66 @@ _TOOLS = [
             "required": ["target"],
         },
     },
+    {
+        "name": "pact_tda",
+        "description": (
+            "Topological Data Analysis scoring of violations against the call graph. "
+            "For each violation, computes β₁ (first Betti number) of the k-hop "
+            "neighborhood in the call graph — high-β₁ violations sit at structural "
+            "bottlenecks that affect many callers. Returns violations re-ordered by "
+            "topological severity. Requires a graphify-out/graph.json in the project "
+            "root (run graphify on the project first if absent)."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "violations_json": {
+                    "type": "string",
+                    "description": "JSON string from pact_check or pact_find",
+                },
+                "project_root": {
+                    "type": "string",
+                    "description": "Project root containing graphify-out/graph.json",
+                },
+                "hops": {
+                    "type": "integer",
+                    "default": 2,
+                    "description": "Call-graph neighborhood radius for β₁ computation",
+                },
+            },
+            "required": ["violations_json", "project_root"],
+        },
+    },
+    {
+        "name": "pact_sheaf",
+        "description": (
+            "Sheaf-cohomological LLM guard analysis. Checks that every LLM response "
+            "site (json.loads, requests.get, llm() call) in the file has a guard "
+            "that propagates to all downstream consumers. Unguarded sites have Ȟ¹≠0 "
+            "— a non-trivial first cohomology group — and are reported as violations. "
+            "No LLM calls. Pure static analysis. Returns h1_semantic, n_violations, "
+            "and the list of unguarded sites."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "file_path": {
+                    "type": "string",
+                    "description": "Absolute path to Python file to analyse",
+                },
+                "project_root": {
+                    "type": "string",
+                    "description": "Project root for cross-file guard transport (optional)",
+                },
+                "interprocedural": {
+                    "type": "boolean",
+                    "default": True,
+                    "description": "Follow same-file call edges for guard propagation",
+                },
+            },
+            "required": ["file_path"],
+        },
+    },
 ]
 
 
@@ -325,6 +385,87 @@ def _tool_pact_check(params: dict) -> dict:
     return {"project": path.name, "generated_by": "pact.checker", "modules": modules}
 
 
+def _tool_pact_tda(params: dict) -> dict:
+    from .graphify_graph import CallGraph
+    from .pact_tda import score_corpus
+
+    project_root = Path(params["project_root"])
+    graph_path = project_root / "graphify-out" / "graph.json"
+    hops = params.get("hops", 2)
+
+    try:
+        violations = json.loads(params["violations_json"])
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"violations_json is not valid JSON: {exc}") from exc
+
+    if not graph_path.exists():
+        return {
+            "error": f"graphify-out/graph.json not found at {graph_path}. "
+            "Run graphify on the project first.",
+            "scored_violations": [],
+        }
+
+    cg = CallGraph.load(project_root)
+    if cg is None:
+        return {"error": "Failed to load call graph", "scored_violations": []}
+
+    # Flatten violations from pact_check/pact_find format into list of dicts
+    flat: list[dict] = []
+    for m in violations.get("modules", []):
+        for v in m.get("violations", []):
+            flat.append(v)
+
+    scored = score_corpus(
+        graph_path, project_root / "corpus.jsonl", hops=hops, top_n=len(flat) or 50
+    )
+    # scored returns list of dicts with topo metadata — merge with flat violations
+    func_to_score: dict[str, dict] = {s.get("call", ""): s for s in scored}
+
+    results = []
+    for v in flat:
+        call = v.get("evidence", "")
+        topo = func_to_score.get(call, {})
+        results.append(
+            {
+                **v,
+                "topo_severity": topo.get("severity", 0.0),
+                "beta1": topo.get("beta1", 0),
+            }
+        )
+
+    results.sort(key=lambda x: x.get("topo_severity", 0.0), reverse=True)
+    return {
+        "project": project_root.name,
+        "scored_violations": results,
+        "n_violations": len(results),
+    }
+
+
+def _tool_pact_sheaf(params: dict) -> dict:
+    import dataclasses
+
+    from .pact_sheaf import check_file, sheaf_summary
+    from .graphify_graph import CallGraph
+
+    file_path = params["file_path"]
+    project_root_str = params.get("project_root")
+    interprocedural = params.get("interprocedural", True)
+
+    cg = None
+    if project_root_str:
+        cg = CallGraph.load(Path(project_root_str))
+
+    summary = sheaf_summary(file_path, call_graph=cg)
+    violations = check_file(file_path, interprocedural=interprocedural, call_graph=cg)
+
+    return {
+        "file": file_path,
+        "summary": summary,
+        "violations": [dataclasses.asdict(v) for v in violations],
+        "n_violations": len(violations),
+    }
+
+
 def _tool_pact_loop(params: dict) -> dict:
     from .pact_loop import main as loop_main
 
@@ -386,6 +527,8 @@ _DISPATCH = {
     "pact_heal": _tool_pact_heal,
     "pact_check": _tool_pact_check,
     "pact_loop": _tool_pact_loop,
+    "pact_tda": _tool_pact_tda,
+    "pact_sheaf": _tool_pact_sheaf,
 }
 
 # ---------------------------------------------------------------------------
