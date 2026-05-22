@@ -413,7 +413,13 @@ def _call_with_tools(
 # ---------------------------------------------------------------------------
 
 
-def _triage(root: Path, model: str, key: str, verbose: bool) -> tuple[str, list[str]]:
+def _triage(
+    root: Path,
+    model: str,
+    key: str,
+    verbose: bool,
+    improve: bool = False,
+) -> tuple[str, list[str]]:
     """Return (project_essence, ordered_key_files)."""
     if verbose:
         print("[intent] step 1: triage — identifying key files...")
@@ -436,7 +442,53 @@ def _triage(root: Path, model: str, key: str, verbose: bool) -> tuple[str, list[
             f"  key files ({len(key_files)}): {', '.join(key_files[:5])}{'...' if len(key_files) > 5 else ''}"
         )
 
+    # Self-improvement: if triage found no key files or essence is suspiciously
+    # short, record as a failure and trigger prompt rewrite.
+    if improve and (len(key_files) == 0 or len(essence) < 50):
+        _improve_triage_prompt(
+            prompt_text=template,
+            bad_sample=raw,
+            failure_signal=(
+                f"triage returned {len(key_files)} key files and "
+                f"{len(essence)}-char essence for project '{root.name}'"
+            ),
+            model=model,
+            key=key,
+            verbose=verbose,
+        )
+
     return essence, key_files
+
+
+def _improve_triage_prompt(
+    prompt_text: str,
+    bad_sample: dict,
+    failure_signal: str,
+    model: str,
+    key: str,
+    verbose: bool,
+) -> None:
+    """Rewrite triage.md when output quality is low."""
+    try:
+        improve_template = _load_prompt("triage_improve")
+        improve_prompt = _render(
+            improve_template,
+            prompt_text=prompt_text,
+            good_samples="[]",
+            bad_samples=json.dumps([bad_sample], indent=2),
+            failure_signals=failure_signal,
+        )
+        result = _call(improve_prompt, model, key, max_tokens=8192)
+        rewritten = result.get("rewritten_prompt", "")
+        if rewritten and len(rewritten) > 200:
+            prompt_path = _PROMPT_DIR / "triage.md"
+            prompt_path.write_text(rewritten, encoding="utf-8")
+            if verbose:
+                scores = result.get("scores", {})
+                print(f"  triage prompt rewritten (scores: {scores})")
+    except Exception as exc:
+        if verbose:
+            print(f"  triage improve failed: {exc}")
 
 
 # ---------------------------------------------------------------------------
