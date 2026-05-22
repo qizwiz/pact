@@ -322,27 +322,18 @@ class TestADRGeneration:
 
 
 class TestCLI:
-    def test_loop_help_exits_zero(self):
-        import subprocess
-        import sys
+    def test_loop_help_exits_zero(self, capsys):
+        from .pact_loop import main as loop_main
 
-        r = subprocess.run(
-            [sys.executable, "-m", "pact", "loop", "--help"],
-            capture_output=True,
-            text=True,
-            cwd="/Users/jonathanhill/src",
-        )
-        assert r.returncode == 0
-        assert "test-cmd" in r.stdout
+        with pytest.raises(SystemExit) as exc_info:
+            loop_main(["--help"])
+        assert exc_info.value.code == 0
+        captured = capsys.readouterr()
+        assert "test-cmd" in captured.out
 
     def test_loop_requires_target(self):
-        import subprocess
-        import sys
+        from .pact_loop import main as loop_main
 
-        r = subprocess.run(
-            [sys.executable, "-m", "pact", "loop"],
-            capture_output=True,
-            text=True,
-            cwd="/Users/jonathanhill/src",
-        )
-        assert r.returncode != 0
+        with pytest.raises(SystemExit) as exc_info:
+            loop_main([])
+        assert exc_info.value.code != 0
