@@ -163,6 +163,10 @@ def _confirm_with_hypothesis(
             timeout=30,
             cwd=str(file_path.parent),
         )
+        if r.returncode != 0 and verbose:
+            print(
+                f"      hypothesis subprocess failed (exit {r.returncode}): {r.stderr[:80]}"
+            )
         output = r.stdout.strip()
         if verbose:
             print(f"      hypothesis: {output[:80]}")
