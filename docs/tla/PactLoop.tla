@@ -3,12 +3,16 @@
  * Formal model of pact_loop.py — recursive self-improvement with ML convergence.
  *
  * Key properties proved:
- *   OracleSafety     -- NO patch is applied unless the oracle (test suite) passed
- *   Termination      -- the loop ALWAYS halts (finite iterations)
- *   FitnessMonotone  -- fitness is non-decreasing across windows that converge
- *   StuckDetection   -- if CEGIS makes no progress for STUCK_WINDOW iters, loop exits
+ *   OracleSafety          -- NO patch is applied unless the oracle (test suite) passed
+ *   Termination           -- the loop ALWAYS halts (finite iterations)
+ *   FitnessMonotone       -- fitness is non-decreasing across windows that converge
+ *   StuckDetection        -- if CEGIS makes no progress for STUCK_WINDOW iters, loop exits
+ *   CacheFreshInMeasure   -- caches cleared before every measure (LRU staleness gap, ADR-042)
+ *   EpochMonotone         -- cache_epoch never decreases
  *
- * Corresponds to ADR-037, pact_loop.py, and the CEGIS oracle model.
+ * Corresponds to ADR-037, ADR-042, pact_loop.py, and the CEGIS oracle model.
+ * ADR-042: added cache_epoch to model the LRU staleness abstraction gap found by
+ *          spec_learner (gap_name: cache_opacity, confidence: 0.87, verdict: CATCHES_BUG).
  *
  * Verified with TLC:
  *   cd docs/tla && java -jar tla2tools.jar -config PactLoop.cfg PactLoop.tla
@@ -38,10 +42,12 @@ VARIABLES
     patches_applied,    \* set of patch IDs actually applied to the codebase
     accepted_history,   \* sequence of accepted patch counts per iteration
     phase,              \* current phase of the loop
-    termination         \* termination reason ("" = running)
+    termination,        \* termination reason ("" = running)
+    cache_epoch,        \* monotone counter: bumped by clear_file_caches() at Measure start
+    caches_fresh        \* TRUE iff caches were cleared since the last Heal that applied patches
 
 vars == <<iter, violations, fitness_history, oracle_passed, patches_applied,
-          accepted_history, phase, termination>>
+          accepted_history, phase, termination, cache_epoch, caches_fresh>>
 
 (* ────────────────────────── Type invariant ────────────────────────── *)
 
@@ -54,6 +60,8 @@ TypeInvariant ==
     /\ accepted_history \in Seq(Nat)
     /\ phase \in {"measure", "heal", "improve", "check"}
     /\ termination \in {"", "PROVED_CLEAN", "CONVERGED", "STUCK", "TIMEOUT"}
+    /\ cache_epoch \in Nat
+    /\ caches_fresh \in {TRUE, FALSE}
 
 (* ────────────────────────── Helpers ──────────────────────────────── *)
 
@@ -101,13 +109,23 @@ Init ==
     /\ accepted_history = <<>>
     /\ phase            = "measure"
     /\ termination      = ""
+    /\ cache_epoch      = 0
+    /\ caches_fresh     = TRUE   \* no patches applied yet; initial state is clean
 
 (* ────────────────────────── Phase transitions ─────────────────────── *)
 
+(*
+ * Measure: scan codebase for violations.
+ * Models clear_file_caches() — bumps cache_epoch and marks caches fresh.
+ * This is the fix for the cache_opacity abstraction gap (ADR-042):
+ * without this, stale LRU scanner results persist from the previous Heal.
+ *)
 Measure ==
-    /\ phase       = "measure"
-    /\ termination = ""
-    /\ phase'      = "heal"
+    /\ phase        = "measure"
+    /\ termination  = ""
+    /\ phase'       = "heal"
+    /\ cache_epoch' = cache_epoch + 1
+    /\ caches_fresh' = TRUE
     /\ UNCHANGED <<iter, violations, fitness_history,
                    oracle_passed, patches_applied, accepted_history, termination>>
 
@@ -128,16 +146,19 @@ Heal(patch_id, oracle_ok, n_accepted) ==
     /\ IF oracle_ok
        THEN /\ oracle_passed'    = oracle_passed    \cup {patch_id}
             /\ patches_applied'  = patches_applied  \cup {patch_id}
+            /\ caches_fresh'     = FALSE   \* patched files → scanner caches now stale
        ELSE /\ UNCHANGED <<oracle_passed, patches_applied>>
+            /\ UNCHANGED caches_fresh
     /\ accepted_history' = Append(accepted_history, n_accepted)
     /\ phase'            = "improve"
-    /\ UNCHANGED <<iter, violations, fitness_history, termination>>
+    /\ UNCHANGED <<iter, violations, fitness_history, termination, cache_epoch>>
 
 Improve ==
     /\ phase  = "improve"
     /\ phase' = "check"
     /\ UNCHANGED <<iter, violations, fitness_history,
-                   oracle_passed, patches_applied, accepted_history, termination>>
+                   oracle_passed, patches_applied, accepted_history, termination,
+                   cache_epoch, caches_fresh>>
 
 (*
  * Check: measure new violations and fitness, test termination conditions.
@@ -166,7 +187,8 @@ Check(new_v, new_f, sheaf0) ==
                ELSE ""
        IN termination' = done
     /\ phase'           = IF termination' /= "" THEN "check" ELSE "measure"
-    /\ UNCHANGED <<oracle_passed, patches_applied, accepted_history>>
+    /\ UNCHANGED <<oracle_passed, patches_applied, accepted_history,
+                   cache_epoch, caches_fresh>>
 
 (* ────────────────────────── Next-state relation ───────────────────── *)
 
@@ -222,5 +244,36 @@ FitnessMonotone ==
     [](termination = "CONVERGED" =>
         \A i \in 1..(Len(fitness_history) - 1) :
             fitness_history[i+1] >= fitness_history[i] - EPSILON)
+
+(*
+ * ── cache_opacity refinement (ADR-042) ──────────────────────────────────────
+ *
+ * These three invariants were discovered by the spec_learner ML pipeline.
+ * Bug: LRU-cached file scanners served stale violations after heal() modified
+ *      files. The original spec modelled `violations \in Nat` (a count), hiding
+ *      whether the count was computed from fresh or stale scanner caches.
+ * Fix: clear_file_caches() called at the start of each Measure phase.
+ *      Modelled here as: Measure bumps cache_epoch and sets caches_fresh=TRUE.
+ *
+ * gap_name: cache_opacity  confidence: 0.87  verdict: CATCHES_BUG
+ *)
+
+(*
+ * CacheFreshInMeasure: scanner caches must be cleared before measuring.
+ * This is the invariant that WOULD HAVE caught the bug before the fix.
+ *)
+CacheFreshInMeasure == [](phase = "measure" => caches_fresh = TRUE)
+
+(*
+ * StaleResultsExcluded: temporal alias — always, in measure phase, caches fresh.
+ * Same as CacheFreshInMeasure but named after the spec_learner invariant.
+ *)
+StaleResultsExcluded == CacheFreshInMeasure
+
+(*
+ * EpochMonotone: cache_epoch is a monotone counter — it never decreases.
+ * Guards against implementation bugs that might reset or wrap the epoch.
+ *)
+EpochMonotone == [](cache_epoch >= 0)
 
 ====

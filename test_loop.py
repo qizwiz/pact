@@ -244,6 +244,18 @@ class TestTLAGeneration:
         assert "INVARIANT OracleSafety" in text
         assert "PROPERTY Termination" in text
         assert "PROPERTY FitnessMonotone" in text
+        # cache_opacity refinement (ADR-042) — spec_learner discovered invariants
+        assert "INVARIANT CacheFreshInMeasure" in text
+        assert "INVARIANT EpochMonotone" in text
+
+    def test_formal_tla_has_cache_epoch_invariants(self):
+        tla = Path(__file__).parent / "docs" / "tla" / "PactLoop.tla"
+        text = tla.read_text()
+        assert "cache_epoch" in text
+        assert "caches_fresh" in text
+        assert "CacheFreshInMeasure" in text
+        assert "EpochMonotone" in text
+        assert "cache_opacity" in text
 
 
 # ---------------------------------------------------------------------------
