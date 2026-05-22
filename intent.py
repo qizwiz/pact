@@ -906,6 +906,45 @@ def _project_intent(
                 f"  highest-risk violation: {hrv.get('location')} — {hrv.get('reason','')[:80]}"
             )
 
+    if improve and proposed:
+        oracle_results = (
+            f"{len(oracle_validated)} of {len(proposed)} invariants survived oracle. "
+            f"falsified: {falsified_ids[:5]}. "
+            f"surviving: {[inv.get('id') for inv in oracle_validated][:5]}"
+        )
+        failure_signals: list[str] = []
+        if len(oracle_validated) == 0:
+            failure_signals.append(
+                f"zero_survivors: 0 of {len(proposed)} invariants survived"
+            )
+        for inv in proposed:
+            stmt = inv.get("statement", "")
+            formal = inv.get("formal", "")
+            modules = inv.get("applies_to_modules", [])
+            if len(modules) < 2:
+                failure_signals.append(
+                    f"cross_module_missing: invariant '{inv.get('id')}' has only {len(modules)} module"
+                )
+            if "∀" not in formal and "∃" not in formal and "if" not in formal.lower():
+                failure_signals.append(
+                    f"no_formal_statement: invariant '{inv.get('id')}' lacks ∀/∃/if-then formal"
+                )
+            for generic in ("all", "every", "should", "must handle"):
+                if generic in stmt.lower() and len(stmt) < 80:
+                    failure_signals.append(
+                        f"generic_invariant: '{stmt[:60]}' may be too generic"
+                    )
+                    break
+        single_clusters = [c for c in clusters if len(c.get("violations", [])) < 2]
+        for c in single_clusters:
+            failure_signals.append(
+                f"single_violation_cluster: cluster '{c.get('name')}' has only 1 violation"
+            )
+        if failure_signals:
+            _improve_project_intent_prompt(
+                proposed, clusters, oracle_results, failure_signals, model, key, verbose
+            )
+
 
 # ---------------------------------------------------------------------------
 # Dead code audit
@@ -1028,6 +1067,41 @@ def _improve_dead_code_prompt(
     except Exception as exc:
         if verbose:
             print(f"\n[dead_code] prompt improvement failed: {exc}")
+
+
+def _improve_project_intent_prompt(
+    proposed: list[dict],
+    clusters: list[dict],
+    oracle_results: str,
+    failure_signals: list[str],
+    model: str,
+    key: str,
+    verbose: bool,
+) -> None:
+    """Score project_intent prompt quality and rewrite if oracle survival rate is poor."""
+    try:
+        template = _load_prompt("project_intent_improve")
+        prompt = _render(
+            template,
+            prompt_text=_load_prompt("project_intent"),
+            invariants_sample=json.dumps(proposed[:4], indent=2),
+            clusters_sample=json.dumps(clusters[:3], indent=2),
+            oracle_results=oracle_results,
+            failure_signals="\n".join(failure_signals[:10]),
+        )
+        raw = _call(prompt, model, key, max_tokens=8192)
+        improved = raw.get("improved_prompt", "")
+        overall = raw.get("overall_score", 0.0)
+        if improved and overall < 0.8:
+            _save_prompt("project_intent", improved)
+            if verbose:
+                print(
+                    f"\n[project_intent] ✓ project_intent prompt rewritten "
+                    f"(score was {overall:.2f}, {len(failure_signals)} failure signals)"
+                )
+    except Exception as exc:
+        if verbose:
+            print(f"\n[project_intent] prompt improvement failed: {exc}")
 
 
 # ---------------------------------------------------------------------------
