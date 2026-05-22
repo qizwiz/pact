@@ -323,7 +323,8 @@ class TestADRGeneration:
 
 class TestCLI:
     def test_loop_help_exits_zero(self):
-        import subprocess, sys
+        import subprocess
+        import sys
 
         r = subprocess.run(
             [sys.executable, "-m", "pact", "loop", "--help"],
@@ -335,7 +336,8 @@ class TestCLI:
         assert "test-cmd" in r.stdout
 
     def test_loop_requires_target(self):
-        import subprocess, sys
+        import subprocess
+        import sys
 
         r = subprocess.run(
             [sys.executable, "-m", "pact", "loop"],
