@@ -534,6 +534,58 @@ def _topology_priority(violations_doc: dict, target: Path) -> dict[str, float]:
         return {}
 
 
+def _z3_optimal_heal_order(violations_doc: dict, top_k: int = 5) -> list[str] | None:
+    """Use z3.Optimize to find the k files that cover the most violations.
+
+    Models max-coverage: maximize sum of violations in selected files subject to
+    selecting ≤ top_k files. Returns ordered file list (highest coverage first),
+    or None if z3 unavailable or violations < 2 files.
+    """
+    try:
+        import z3
+
+        modules = violations_doc.get("modules", [])
+        if len(modules) <= 1:
+            return None
+
+        file_viols = [(m["path"], len(m.get("violations", []))) for m in modules]
+        file_viols = [(f, v) for f, v in file_viols if v > 0]
+        if len(file_viols) <= 1:
+            return None
+
+        opt = z3.Optimize()
+        # Boolean variable for each file: selected[i] = True ↔ file i is healed
+        selected = [z3.Bool(f"sel_{i}") for i in range(len(file_viols))]
+
+        # Constraint: pick at most top_k files
+        opt.add(z3.PbLe([(s, 1) for s in selected], top_k))
+
+        # Maximize: total violations in selected files
+        coverage = z3.Sum(
+            [
+                z3.If(selected[i], z3.IntVal(v), z3.IntVal(0))
+                for i, (_, v) in enumerate(file_viols)
+            ]
+        )
+        opt.maximize(coverage)
+
+        if opt.check() == z3.sat:
+            model = opt.model()
+            # Sort: selected files first (by violation count desc), then rest
+            order = sorted(
+                range(len(file_viols)),
+                key=lambda i: (
+                    z3.is_true(model[selected[i]]),
+                    file_viols[i][1],
+                ),
+                reverse=True,
+            )
+            return [file_viols[i][0] for i in order]
+    except Exception:
+        pass
+    return None
+
+
 def _reprioritize(violations_doc: dict, priorities: dict[str, float]) -> dict:
     if not priorities:
         return violations_doc
@@ -654,8 +706,21 @@ def heal(
     import tempfile
     from .heal import heal_project
 
+    # 1. PageRank-based priority (call-graph importance)
     priorities = _topology_priority(violations_doc, target)
     violations_doc = _reprioritize(violations_doc, priorities)
+
+    # 2. Z3 Optimize — override order for top-k files (max-coverage set)
+    optimal_order = _z3_optimal_heal_order(violations_doc, top_k=5)
+    if optimal_order:
+        path_rank = {p: i for i, p in enumerate(optimal_order)}
+        violations_doc = dict(violations_doc)
+        violations_doc["modules"] = sorted(
+            violations_doc.get("modules", []),
+            key=lambda m: path_rank.get(m["path"], len(optimal_order)),
+        )
+        if verbose:
+            print(f"  heal: z3-optimal order ({len(optimal_order)} files)")
 
     tmp = Path(tempfile.mktemp(suffix=".json"))
     try:

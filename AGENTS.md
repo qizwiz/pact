@@ -5,6 +5,27 @@ Read it at the start of every session to know what exists, what's wired, and wha
 
 ---
 
+## Core design principles (NEVER violate these)
+
+### Prompt first
+**Every capability must have a prompt layer.** Wrap prompts around EVERYTHING. Logic lives in prompts before it lives in code. Hardcoded rules are a smell — if behavior can be controlled by a prompt, it should be. This means:
+
+- Every checker mode should have an LLM-prompt fallback for cases the AST patterns miss
+- Every fixer should use a prompt to synthesize the patch, not template string substitution
+- Every score/ranking should expose a prompt interface so it can self-improve
+- **Prompts must self-improve.** When Hypothesis confirmation rate drops below 30% or accept rate drops below 85%, the prompt that generated those results automatically rewrites itself (`spec_learner.improve()`, `heal._improve_heal_prompt()`). Prompts are not static artifacts — they are learned weights.
+- When adding a new feature: write the prompt first, verify it works, THEN add the code layer
+
+The Z3/Hypothesis/TLA+ formal layers verify properties; the LLM prompt layer generates candidates. Neither replaces the other. Self-improving prompts are the connective tissue between them.
+
+### Formal first
+Model the behavior in Z3 or TLA+ before implementing it. If you can't state the invariant formally, you don't understand the requirement yet.
+
+### Smallest working thing
+Build the critical path end-to-end before expanding. Three connected nodes beat 50 disconnected ones.
+
+---
+
 ## Agent entrypoints
 
 | Entrypoint | Where | What it does |
@@ -197,40 +218,52 @@ Four tools currently exposed. Any agent that speaks MCP (Claude Code, etc.) can 
 
 ---
 
-## claude-agent.yml custom_instructions gap
+## Self-improving prompts (current state)
 
-The current `claude-agent.yml` instructions reference old module names:
+Every capability that uses an LLM prompt should have a `*_improve.md` companion that rewrites the prompt when quality falls below threshold.
 
-```
-# In claude-agent.yml:
-- pact_sheaf.py: sheaf-cohomological LLM response checker (check_file, sheaf_summary)
-- pact_cfg_proof.py: AST→CFG→Z3 proof engine (prove_loop_guard)
-- pact_synth.py: synthesis pipeline (full_pipeline → fix + test + Z3 cert)
-- failure_mode.py + fixer.py: original pact scanner and fixer
-```
+| Prompt | Self-improving? | Trigger condition |
+|---|---|---|
+| `context.md` | ✅ `context_improve.md` | parse error or low git signal |
+| `find.md` | ✅ `find_improve.md` | Hypothesis confirm rate < 30% |
+| `heal.md` | ✅ `heal_improve.md` | accept rate < 85% |
+| `spec_gap.md` | ✅ `spec_gap_improve.md` | ≥2 CATCHES_BUG records |
+| `spec_refine.md` | ✅ `spec_refine_improve.md` | same |
+| `spec_validate.md` | ✅ `spec_validate_improve.md` | same |
+| `triage.md` | ❌ **Missing** | triage parse failure or low-confidence categorization |
+| `invariant_skeptic.md` | ❌ **Missing** | invariant_skeptic rejects > 50% of proposed invariants |
+| `verify.md` | ❌ **Missing** | Z3 proof failure rate |
+| `dead_code.md` | ❌ **Missing** | dead-code false positive rate |
+| `project_intent.md` | ❌ **Missing** | intent parse failure |
 
-Missing from the agent instructions: `pact_loop`, `pact_interproc`, `pact_tda`, `spec_learner`, `scan_github`, `auto_pr`. The Claude agent in GitHub issues doesn't know about the convergence loop, TDA, or spec_learner. **Update `custom_instructions` to list all current tools.**
+**Gap**: Add `triage_improve.md`, `verify_improve.md`, and `invariant_skeptic_improve.md`. Wire quality signals from their callers into the improve trigger.
 
 ---
 
 ## Implementation queue (priority order)
 
+✅ = shipped this session
+
 1. **Expose `pact_loop` + `pact_tda` + `pact_sheaf` as MCP tools** — 3 new entries in `mcp_server.py::_TOOLS` + dispatch functions. Unblocks Claude Code calling the full loop.
 
-2. **nx.pagerank → heal priority** — In `pact_loop._measure()`, compute PageRank of `calls` subgraph, sort violations by enclosing-function PageRank. 20-line change; immediate improvement to heal ordering.
+2. ✅ **nx.pagerank → heal priority** — Shipped: `_topology_priority()` now uses `nx.pagerank()` on `calls` subgraph. High-PageRank files healed first.
 
-3. **Wire scan_github → auto_pr dynamic queue** — In `auto_pr.py`, replace hardcoded `QUEUE` with a scan of `corpus/scan_github_*.jsonl`; skip repos in `auto_pr_state.json`. Queue never runs dry.
+3. ✅ **Wire scan_github → auto_pr dynamic queue** — Shipped: `_dynamic_queue()` reads `corpus/scan_github_*.jsonl`; queue never runs dry.
 
-4. **Wire loop failures → spec_learner** — In `pact_loop._heal()`, on `ToolLoopExhausted`, call `spec_learner.analyze_gap(gap_context)`. Closes TLA+ learning loop.
+4. ✅ **Wire loop failures → spec_learner** — Shipped: `_record_heal_failure()` saves SpecGapRecord on ToolLoopExhausted.
 
 5. **Make TLC actually run** — In `spec_learner.validate_refinement()`, add `subprocess.run(["java", "-jar", TLA2TOOLS, ...])` and parse output. Set `tlc_matches_prediction` from ground truth.
 
-6. **z3.Optimize for minimum fix set** — In `pact_loop`, after `_measure()`, solve a set-cover instance: which k files cover the most violations? Apply heal in that order.
+6. **z3.Optimize for minimum fix set** — In `pact_loop`, after `_measure()`, solve a set-cover instance: which k files cover the most violations? Apply heal in that order. Uses `z3.Optimize` + `PbLe` (pseudo-Boolean ≤ k constraint).
 
-7. **RuleBasedStateMachine for pact_loop** — New test class in `test_loop.py` using `hypothesis.stateful`. States: measure, heal, check. Rules: `do_measure()`, `do_heal(oracle_ok)`, `do_check(new_v, new_f)`. Invariant: fitness never decreases when converging.
+7. ✅ **RuleBasedStateMachine for pact_loop** — Shipped: `TestLoopStateMachine` in `test_loop.py` — 4 Hypothesis properties covering FitnessMonotone, StuckDetection, OracleSafety, Termination.
 
-8. **Update claude-agent.yml custom_instructions** — Rewrite to list all current pact tools and their APIs. Add pact_loop, pact_interproc, pact_tda, spec_learner, scan_github, auto_pr.
+8. ✅ **Update claude-agent.yml custom_instructions** — Shipped: all current pact tools listed.
 
-9. **Go tree-sitter grammar** — Replace regex in `go_checker.py` with `tree-sitter-go` for structural correctness. First new language after TS/JS.
+9. **Go tree-sitter grammar** — Replace regex in `go_checker.py` with `tree-sitter-go`. First new language after TS/JS.
 
 10. **Build spec_learner corpus** — Run `spec_learner.analyze_gap()` on `optional_dereference` and `save_without_update_fields`. Need 2+ CATCHES_BUG records before `improve()` activates.
+
+11. **Add `triage_improve.md` + `verify_improve.md`** — Self-improving prompts for triage and verify. Wire quality signals from `intent.py` and `z3_engine.py` into improve triggers. Currently these prompts never self-improve.
+
+12. **`pact_loop` as MCP tool** — Expose the full convergence loop as a single MCP call: `pact_loop(target, test_cmd)` → returns `LoopResult`. Claude Code can then run autonomous healing on any directory.
