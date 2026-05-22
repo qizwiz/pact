@@ -743,6 +743,7 @@ def _invariant_skeptic(
     model: str,
     key: str,
     verbose: bool,
+    improve: bool = False,
 ) -> tuple[list[str], list[str]]:
     """
     Adversarial oracle: second LLM call tries to falsify each proposed invariant.
@@ -765,9 +766,14 @@ def _invariant_skeptic(
         raw = _call_with_tools(prompt, model, key, max_tokens=4096)
         surviving = raw.get("surviving_invariants", [])
         falsified = raw.get("falsified_invariants", [])
+        verdicts = raw.get("verdicts", [])
         if verbose and falsified:
             print(
                 f"  oracle falsified {len(falsified)} project invariants: {falsified}"
+            )
+        if improve and verdicts:
+            _improve_invariant_skeptic_prompt(
+                verdicts, proposed_invariants, model, key, verbose
             )
         return surviving, falsified
     except Exception as exc:
@@ -776,8 +782,70 @@ def _invariant_skeptic(
         return [inv["id"] for inv in proposed_invariants], []
 
 
+def _improve_invariant_skeptic_prompt(
+    verdicts: list[dict],
+    proposed_invariants: list[dict],
+    model: str,
+    key: str,
+    verbose: bool,
+) -> None:
+    """Score skeptic prompt quality and rewrite if calibration is poor."""
+    if len(verdicts) < 2:
+        return
+
+    n_total = len(verdicts)
+    n_falsified = sum(1 for v in verdicts if v.get("verdict") == "FALSIFIED")
+    n_unverifiable = sum(1 for v in verdicts if v.get("verdict") == "UNVERIFIABLE")
+    n_survives = sum(1 for v in verdicts if v.get("verdict") == "SURVIVES")
+
+    falsification_rate = n_falsified / n_total
+    unverifiable_rate = n_unverifiable / n_total
+
+    # Oracle is underperforming if: never falsifies anything OR falsifies everything
+    # OR buries everything in UNVERIFIABLE
+    calibration_ok = 0.05 <= falsification_rate <= 0.90
+    unverifiable_ok = unverifiable_rate <= 0.50
+
+    if calibration_ok and unverifiable_ok:
+        return  # oracle is calibrated
+
+    def _by_verdict(verdict_type: str) -> list[dict]:
+        return [v for v in verdicts if v.get("verdict") == verdict_type][:3]
+
+    performance_signals = (
+        f"falsification_rate: {falsification_rate:.0%}, "
+        f"unverifiable_rate: {unverifiable_rate:.0%}, "
+        f"n_total: {n_total}, n_survives: {n_survives}, "
+        f"n_falsified: {n_falsified}, n_unverifiable: {n_unverifiable}"
+    )
+
+    try:
+        template = _load_prompt("invariant_skeptic_improve")
+        prompt = _render(
+            template,
+            prompt_text=_load_prompt("invariant_skeptic"),
+            survives_samples=json.dumps(_by_verdict("SURVIVES"), indent=2),
+            falsified_samples=json.dumps(_by_verdict("FALSIFIED"), indent=2),
+            unverifiable_samples=json.dumps(_by_verdict("UNVERIFIABLE"), indent=2),
+            performance_signals=performance_signals,
+        )
+        raw = _call(prompt, model, key, max_tokens=8192)
+        improved = raw.get("improved_prompt", "")
+        overall = raw.get("overall_score", 0.0)
+        if improved and overall < 0.8:
+            _save_prompt("invariant_skeptic", improved)
+            if verbose:
+                print(
+                    f"\n[skeptic] ✓ invariant_skeptic prompt rewritten "
+                    f"(score was {overall:.2f}, falsification_rate {falsification_rate:.0%})"
+                )
+    except Exception as exc:
+        if verbose:
+            print(f"\n[skeptic] prompt improvement failed: {exc}")
+
+
 def _project_intent(
-    intent: "ProjectIntent", model: str, key: str, verbose: bool
+    intent: "ProjectIntent", model: str, key: str, verbose: bool, improve: bool = False
 ) -> None:
     """
     Step 5: synthesize project-level invariants from all module analyses,
@@ -817,7 +885,7 @@ def _project_intent(
 
     # Adversarial oracle: second independent call tries to falsify proposed invariants
     surviving_ids, falsified_ids = _invariant_skeptic(
-        proposed, summaries, model, key, verbose
+        proposed, summaries, model, key, verbose, improve=improve
     )
 
     oracle_validated = [inv for inv in proposed if inv.get("id") in surviving_ids]
@@ -1027,7 +1095,7 @@ def extract_project_intent(
     # Step 5: project-level synthesis (oracle-validated invariants)
     if intent.modules:
         try:
-            _project_intent(intent, model, key, verbose)
+            _project_intent(intent, model, key, verbose, improve=improve)
         except Exception as exc:
             if verbose:
                 print(f"  project_intent failed: {exc}")
