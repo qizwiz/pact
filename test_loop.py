@@ -176,9 +176,9 @@ class TestIterationStateSerialization:
         raw = json.dumps(dataclasses.asdict(s))
         try:
             restored = json.loads(raw)
+            assert restored["measure"]["checker_total"] == 5
         except json.JSONDecodeError as exc:
             pytest.fail(f"json.loads raised JSONDecodeError: {exc}")
-        assert restored["measure"]["checker_total"] == 5
 
     def test_loop_result_summary(self):
         r = LoopResult(
@@ -340,3 +340,75 @@ class TestCLI:
         with pytest.raises(SystemExit) as exc_info:
             loop_main([])
         assert exc_info.value.code != 0
+
+
+# ---------------------------------------------------------------------------
+# Cache invalidation
+# ---------------------------------------------------------------------------
+
+
+class TestCacheInvalidation:
+    """clear_file_caches() must make the checker re-read modified files.
+
+    Root cause of the ts_checker.py:41 'Tool loop exhausted' failure:
+    LRU-cached scanners served stale violations for files already healed in a
+    prior iteration. The LLM kept reading the file, saw nothing to fix, and
+    exhausted all tool rounds without producing a patch.
+    """
+
+    def test_clear_caches_exposes_fresh_violations(self, tmp_path):
+        from .failure_mode import clear_file_caches
+        from .checker import check_codebase
+
+        f = tmp_path / "demo.py"
+        # First scan: clean file
+        f.write_text("x = 1\n")
+        before = [r for r in check_codebase(tmp_path) if r.file == str(f)]
+
+        # Inject a bare except (without clearing — would still be cached)
+        f.write_text("try:\n    pass\nexcept:\n    pass\n")
+        cached = [r for r in check_codebase(tmp_path) if r.file == str(f)]
+
+        # Clear caches and re-scan — must see the new violation
+        clear_file_caches()
+        after = [r for r in check_codebase(tmp_path) if r.file == str(f)]
+
+        assert len(before) == 0
+        # After cache clear, bare_except is visible
+        assert any(
+            getattr(r, "context", getattr(r, "mode_name", "")) == "bare_except"
+            for r in after
+        ), f"bare_except not found after cache clear; got: {[r.context for r in after]}"
+
+    def test_clear_caches_removes_stale_violations(self, tmp_path):
+        from .failure_mode import clear_file_caches
+        from .checker import check_codebase
+
+        f = tmp_path / "stale.py"
+        # First scan: file has a bare except
+        f.write_text("try:\n    pass\nexcept:\n    pass\n")
+        clear_file_caches()
+        before = [r for r in check_codebase(tmp_path) if r.file == str(f)]
+
+        # Heal the file — replace bare except with specific typed handler
+        f.write_text("try:\n    pass\nexcept ValueError:\n    pass\n")
+
+        # WITHOUT clearing: stale cache returns old violation
+        stale = [r for r in check_codebase(tmp_path) if r.file == str(f)]
+
+        # After clearing: violation is gone
+        clear_file_caches()
+        fresh = [r for r in check_codebase(tmp_path) if r.file == str(f)]
+
+        assert any(
+            getattr(r, "context", getattr(r, "mode_name", "")) == "bare_except"
+            for r in before
+        ), "setup: should have detected bare_except in first scan"
+        assert any(
+            getattr(r, "context", getattr(r, "mode_name", "")) == "bare_except"
+            for r in stale
+        ), "without cache clear, stale violation should persist"
+        assert not any(
+            getattr(r, "context", getattr(r, "mode_name", "")) == "bare_except"
+            for r in fresh
+        ), "after cache clear, healed file should show no bare_except"

@@ -3384,3 +3384,31 @@ DEFAULT_MODES: list[FailureMode] = [
     TIMEOUT_NOT_SET,
     EAGER_ANY_GUARD,
 ]
+
+_CACHED_SCANNERS = [
+    _scan_file_optional_deref,
+    _scan_file_bare_except,
+    _scan_file_mutable_defaults,
+    _scan_file_missing_await,
+    _scan_file_format_mismatch,
+    _scan_file_llm_response_unguarded,
+    _scan_file_unvalidated_lookup_chain,
+    _scan_file_prompt_injection_risk,
+    _scan_file_asyncio_run_in_async,
+    _scan_file_falsy_or_zero_elision,
+    _scan_file_subprocess_exit_code,
+    _scan_file_sheaf_llm_unguarded,
+    _scan_file_json_loads_unguarded,
+    _scan_file_timeout_not_set,
+    _scan_file_eager_any_guard,
+]
+
+
+def clear_file_caches() -> None:
+    """Clear all per-file LRU caches so the next check_codebase sees fresh results.
+
+    Call this after heal modifies files — otherwise stale cached violations
+    will reappear in the next iteration and exhaust the synthesis tool loop.
+    """
+    for fn in _CACHED_SCANNERS:
+        fn.cache_clear()

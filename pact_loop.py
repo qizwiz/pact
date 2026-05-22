@@ -913,6 +913,12 @@ class PactLoop:
                 f"{'─' * (50 - len(str(i+1)))}"
             )
 
+            # Clear per-file checker caches so healed files don't re-appear as
+            # stale violations in this iteration's measure phase.
+            from .failure_mode import clear_file_caches
+
+            clear_file_caches()
+
             state = IterationState(iteration=i + 1)
 
             # ── MEASURE ─────────────────────────────────────────────────────
