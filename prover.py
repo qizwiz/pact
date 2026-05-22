@@ -453,6 +453,7 @@ def prove_bare_except() -> ProofCertificate:
     """
     if not _HAS_Z3:
         import warnings
+
         warnings.warn(
             "z3-solver is not installed; formal proof was NOT computed. "
             "Install z3-solver for a verified certificate.",

@@ -24,6 +24,7 @@ try:
     _HAS_TS = True
 except Exception as _ts_exc:
     import warnings
+
     warnings.warn(
         f"tree-sitter TypeScript unavailable — TS/TSX checks are disabled: {_ts_exc}",
         RuntimeWarning,
@@ -38,8 +39,14 @@ try:
     _JS_LANGUAGE = _ts.Language(_tsjs.language())
     _JSX_LANGUAGE = _JS_LANGUAGE  # tree-sitter-javascript handles JSX natively
     _HAS_JS = True
-except Exception:
-    pass
+except Exception as _js_exc:
+    import warnings
+
+    warnings.warn(
+        f"tree-sitter JavaScript unavailable — JS/JSX checks are disabled: {_js_exc}",
+        RuntimeWarning,
+        stacklevel=2,
+    )
 
 # Directories to skip (mirrors extractor._SKIP_DIRS)
 _SKIP_DIRS = frozenset(

@@ -141,6 +141,7 @@ def check_codebase(
                 violations.append(v)
     except ImportError as _ts_import_err:
         import logging as _logging
+
         _logging.getLogger(__name__).warning(
             "ts_checker could not be loaded (%s); "
             "TypeScript files will not be checked. "
@@ -188,6 +189,7 @@ def check_codebase(
                         )
         except ImportError as _z3_import_err:
             import logging as _logging
+
             _logging.getLogger(__name__).warning(
                 "z3_engine could not be loaded (%s); "
                 "model_constraint violations will not be Z3-confirmed and "
@@ -197,6 +199,7 @@ def check_codebase(
             )
         except Exception as _z3_err:
             import logging as _logging
+
             _logging.getLogger(__name__).warning(
                 "Z3 Datalog proof failed (%s: %s); "
                 "model_constraint violations are unconfirmed and "
