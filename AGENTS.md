@@ -30,7 +30,7 @@ Build the critical path end-to-end before expanding. Three connected nodes beat 
 
 | Entrypoint | Where | What it does |
 |---|---|---|
-| `python -m pact.mcp_server` | `mcp_server.py` | MCP stdio server — exposes 4 tools to any MCP-capable agent (Claude Code, Cursor, etc.) |
+| `python -m pact.mcp_server` | `mcp_server.py` | MCP stdio server — exposes 5 tools to any MCP-capable agent (Claude Code, Cursor, etc.) |
 | `python -m pact` | `cli.py` | CLI: check, find, heal, loop, tda, sheaf, interproc, scan-github, spec-learn |
 | `pact-mcp` | pyproject entry point | Same as mcp_server, installed as a binary |
 | GitHub label `pact-auto` | `.github/workflows/claude-agent.yml` | Triggers `anthropics/claude-code-action@beta` on issues/PRs |
@@ -43,7 +43,7 @@ Build the critical path end-to-end before expanding. Three connected nodes beat 
 
 ## MCP server tools (mcp_server.py)
 
-Four tools currently exposed. Any agent that speaks MCP (Claude Code, etc.) can call these.
+Five tools currently exposed. Any agent that speaks MCP (Claude Code, etc.) can call these.
 
 | Tool | Input | Output | Status |
 |---|---|---|---|
@@ -51,12 +51,12 @@ Four tools currently exposed. Any agent that speaks MCP (Claude Code, etc.) can 
 | `pact_find` | `file_path`, `use_context`, `improve` | violations + counterexamples | ✅ Wired |
 | `pact_heal` | `violations_json`, `project_root`, `test_cmd` | patches + oracle_confirmed | ✅ Wired |
 | `pact_context` | `file_path`, `repo_root` | git/changelog intent signals | ✅ Wired |
-| `pact_loop` | — | convergence loop result | ❌ **Not exposed** |
+| `pact_loop` | `target`, `test_cmd`, `max_iters`, `severity`, `verbose` | convergence loop result | ✅ Wired |
 | `pact_tda` | `path` | β₁ Betti topology scores | ❌ **Not exposed** |
 | `pact_sheaf` | `file_path` | Ȟ¹ cohomological violations | ❌ **Not exposed** |
 | `pact_spec_learn` | — | TLA+ gap report | ❌ **Not exposed** |
 
-**Gap**: Add `pact_loop`, `pact_tda`, `pact_sheaf` to the MCP tool registry so Claude Code can trigger full autonomous analysis.
+**Gap**: Add `pact_tda` and `pact_sheaf` to the MCP tool registry.
 
 ---
 
@@ -69,18 +69,25 @@ Four tools currently exposed. Any agent that speaks MCP (Claude Code, etc.) can 
 - `z3.Fixedpoint` / Datalog — transitive call-graph reachability (`pact_interproc._interproc_z3`)
 - `z3.Solver` in sheaf — `_z3_check_guarded()` verifies LLM output-guard propagation across call sites
 
+### Currently wired
+
+- `z3.Solver` + `Bool/And/Or/Not/Implies` — model_constraint and LLM-response safety guards
+- `z3.BitVec` — integer overflow detection in loop bounds
+- `z3.Fixedpoint` / Datalog — transitive call-graph reachability (`pact_interproc._interproc_z3`)
+- `z3.Solver` in sheaf — `_z3_check_guarded()` verifies LLM output-guard propagation across call sites
+- `z3.Optimize` + `PbLe` — max-coverage heal ordering in `pact_loop._z3_optimal_heal_order()`
+
 ### Not used — concrete gaps
 
 | Z3 feature | What it would enable | File to add it |
 |---|---|---|
-| `z3.Optimize` | Minimum-cardinality fix set — heal fewest files to clear most violations | `pact_loop.py` |
 | `unsat_core()` | Diagnosis: which preconditions caused a proof failure | `z3_engine.py::PactEngine` |
 | `z3.Array` sorts | Model dict/list state across call chain (currently we use Bool sets) | `pact_interproc.py` |
 | Universal quantifiers `ForAll` | Property-level proofs ("for ALL inputs, X holds") | `z3_engine.py::LLMResponseEngine` |
 | `z3.Tactic` / tactic combinators | Faster proofs with `then(simplify, solve-eqs, smt)` | `pact_cfg_proof.py` |
 | Proof objects `z3.set_param(proof=True)` | Certificate generation for ADRs ("we proved X") | `z3_engine.py` |
 
-**Highest-impact next**: `z3.Optimize` in pact_loop — instead of healing violations in checker-output order, solve for the minimum set of files whose fix reduces total violations most. This is a set-cover instance that Z3 Optimize solves exactly.
+**Highest-impact next**: `unsat_core()` in z3_engine.py — when a property proof fails, extract the minimal set of preconditions that caused the failure. This gives the model a precise counterexample rather than "proof failed".
 
 ---
 
@@ -92,18 +99,24 @@ Four tools currently exposed. Any agent that speaks MCP (Claude Code, etc.) can 
 - `st.sampled_from` — draw from known violation types
 - `st.lists`, `st.integers`, `st.floats` — basic type generators
 
+### Currently wired
+
+- `@given` + `@settings` — fuzz test individual checker invariants
+- `st.sampled_from` — draw from known violation types
+- `st.lists`, `st.integers`, `st.floats` — basic type generators
+- `RuleBasedStateMachine` — `TestLoopStateMachine` in `test_loop.py`: FitnessMonotone, StuckDetection, OracleSafety, Termination (4 properties)
+
 ### Not used — concrete gaps
 
 | Hypothesis feature | What it would enable | File to add it |
 |---|---|---|
-| `RuleBasedStateMachine` | Stateful test of pact_loop — model Measure→Heal→Check as a state machine; find divergences | `test_loop.py` |
 | `st.from_type(T)` | Auto-generate IterationState, MeasureResult, LoopResult instances from their type annotations | `test_loop.py` |
 | `st.builds(cls, ...)` | Composite object generation for complex checker inputs | `test_hypothesis_checkers.py` |
 | `target()` (coverage-guided) | Maximize fitness function exploration — finds edge cases in compute_fitness | `test_loop.py` |
 | `assume()` + `reject()` | Filter invalid combos in multi-field generators (e.g. heal_accepted ≤ heal_attempted) | `test_hypothesis_checkers.py` |
 | `@reproduce_failure` | Shrinking replay for CI failures | global conftest |
 
-**Highest-impact next**: `RuleBasedStateMachine` for pact_loop — model the 4-phase loop as a state machine, use Hypothesis to find sequences that violate FitnessMonotone or get stuck when they shouldn't.
+**Highest-impact next**: `target()` (coverage-guided) in test_loop — call `target(fitness)` inside test_fitness_monotone to drive Hypothesis toward edge cases where fitness fails to improve monotonically.
 
 ---
 
@@ -123,7 +136,7 @@ Four tools currently exposed. Any agent that speaks MCP (Claude Code, etc.) can 
 | **TLC actually runs** | ❌ `validate_refinement()` does LLM symbolic replay, not TLC. `tlc_matches_prediction` is always `None` | Add `subprocess.run(["java", "-jar", "tla2tools.jar", ...])` in `validate_refinement()`; set `tlc_matches_prediction` from TLC stdout |
 | **TLC in CI** | ❌ No `java` in CI action | Add `uses: actions/setup-java@v4` + download `tla2tools.jar` in `ci.yml` |
 | **spec_learner self-improves** | ❌ Needs ≥2 bad records in corpus to fire `improve()`; currently 1 record | Build corpus from other known pact bugs (see below) |
-| **Loop failures → spec_learner** | ❌ When CEGIS "Tool loop exhausted", the failure is never recorded | In `pact_loop.py::_heal()`, on `ToolLoopExhausted`, call `spec_learner.analyze_gap()` with the stuck context |
+| **Loop failures → spec_learner** | ✅ `_record_heal_failure()` in `pact_loop.py` saves SpecGapRecord on ToolLoopExhausted | — |
 
 **spec_learner corpus building**: Every known pact bug class should have a gap record: bare_except (solved), json_loads_unguarded (solved), sheaf_llm_unguarded false positive (solved), cache_opacity (solved). Next: add records for `optional_dereference` and `save_without_update_fields` — these are the two largest violation classes in the dogfood run and are NOT yet in the spec_learner corpus.
 
@@ -148,7 +161,7 @@ Four tools currently exposed. Any agent that speaks MCP (Claude Code, etc.) can 
 | Function | What it enables | Status |
 |---|---|---|
 | `nx.betweenness_centrality` | Find structural bottlenecks — nodes that, if fixed, break the most violation chains | ❌ Not used |
-| `nx.pagerank` | Rank violations by propagation risk (high-PageRank violators infect many callers) | ❌ Not used |
+| `nx.pagerank` | Rank violations by propagation risk (high-PageRank violators infect many callers) | ✅ `_topology_priority()` in `pact_loop.py` |
 | `nx.minimum_spanning_tree` | Minimal repair tree — fewest edges to cut to isolate all violation clusters | ❌ Not used |
 | `nx.k_core` | Dense violator cores — sub-graphs where violations are densely interconnected | ❌ Not used |
 | `nx.girvan_newman` | Community detection across violation clusters | ❌ Not used |
@@ -192,9 +205,8 @@ Four tools currently exposed. Any agent that speaks MCP (Claude Code, etc.) can 
 
 | Gap | Fix |
 |---|---|
-| `scan_github` output never feeds `auto_pr` | `auto_pr.py` uses a hardcoded `QUEUE`. Make it read `corpus/scan_github_*.jsonl` files for next unfiled repo |
+| `scan_github` output never feeds `auto_pr` | ✅ `_dynamic_queue()` in `auto_pr.py` reads `corpus/scan_github_*.jsonl`; falls back to dynamic queue when static QUEUE is exhausted |
 | `nightly-corpus.yml` output never persisted | The nightly workflow runs `scan_github` but doesn't commit results to corpus/ |
-| Queue is exhausted | All hardcoded repos have been filed. Need dynamic queue from scan_github corpus |
 | No deduplication with filed PRs | `auto_pr_state.json` tracks filed repos but `scan_github` doesn't check it before adding to corpus |
 
 ---
@@ -230,40 +242,44 @@ Every capability that uses an LLM prompt should have a `*_improve.md` companion 
 | `spec_gap.md` | ✅ `spec_gap_improve.md` | ≥2 CATCHES_BUG records |
 | `spec_refine.md` | ✅ `spec_refine_improve.md` | same |
 | `spec_validate.md` | ✅ `spec_validate_improve.md` | same |
-| `triage.md` | ❌ **Missing** | triage parse failure or low-confidence categorization |
-| `invariant_skeptic.md` | ❌ **Missing** | invariant_skeptic rejects > 50% of proposed invariants |
-| `verify.md` | ❌ **Missing** | Z3 proof failure rate |
-| `dead_code.md` | ❌ **Missing** | dead-code false positive rate |
-| `project_intent.md` | ❌ **Missing** | intent parse failure |
+| `triage.md` | ✅ `triage_improve.md` | key_files == 0 or essence < 50 chars |
+| `invariant_skeptic.md` | ✅ `invariant_skeptic_improve.md` | falsification_rate outside [5%, 90%] or unverifiable_rate > 50% |
+| `verify.md` | ✅ `verify_improve.md` | avg_verify_score < 0.5 or accept_rate < 0.4 |
+| `dead_code.md` | ✅ `dead_code_improve.md` | empty candidates or LOW-risk with remaining callers |
+| `project_intent.md` | ❌ **Missing** | intent parse failure or 0 project invariants proposed |
 
-**Gap**: Add `triage_improve.md`, `verify_improve.md`, and `invariant_skeptic_improve.md`. Wire quality signals from their callers into the improve trigger.
+**Remaining gap**: `project_intent_improve.md` — self-improving prompt for cross-module synthesis. Trigger: 0 project invariants survive the oracle pass.
 
 ---
 
 ## Implementation queue (priority order)
 
-✅ = shipped this session
+✅ = shipped
 
-1. **Expose `pact_loop` + `pact_tda` + `pact_sheaf` as MCP tools** — 3 new entries in `mcp_server.py::_TOOLS` + dispatch functions. Unblocks Claude Code calling the full loop.
+1. ✅ **Expose `pact_loop` as MCP tool** — `mcp_server.py` now has 5 tools; `pact_loop(target, test_cmd, max_iters, severity, verbose)` exposed.
 
-2. ✅ **nx.pagerank → heal priority** — Shipped: `_topology_priority()` now uses `nx.pagerank()` on `calls` subgraph. High-PageRank files healed first.
+2. ✅ **nx.pagerank → heal priority** — `_topology_priority()` uses `nx.pagerank()` on `calls` subgraph. High-PageRank files healed first.
 
-3. ✅ **Wire scan_github → auto_pr dynamic queue** — Shipped: `_dynamic_queue()` reads `corpus/scan_github_*.jsonl`; queue never runs dry.
+3. ✅ **Wire scan_github → auto_pr dynamic queue** — `_dynamic_queue()` reads `corpus/scan_github_*.jsonl`; queue never runs dry.
 
-4. ✅ **Wire loop failures → spec_learner** — Shipped: `_record_heal_failure()` saves SpecGapRecord on ToolLoopExhausted.
+4. ✅ **Wire loop failures → spec_learner** — `_record_heal_failure()` saves SpecGapRecord on ToolLoopExhausted.
 
-5. **Make TLC actually run** — In `spec_learner.validate_refinement()`, add `subprocess.run(["java", "-jar", TLA2TOOLS, ...])` and parse output. Set `tlc_matches_prediction` from ground truth.
+5. ✅ **z3.Optimize for minimum fix set** — `_z3_optimal_heal_order()` in pact_loop: set-cover via `z3.Optimize` + `PbLe`. Applied as second-pass override in heal ordering.
 
-6. **z3.Optimize for minimum fix set** — In `pact_loop`, after `_measure()`, solve a set-cover instance: which k files cover the most violations? Apply heal in that order. Uses `z3.Optimize` + `PbLe` (pseudo-Boolean ≤ k constraint).
+6. ✅ **RuleBasedStateMachine for pact_loop** — `TestLoopStateMachine` in `test_loop.py` — FitnessMonotone, StuckDetection, OracleSafety, Termination.
 
-7. ✅ **RuleBasedStateMachine for pact_loop** — Shipped: `TestLoopStateMachine` in `test_loop.py` — 4 Hypothesis properties covering FitnessMonotone, StuckDetection, OracleSafety, Termination.
+7. ✅ **Update claude-agent.yml custom_instructions** — All current pact tools listed.
 
-8. ✅ **Update claude-agent.yml custom_instructions** — Shipped: all current pact tools listed.
+8. ✅ **Self-improving prompts** — All 4 missing prompts shipped: `triage_improve.md`, `verify_improve.md`, `invariant_skeptic_improve.md`, `dead_code_improve.md`.
 
-9. **Go tree-sitter grammar** — Replace regex in `go_checker.py` with `tree-sitter-go`. First new language after TS/JS.
+9. **Make TLC actually run** — In `spec_learner.validate_refinement()`, add `subprocess.run(["java", "-jar", TLA2TOOLS, ...])` and parse output. Set `tlc_matches_prediction` from ground truth.
 
 10. **Build spec_learner corpus** — Run `spec_learner.analyze_gap()` on `optional_dereference` and `save_without_update_fields`. Need 2+ CATCHES_BUG records before `improve()` activates.
 
-11. **Add `triage_improve.md` + `verify_improve.md`** — Self-improving prompts for triage and verify. Wire quality signals from `intent.py` and `z3_engine.py` into improve triggers. Currently these prompts never self-improve.
+11. **Expose `pact_tda` + `pact_sheaf` as MCP tools** — 2 more MCP tools. Unblocks Claude Code calling topology and sheaf analysis directly.
 
-12. **`pact_loop` as MCP tool** — Expose the full convergence loop as a single MCP call: `pact_loop(target, test_cmd)` → returns `LoopResult`. Claude Code can then run autonomous healing on any directory.
+12. **Add `project_intent_improve.md`** — Self-improving prompt for cross-module synthesis. Last remaining gap in the self-improving prompts table.
+
+13. **`nx.betweenness_centrality`** — Find structural bottlenecks — nodes that, if fixed, break the most violation chains. Wire into `_measure()` as third topology signal.
+
+14. **Wire `topo_score` for external targets** — Check if `target/graphify-out/graph.json` exists; if not, run graphify on the target first. Currently `topo_score` is always 0.0 for external projects.
