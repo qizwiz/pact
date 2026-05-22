@@ -107,18 +107,118 @@ class CallGraph:
         return results
 
     @classmethod
-    def load(cls, root: Path) -> CallGraph | None:
+    def load(cls, root: Path) -> "CallGraph | None":
         """
         Load ``graphify-out/graph.json`` from *root*.
 
-        Returns None (silently) if the file is absent or malformed — pact
-        runs normally without caller annotations in that case.
+        If the graphify file is absent, falls back to a minimal AST-derived
+        call graph (function definitions + call sites). The fallback is less
+        accurate than graphify (no cross-file resolution, no type inference)
+        but enables topology scoring and priority ordering on any Python project.
+
+        Returns None only if the target has no Python files.
         """
         graph_path = root / "graphify-out" / "graph.json"
-        if not graph_path.exists():
+        if graph_path.exists():
+            try:
+                g = json.loads(graph_path.read_text())
+                return cls(g.get("nodes", []), g.get("links", []))
+            except Exception:
+                pass  # fall through to AST fallback
+
+        return cls._from_ast(root)
+
+    @classmethod
+    def _from_ast(cls, root: Path) -> "CallGraph | None":
+        """Build a minimal CallGraph by walking Python AST — no graphify needed.
+
+        Creates one node per function definition and one 'call' link per
+        function call that resolves to a known function name in the same scope.
+        Only same-file calls are indexed (no cross-file resolution).
+        """
+        import ast as _ast
+
+        nodes: list[dict] = []
+        links: list[dict] = []
+        node_counter = 0
+        func_name_to_id: dict[str, str] = {}  # func_name → node_id (last seen)
+
+        skip_dirs = frozenset(
+            {
+                "__pycache__",
+                ".venv",
+                "venv",
+                "env",
+                ".git",
+                "node_modules",
+                "dist",
+                "build",
+            }
+        )
+        py_files = [
+            p
+            for p in sorted(root.rglob("*.py"))
+            if not any(
+                part in skip_dirs or part.endswith(".egg-info") for part in p.parts
+            )
+        ][
+            :200
+        ]  # cap at 200 files to avoid huge graphs on big projects
+
+        for fpath in py_files:
+            try:
+                source = fpath.read_text(encoding="utf-8", errors="replace")
+                tree = _ast.parse(source, filename=str(fpath))
+            except (SyntaxError, OSError):
+                continue
+
+            # First pass: collect all function definitions in this file
+            file_func_ids: dict[str, str] = {}
+            for node in _ast.walk(tree):
+                if isinstance(node, (_ast.FunctionDef, _ast.AsyncFunctionDef)):
+                    nid = f"fn_{node_counter}"
+                    node_counter += 1
+                    label = f"{node.name}()"
+                    loc = str(node.lineno)
+                    nodes.append(
+                        {
+                            "id": nid,
+                            "label": label,
+                            "source_file": str(fpath),
+                            "source_location": loc,
+                        }
+                    )
+                    file_func_ids[node.name] = nid
+                    func_name_to_id[node.name] = nid
+
+            # Second pass: emit call links for calls to known functions
+            for node in _ast.walk(tree):
+                if not isinstance(node, (_ast.FunctionDef, _ast.AsyncFunctionDef)):
+                    continue
+                src_id = file_func_ids.get(node.name)
+                if src_id is None:
+                    continue
+                for child in _ast.walk(node):
+                    if isinstance(child, _ast.Call):
+                        callee_name = ""
+                        if isinstance(child.func, _ast.Name):
+                            callee_name = child.func.id
+                        elif isinstance(child.func, _ast.Attribute):
+                            callee_name = child.func.attr
+                        tgt_id = file_func_ids.get(callee_name)
+                        if tgt_id and tgt_id != src_id:
+                            links.append(
+                                {
+                                    "source": src_id,
+                                    "target": tgt_id,
+                                    "context": "call",
+                                    "source_file": str(fpath),
+                                    "source_location": str(
+                                        getattr(child, "lineno", "")
+                                    ),
+                                }
+                            )
+
+        if not nodes:
             return None
-        try:
-            g = json.loads(graph_path.read_text())
-            return cls(g.get("nodes", []), g.get("links", []))
-        except Exception:
-            return None
+        return cls(nodes, links)
