@@ -589,6 +589,57 @@ def measure(
 # ---------------------------------------------------------------------------
 
 
+def _record_heal_failure(
+    violations_doc: dict, target: Path, error_msg: str, verbose: bool
+) -> None:
+    """Save a tool-loop-exhausted failure as a spec_learner training example.
+
+    Accumulates in corpus/spec_gaps.jsonl. When ≥2 bad records exist,
+    spec_learner.improve() will trigger heal-prompt self-improvement.
+    """
+    try:
+        from .spec_learner import SpecGapRecord, save
+
+        tla_path = Path(__file__).parent / "docs" / "tla" / "PactLoop.tla"
+        tla_text = tla_path.read_text() if tla_path.exists() else ""
+
+        # Pick the first violated file as the representative failure site
+        modules = violations_doc.get("modules", [])
+        bug_file = modules[0]["path"] if modules else str(target)
+        bug_line = (
+            modules[0]["violations"][0]["line"]
+            if modules and modules[0].get("violations")
+            else 0
+        )
+        mode = (
+            modules[0]["violations"][0].get("invariant_id", "unknown").rsplit("_", 1)[0]
+            if modules and modules[0].get("violations")
+            else "unknown"
+        )
+
+        record = SpecGapRecord(
+            bug_description=(
+                f"CEGIS tool loop exhausted while healing {mode} violation in {Path(bug_file).name}. "
+                f"The LLM read the file repeatedly but never produced a valid patch, "
+                f"exhausting all tool rounds without progress."
+            ),
+            bug_file=bug_file,
+            bug_line=bug_line,
+            bug_manifestation=error_msg,
+            bug_fix="Not yet fixed — training example for HealMustTerminateOrFail invariant",
+            tla_spec_path=str(tla_path),
+            tla_spec_text=tla_text,
+        )
+        save(record)
+        if verbose:
+            print(
+                "  spec_learner: recorded tool-loop-exhausted failure as training example"
+            )
+    except Exception as save_exc:
+        if verbose:
+            print(f"  spec_learner: failed to record failure ({save_exc})")
+
+
 def heal(
     violations_doc: dict,
     target: Path,
@@ -632,6 +683,10 @@ def heal(
     except Exception as exc:
         if verbose:
             print(f"  heal: failed: {exc}")
+        # Record tool-loop exhaustion as a spec_learner training example so
+        # the TLA+ model can eventually learn a HealMustTerminateOrFail invariant.
+        if "Tool loop exhausted" in str(exc) and key:
+            _record_heal_failure(violations_doc, target, str(exc), verbose)
         return 0, 0, 0
     finally:
         tmp.unlink(missing_ok=True)
