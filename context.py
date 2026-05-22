@@ -133,6 +133,67 @@ def _call(prompt: str, model: str, key: str) -> dict:
     return _parse(text)
 
 
+def _improve_context_prompt(
+    result: dict,
+    parse_error: Optional[str],
+    git_log_len: int,
+    model: str,
+    key: str,
+    verbose: bool,
+) -> None:
+    """Score context prompt and rewrite if output is empty despite rich git history."""
+    n_violations = len(result.get("confirmed_violations", []))
+    n_fragile = len(result.get("fragile_areas", []))
+
+    # Only improve if there's a failure signal
+    has_rich_history = git_log_len > 500
+    if not parse_error and (n_violations > 0 or not has_rich_history):
+        return
+
+    failure_modes: list[str] = []
+    if parse_error:
+        failure_modes.append(f"parse_failure: {parse_error[:200]}")
+    if has_rich_history and n_violations == 0:
+        failure_modes.append(
+            f"empty_output: 0 confirmed_violations despite {git_log_len} chars of git history"
+        )
+    if n_fragile == 0 and has_rich_history:
+        failure_modes.append(
+            "empty_fragile_areas: no fragile areas extracted from rich history"
+        )
+
+    good_samples = result.get("confirmed_violations", [])[:3]
+    bad_samples: list[dict] = []
+    if parse_error:
+        bad_samples.append({"error": parse_error[:300]})
+    if n_violations == 0:
+        bad_samples.append({"result": result})
+
+    try:
+        template = (_PROMPT_DIR / "context_improve.md").read_text(encoding="utf-8")
+        prompt = (
+            template.replace(
+                "{{prompt_text}}",
+                (_PROMPT_DIR / "context.md").read_text(encoding="utf-8"),
+            )
+            .replace("{{good_samples}}", json.dumps(good_samples, indent=2))
+            .replace("{{bad_samples}}", json.dumps(bad_samples, indent=2))
+            .replace("{{failure_modes}}", "\n".join(failure_modes) or "none")
+        )
+        raw = _call(prompt, model, key)
+        improved = raw.get("improved_prompt", "")
+        overall = raw.get("overall_score", 0.0)
+        if improved and overall < 0.8:
+            (_PROMPT_DIR / "context.md").write_text(improved, encoding="utf-8")
+            if verbose:
+                print(
+                    f"\n[context] ✓ context prompt rewritten (score was {overall:.2f})"
+                )
+    except Exception as exc:
+        if verbose:
+            print(f"\n[context] prompt improvement failed: {exc}")
+
+
 def extract_context(
     file_path: Path,
     repo_root: Optional[Path] = None,
@@ -140,6 +201,7 @@ def extract_context(
     api_key: Optional[str] = None,
     output: Optional[Path] = None,
     verbose: bool = False,
+    improve: bool = False,
 ) -> dict:
     key = api_key or os.environ.get("ANTHROPIC_API_KEY", "")
     if not key:
@@ -172,9 +234,11 @@ def extract_context(
         .replace("{{inline_notes}}", notes)
     )
 
+    parse_error: Optional[str] = None
     try:
         result = _call(prompt, model, key)
     except Exception as exc:
+        parse_error = str(exc)
         if verbose:
             print(f"  failed: {exc}")
         result = {
@@ -192,12 +256,15 @@ def extract_context(
             print(
                 f"    [{v.get('severity','?')}] {v.get('function','?')}: {v.get('what_broke','')[:70]}"
             )
-        for f in result.get("fragile_areas", []):
-            print(f"    fragile: {f.get('function','?')} — {f.get('reason','')[:60]}")
+        for fa in result.get("fragile_areas", []):
+            print(f"    fragile: {fa.get('function','?')} — {fa.get('reason','')[:60]}")
 
     if output:
         out = output if not output.is_dir() else output / "context.json"
         out.write_text(json.dumps(result, indent=2), encoding="utf-8")
+
+    if improve:
+        _improve_context_prompt(result, parse_error, len(git_log), model, key, verbose)
 
     return result
 
@@ -221,6 +288,11 @@ def main(argv=None):
     p.add_argument("--model", default=_DEFAULT_MODEL)
     p.add_argument("--api-key")
     p.add_argument("-v", "--verbose", action="store_true")
+    p.add_argument(
+        "--improve",
+        action="store_true",
+        help="rewrite context.md if output is empty despite rich git history (self-improvement)",
+    )
 
     args = p.parse_args(argv)
     extract_context(
@@ -230,6 +302,7 @@ def main(argv=None):
         api_key=args.api_key,
         output=args.out,
         verbose=args.verbose,
+        improve=args.improve,
     )
 
 

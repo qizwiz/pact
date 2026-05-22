@@ -184,6 +184,7 @@ def find_violations(
     output: Optional[Path] = None,
     verbose: bool = False,
     use_context: bool = True,
+    improve: bool = False,
 ) -> dict:
     key = api_key or os.environ.get("ANTHROPIC_API_KEY", "")
     if not key:
@@ -199,6 +200,7 @@ def find_violations(
     ]
 
     modules = []
+    parse_failures: list[dict] = []
 
     for fpath in files:
         source = fpath.read_text(encoding="utf-8", errors="replace")
@@ -232,6 +234,7 @@ def find_violations(
         try:
             raw = _call_with_tools(prompt, model, key)
         except Exception as exc:
+            parse_failures.append({"file": str(fpath), "error": str(exc)})
             if verbose:
                 print(f"    skipped: {exc}")
             continue
@@ -315,7 +318,102 @@ def find_violations(
         if verbose:
             print(f"[find] wrote {out}")
 
+    if improve:
+        _improve_find_prompt(result, parse_failures, model, key, verbose)
+
     return result
+
+
+# ---------------------------------------------------------------------------
+# Self-improvement (find_improve.md rubric)
+# ---------------------------------------------------------------------------
+
+
+def _improve_find_prompt(
+    result: dict,
+    parse_failures: list[dict],
+    model: str,
+    key: str,
+    verbose: bool,
+) -> None:
+    """Score find prompt and rewrite if hypothesis confirmation rate < 30% or parse failures exist."""
+    all_violations = [
+        v for m in result.get("modules", []) for v in m.get("violations", [])
+    ]
+    if not all_violations and not parse_failures:
+        return
+
+    total = len(all_violations)
+    confirmed = sum(1 for v in all_violations if v.get("hypothesis_confirmed"))
+    confirm_rate = confirmed / total if total else 0.0
+
+    missing_strategy = [
+        v
+        for v in all_violations
+        if not v.get("counterexample") and not v.get("hypothesis_confirmed")
+    ]
+
+    # Only improve if there's a real signal of failure
+    if (
+        confirm_rate >= 0.30
+        and not parse_failures
+        and len(missing_strategy) < total * 0.5
+    ):
+        return
+
+    confirmed_samples = [v for v in all_violations if v.get("hypothesis_confirmed")][:3]
+    unconfirmed_samples = missing_strategy[:5]
+
+    failure_modes: list[str] = []
+    for pf in parse_failures[:5]:
+        failure_modes.append(
+            f"parse_failure: {pf.get('file','?')} — {pf.get('error','?')[:120]}"
+        )
+    if total > 0:
+        failure_modes.append(
+            f"hypothesis_confirmation_rate: {confirmed}/{total} = {confirm_rate:.0%} (threshold 30%)"
+        )
+    no_strategy = sum(1 for v in all_violations if not v.get("counterexample"))
+    if no_strategy:
+        failure_modes.append(
+            f"missing_hypothesis_strategy: {no_strategy}/{total} violations have no runnable strategy"
+        )
+
+    try:
+        template = (_PROMPT_DIR / "find_improve.md").read_text(encoding="utf-8")
+        prompt = (
+            template.replace(
+                "{{prompt_text}}", (_PROMPT_DIR / "find.md").read_text(encoding="utf-8")
+            )
+            .replace("{{confirmed_samples}}", json.dumps(confirmed_samples, indent=2))
+            .replace(
+                "{{unconfirmed_samples}}", json.dumps(unconfirmed_samples, indent=2)
+            )
+            .replace("{{failure_modes}}", "\n".join(failure_modes) or "none")
+        )
+
+        import anthropic
+
+        client = anthropic.Anthropic(api_key=key)
+        response = client.messages.create(
+            model=model,
+            max_tokens=8192,
+            system="You are a prompt engineer. Return JSON only.",
+            messages=[{"role": "user", "content": prompt}],
+        )
+        text = "".join(b.text for b in response.content if hasattr(b, "text"))
+        raw = _parse(text)
+        improved = raw.get("improved_prompt", "")
+        overall = raw.get("overall_score", 0.0)
+        if improved and overall < 0.8:
+            (_PROMPT_DIR / "find.md").write_text(improved, encoding="utf-8")
+            if verbose:
+                print(
+                    f"\n[find] ✓ find prompt rewritten (score was {overall:.2f}, confirm_rate {confirm_rate:.0%})"
+                )
+    except Exception as exc:
+        if verbose:
+            print(f"\n[find] prompt improvement failed: {exc}")
 
 
 def main(argv=None):
@@ -337,6 +435,16 @@ def main(argv=None):
     p.add_argument("--model", default=_DEFAULT_MODEL)
     p.add_argument("--api-key")
     p.add_argument("-v", "--verbose", action="store_true")
+    p.add_argument(
+        "--improve",
+        action="store_true",
+        help="rewrite find.md if hypothesis confirmation rate < 30%% (self-improvement)",
+    )
+    p.add_argument(
+        "--no-context",
+        action="store_true",
+        help="skip git/changelog context extraction",
+    )
 
     args = p.parse_args(argv)
     find_violations(
@@ -345,6 +453,8 @@ def main(argv=None):
         api_key=args.api_key,
         output=args.out,
         verbose=args.verbose,
+        use_context=not args.no_context,
+        improve=args.improve,
     )
 
 

@@ -86,6 +86,11 @@ _TOOLS = [
                     "default": True,
                     "description": "Pull git/changelog prior first",
                 },
+                "improve": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "Rewrite find.md if hypothesis confirmation rate < 30%% (self-improvement)",
+                },
             },
             "required": ["file_path"],
         },
@@ -175,6 +180,7 @@ def _tool_pact_find(params: dict) -> dict:
         path=file_path,
         api_key=api_key,
         use_context=params.get("use_context", True),
+        improve=params.get("improve", False),
     )
 
 
