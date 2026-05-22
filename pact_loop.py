@@ -491,7 +491,12 @@ def _measure_find(
 
 
 def _topology_priority(violations_doc: dict, target: Path) -> dict[str, float]:
-    """Score each file by PageRank on the call graph — high-PageRank violations spread most."""
+    """Score each file by combined PageRank + betweenness_centrality.
+
+    PageRank (60%): high-rank files infect many callers if violated.
+    Betweenness (40%): high-betweenness files are structural bottlenecks —
+    fixing them breaks the most transitive violation chains.
+    """
     try:
         import networkx as nx
         from .graphify_graph import CallGraph
@@ -511,20 +516,38 @@ def _topology_priority(violations_doc: dict, target: Path) -> dict[str, float]:
 
         pr: dict[str, float] = nx.pagerank(G, alpha=0.85)
 
-        # For each violated file, take the max PageRank of its functions
+        # Betweenness on undirected projection (faster; captures structural bridges)
+        G_undirected = G.to_undirected()
+        btw: dict[str, float] = nx.betweenness_centrality(G_undirected, normalized=True)
+
         func_to_file: dict[str, str] = {
             nid: meta["file"] for nid, meta in cg._id_meta.items() if meta.get("file")
         }
+
+        # Per-file score: max over all functions in the file
         file_pr: dict[str, float] = {}
-        for nid, score in pr.items():
+        file_btw: dict[str, float] = {}
+        for nid in G.nodes():
             fpath = func_to_file.get(nid, "")
-            if fpath:
-                file_pr[fpath] = max(file_pr.get(fpath, 0.0), score)
+            if not fpath:
+                continue
+            file_pr[fpath] = max(file_pr.get(fpath, 0.0), pr.get(nid, 0.0))
+            file_btw[fpath] = max(file_btw.get(fpath, 0.0), btw.get(nid, 0.0))
+
+        # Normalize each signal to [0, 1]
+        def _norm(d: dict[str, float]) -> dict[str, float]:
+            mx = max(d.values()) if d else 1.0
+            return {k: v / (mx or 1.0) for k, v in d.items()}
+
+        pr_n = _norm(file_pr)
+        btw_n = _norm(file_btw)
 
         priorities: dict[str, float] = {}
         for mod in violations_doc.get("modules", []):
             fpath = mod["path"]
-            priorities[fpath] = file_pr.get(fpath, 0.0)
+            priorities[fpath] = 0.60 * pr_n.get(fpath, 0.0) + 0.40 * btw_n.get(
+                fpath, 0.0
+            )
 
         if priorities:
             mx = max(priorities.values()) or 1.0
