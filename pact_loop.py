@@ -193,9 +193,11 @@ def _stuck(accepted_history: list[int], window: int) -> bool:
 def _measure_checker(target: Path, verbose: bool) -> tuple[int, dict, dict]:
     """Static AST checker (all Python modes). Returns (count, by_mode, violations_doc)."""
     from .checker import check_codebase
+    from .graphify_graph import CallGraph
     from collections import defaultdict, Counter
 
     results = check_codebase(target)
+    cg = CallGraph.load(target)  # None if no graph.json present
     by_mode = dict(
         Counter(
             getattr(r, "mode_name", getattr(r, "context", "?")) for r in results
@@ -237,6 +239,12 @@ def _measure_checker(target: Path, verbose: bool) -> tuple[int, dict, dict]:
             )
             else "medium"
         )
+        community_id = cg.community_of("", r.file) if cg else None
+        community_label = (
+            cg.community_label_for(community_id)
+            if cg and community_id is not None
+            else ""
+        )
         file_viols[r.file].append(
             {
                 "invariant_id": inv_id,
@@ -246,6 +254,11 @@ def _measure_checker(target: Path, verbose: bool) -> tuple[int, dict, dict]:
                 "evidence": r.call,
                 "explanation": "; ".join(r.missing) if r.missing else "",
                 "_inv": inv_templates.get(ctx, f"Violation: {ctx}"),
+                **(
+                    {"community_id": community_id, "community_label": community_label}
+                    if community_id is not None
+                    else {}
+                ),
             }
         )
 
@@ -284,6 +297,22 @@ def _measure_checker(target: Path, verbose: bool) -> tuple[int, dict, dict]:
             f"  checker: {len(results)} violations — top modes: "
             + ", ".join(f"{m}({c})" for m, c in list(by_mode.items())[:4])
         )
+        if cg:
+            community_counts: dict[int, int] = Counter(
+                v["community_id"]
+                for mod in modules
+                for v in mod["violations"]
+                if "community_id" in v
+            )
+            top_clusters = community_counts.most_common(3)
+            if top_clusters:
+                parts = []
+                for cid, cnt in top_clusters:
+                    label = cg.community_label_for(cid)
+                    parts.append(
+                        f"cluster {cid}({cnt})" + (f"={label}" if label else "")
+                    )
+                print("  graphify clusters: " + ", ".join(parts))
     return len(results), by_mode, doc, results
 
 
