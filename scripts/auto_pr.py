@@ -239,17 +239,32 @@ _BRANCH_NAMES = {
 }
 
 
+_WHY: dict[str, str] = {
+    "llm_response_unguarded": "raises `IndexError` when the LLM returns an empty `choices` list",
+    "sheaf_llm_unguarded": "raises `IndexError` when the LLM returns an empty `choices` list",
+    "optional_dereference": "raises `AttributeError` when the queryset/dict returns `None`",
+    "unvalidated_lookup_chain": "raises `AttributeError` when `.get()` returns `None` for a missing key",
+    "json_loads_unguarded": "raises `JSONDecodeError` on malformed or empty API response",
+    "empty_catch": "silently swallows the exception — error disappears without any trace",
+    "missing_await": "coroutine created but never executed — work is silently dropped",
+}
+
+
 def _violation_table(violations: list[dict], changed: list[str]) -> str:
-    """One-row-per-violation table showing file, line, and actual expression."""
+    """One-row-per-violation table: file, line, expression, plain-language why."""
     relevant = [v for v in violations if v["file"] in changed]
     if not relevant:
         return ""
-    rows = ["| File | Line | Expression |", "|------|------|------------|"]
+    rows = [
+        "| File | Line | Expression | Why it crashes |",
+        "|------|------|------------|----------------|",
+    ]
     for v in sorted(relevant, key=lambda v: (v["file"], v["line"]))[:12]:
         call = (v.get("call") or "").strip() or "(see diff)"
-        rows.append(f"| `{v['file']}` | {v['line']} | `{call}` |")
+        why = _WHY.get(v.get("mode", ""), "unguarded access that can raise at runtime")
+        rows.append(f"| `{v['file']}` | {v['line']} | `{call}` | {why} |")
     if len(relevant) > 12:
-        rows.append(f"| *(+{len(relevant) - 12} more)* | | |")
+        rows.append(f"| *(+{len(relevant) - 12} more)* | | | |")
     return "\n".join(rows)
 
 

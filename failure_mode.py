@@ -3051,9 +3051,9 @@ def _scan_file_sheaf_llm_unguarded(path: str) -> list[FailureEvidence]:
                 line=v.line,
                 call=f"{v.var_name}.{v.attr}[0]",
                 message=(
-                    f"Ȟ¹={v.h1_rank}: '{v.var_name}.{v.attr}[0]' is unguarded "
-                    f"across call boundaries in '{v.func}' — "
-                    "sheaf transport finds no guard in this function or its callers"
+                    f"'{v.var_name}.{v.attr}[0]' is unguarded in '{v.func}' "
+                    f"and in all functions that call it — "
+                    "no guard found anywhere in the call chain"
                 ),
                 spec_id=v.spec_id,
             )
@@ -3065,8 +3065,8 @@ SHEAF_LLM_UNGUARDED = FailureMode(
     name="sheaf_llm_unguarded",
     description=(
         "LLM response attribute access (.choices[0], .content[0]) that is unguarded "
-        "even after propagating guards interprocedurally via sheaf-cohomological "
-        "transport. Ȟ¹ > 0 means at least one independent guard is missing."
+        "in this function and in all functions that call it. "
+        "At least one independent guard is missing from the call chain."
     ),
     check=None,
     file_check=_scan_file_sheaf_llm_unguarded,
