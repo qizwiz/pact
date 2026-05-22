@@ -15,6 +15,7 @@ from .reduce import (
     compute_blast_radii,
     contract_sccs,
     eliminate_dead,
+    find_bridge_violations,
     transitive_reduce,
     find_hubs,
     find_passthroughs,
@@ -578,3 +579,106 @@ class TestBlastRadius:
         assert "mod.py" in s
         assert "optional_dereference" in s
         assert "blast=" in s
+
+
+class TestBetweennessAndBridgeViolations:
+    """Tests for betweenness centrality on ViolationWithBlast and find_bridge_violations."""
+
+    def test_betweenness_populated_on_bridge_node(self):
+        """A function that is the sole path between two halves of the graph
+        has non-zero betweenness centrality."""
+        # A → bridge → C, D → bridge → E: bridge lies on every path A↔C, D↔E
+        funcs = [
+            _func("A", line=1),
+            _func("bridge", line=10),
+            _func("C", line=20),
+        ]
+        calls = [_call("A", "bridge"), _call("bridge", "C")]
+        viols = [
+            Violation(
+                file="mod.py",
+                line=10,
+                call="bridge",
+                missing=["x"],
+                context="bare_except",
+            )
+        ]
+        ranked = compute_blast_radii(funcs, calls, viols)
+        assert len(ranked) == 1
+        assert ranked[0].betweenness > 0.0, "bridge node must have non-zero betweenness"
+
+    def test_leaf_node_has_zero_betweenness(self):
+        """A leaf node (no outgoing edges, single path) has betweenness=0."""
+        funcs = [_func("root", line=1), _func("leaf", line=10)]
+        calls = [_call("root", "leaf")]
+        viols = [
+            Violation(
+                file="mod.py",
+                line=10,
+                call="leaf",
+                missing=["x"],
+                context="bare_except",
+            )
+        ]
+        ranked = compute_blast_radii(funcs, calls, viols)
+        assert ranked[0].enclosing_func == "leaf"
+        assert ranked[0].betweenness == 0.0
+
+    def test_find_bridge_violations_returns_high_betweenness(self):
+        """find_bridge_violations returns only violations above the threshold."""
+        # Linear chain: A → B → C; B is the structural bridge
+        funcs = [_func("A", line=1), _func("B", line=10), _func("C", line=20)]
+        calls = [_call("A", "B"), _call("B", "C")]
+        v_B = Violation(
+            file="mod.py", line=10, call="B", missing=["x"], context="bare_except"
+        )
+        v_A = Violation(
+            file="mod.py", line=1, call="A", missing=["x"], context="bare_except"
+        )
+        bridges = find_bridge_violations(funcs, calls, [v_B, v_A], threshold=0.0)
+        # Both returned since threshold=0 includes all
+        assert len(bridges) == 2
+
+    def test_find_bridge_violations_threshold_filters_leaf(self):
+        """Violations in leaf nodes (betweenness=0) are excluded when threshold>0."""
+        funcs = [_func("A", line=1), _func("B", line=10), _func("C", line=20)]
+        calls = [_call("A", "B"), _call("B", "C")]
+        v_C = Violation(
+            file="mod.py", line=20, call="C", missing=["x"], context="bare_except"
+        )
+        bridges = find_bridge_violations(funcs, calls, [v_C], threshold=0.01)
+        assert len(bridges) == 0, "leaf C has betweenness=0, must be filtered"
+
+    def test_find_bridge_violations_sorted_by_betweenness(self):
+        """Returned violations are sorted descending by betweenness."""
+        # Diamond: A→B, A→C, B→D, C→D; D is the most-central sink
+        funcs = [
+            _func("A", line=1),
+            _func("B", line=10),
+            _func("C", line=20),
+            _func("D", line=30),
+        ]
+        calls = [_call("A", "B"), _call("A", "C"), _call("B", "D"), _call("C", "D")]
+        v_B = Violation(
+            file="mod.py", line=10, call="B", missing=["x"], context="bare_except"
+        )
+        v_C = Violation(
+            file="mod.py", line=20, call="C", missing=["x"], context="bare_except"
+        )
+        bridges = find_bridge_violations(funcs, calls, [v_B, v_C], threshold=0.0)
+        # Result must be sorted descending by betweenness
+        btwns = [r.betweenness for r in bridges]
+        assert btwns == sorted(btwns, reverse=True)
+
+    def test_summary_includes_betweenness_when_nonzero(self):
+        """ViolationWithBlast.summary() includes btw= when betweenness > 0."""
+        funcs = [_func("A", line=1), _func("B", line=10), _func("C", line=20)]
+        calls = [_call("A", "B"), _call("B", "C")]
+        viols = [
+            Violation(
+                file="mod.py", line=10, call="B", missing=["x"], context="bare_except"
+            )
+        ]
+        ranked = compute_blast_radii(funcs, calls, viols)
+        s = ranked[0].summary()
+        assert "btw=" in s, f"expected btw= in summary for bridge node; got: {s}"

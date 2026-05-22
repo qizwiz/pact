@@ -451,7 +451,13 @@ def _measure_blast_radii(
 ) -> tuple[list, int, int]:
     """Blast radius + SCC + hub analysis from reduce.py."""
     try:
-        from .reduce import compute_blast_radii, find_sccs, find_hubs, _build_digraph
+        from .reduce import (
+            compute_blast_radii,
+            find_bridge_violations,
+            find_sccs,
+            find_hubs,
+            _build_digraph,
+        )
         from .extractor import extract_from_codebase
 
         _, functions, call_sites = extract_from_codebase(target)
@@ -459,13 +465,22 @@ def _measure_blast_radii(
         blast = compute_blast_radii(functions, call_sites, checker_violations)
         top3 = [str(b) for b in sorted(blast, key=lambda b: -b.blast_radius)[:3]]
 
+        bridges = find_bridge_violations(functions, call_sites, checker_violations)
+
         G, func_by_name = _build_digraph(functions, call_sites)
         sccs_list = find_sccs(G, func_by_name, checker_violations) if G else []
         hubs_list = find_hubs(G, func_by_name, checker_violations) if G else []
 
         if verbose:
+            bridge_str = (
+                f"{len(bridges)} bridge violations "
+                f"(top: {bridges[0].enclosing_func} btw={bridges[0].betweenness:.3f})"
+                if bridges
+                else "0 bridge violations"
+            )
             print(
                 f"  reduce: {len(sccs_list)} SCCs, {len(hubs_list)} hubs, "
+                f"{bridge_str}, "
                 f"top blast: {top3[0][:60] if top3 else 'n/a'}"
             )
         return top3, len(sccs_list), len(hubs_list)

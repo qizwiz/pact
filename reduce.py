@@ -251,6 +251,7 @@ class ViolationWithBlast:
     blast_radius: int  # len(nx.ancestors(G, enclosing_func))
     enclosing_func: str  # function node name in the call graph
     reachable_from: frozenset[str]  # the ancestor set itself
+    betweenness: float = 0.0  # normalized betweenness centrality of enclosing_func
 
     def summary(self, show_callers: int = 3) -> str:
         v = self.violation
@@ -260,8 +261,9 @@ class ViolationWithBlast:
 
         filled = min(bar_width, round(math.log2(self.blast_radius + 1)))
         bar = "█" * filled + "░" * (bar_width - filled)
+        btw_str = f"  btw={self.betweenness:.3f}" if self.betweenness > 0 else ""
         lines = [
-            f"  {v.file}:{v.line}  [{v.context}]  blast={self.blast_radius} [{bar}]",
+            f"  {v.file}:{v.line}  [{v.context}]  blast={self.blast_radius} [{bar}]{btw_str}",
             f"    {v.call}  —  {', '.join(v.missing)}",
         ]
         if show_callers and self.reachable_from:
@@ -314,6 +316,12 @@ def compute_blast_radii(
             for v in violations
         ]
 
+    # Betweenness on undirected projection: captures structural chokepoints
+    # regardless of call direction.  Normalized so values are in [0, 1].
+    btw: dict[str, float] = nx.betweenness_centrality(
+        G.to_undirected(), normalized=True
+    )
+
     results: list[ViolationWithBlast] = []
     for v in violations:
         func = _func_for_violation(v, func_by_name)
@@ -325,6 +333,7 @@ def compute_blast_radii(
                     blast_radius=len(ancestors),
                     enclosing_func=func,
                     reachable_from=frozenset(ancestors),
+                    betweenness=btw.get(func, 0.0),
                 )
             )
         else:
@@ -334,10 +343,33 @@ def compute_blast_radii(
                     blast_radius=0,
                     enclosing_func=func or "",
                     reachable_from=frozenset(),
+                    betweenness=btw.get(func or "", 0.0),
                 )
             )
 
     return sorted(results, key=lambda r: -r.blast_radius)
+
+
+def find_bridge_violations(
+    functions: list[FunctionManifest],
+    call_sites: list[CallSite],
+    violations: list[Violation],
+    *,
+    threshold: float = 0.1,
+) -> list["ViolationWithBlast"]:
+    """Return violations in high-betweenness functions, sorted by betweenness desc.
+
+    A function with high betweenness centrality lies on many shortest paths
+    in the call graph — it is a structural bridge.  A violation there is more
+    critical than the same violation in a leaf: fixing it unblocks the most
+    transitive call chains.
+
+    ``threshold`` is the minimum normalized betweenness (0–1) to qualify.
+    Default 0.1 selects the top-decile of the graph's structural bridges.
+    """
+    ranked = compute_blast_radii(functions, call_sites, violations)
+    bridges = [r for r in ranked if r.betweenness >= threshold]
+    return sorted(bridges, key=lambda r: -r.betweenness)
 
 
 def find_sccs(
