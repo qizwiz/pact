@@ -225,6 +225,23 @@ class TestTLAGeneration:
         assert "INVARIANT OracleSafety" in cfg
         assert "PROPERTY Termination" in cfg
 
+    def test_formal_tla_spec_exists(self):
+        formal = Path(__file__).parent / "docs" / "tla" / "PactLoop.tla"
+        assert formal.exists(), "docs/tla/PactLoop.tla not found"
+        text = formal.read_text()
+        assert "FitnessMonotone" in text
+        assert "StuckDetection" in text or "Stuck" in text
+        assert "WF_vars" in text
+        assert "PhaseProgress" in text
+
+    def test_formal_cfg_has_all_properties(self):
+        cfg = Path(__file__).parent / "docs" / "tla" / "PactLoop.cfg"
+        assert cfg.exists()
+        text = cfg.read_text()
+        assert "INVARIANT OracleSafety" in text
+        assert "PROPERTY Termination" in text
+        assert "PROPERTY FitnessMonotone" in text
+
 
 # ---------------------------------------------------------------------------
 # ADR generation
