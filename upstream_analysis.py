@@ -192,7 +192,10 @@ def main():
     repo_files: dict[str, set] = defaultdict(set)
     with open(args.corpus) as f:
         for line in f:
-            d = json.loads(line)
+            try:
+                d = json.loads(line)
+            except (json.JSONDecodeError, ValueError):
+                continue
             repo = d["repo"]
             repo_violations[repo] += 1
             repo_stars[repo] = d.get("stars", 0)
@@ -214,7 +217,10 @@ def main():
     # Build: pkg → set of downstream repos (corpus repos that import this pkg)
     pkg_downstream: dict[str, set] = defaultdict(set)
     for f in cache_files:
-        d = json.loads(f.read_text())
+        try:
+            d = json.loads(f.read_text())
+        except (json.JSONDecodeError, ValueError):
+            continue
         importer_repo = d.get("repo", "")
         for pkg in d.get("imports", []):
             if pkg and pkg not in STDLIB:

@@ -39,7 +39,13 @@ def get_open_prs() -> list[dict]:
         text=True,
         check=True,
     )
-    return json.loads(result.stdout)
+    try:
+        return json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        raise ValueError(
+            f"Failed to parse 'gh pr list' output as JSON: {exc}
+Raw output: {result.stdout!r}"
+        ) from exc
 
 
 def scan_branch(pr: dict, worktree_base: Path) -> dict:

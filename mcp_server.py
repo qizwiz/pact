@@ -190,7 +190,10 @@ def _tool_pact_heal(params: dict) -> dict:
 
     from .heal import heal_project
 
-    violations = json.loads(params["violations_json"])
+    try:
+        violations = json.loads(params["violations_json"])
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"violations_json is not valid JSON: {exc}") from exc
     project_root = Path(params["project_root"])
     api_key = _api_key()
 

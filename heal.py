@@ -741,7 +741,12 @@ def heal_project(
     """
     key = _get_key(api_key)
 
-    raw = json.loads(violations_path.read_text(encoding="utf-8"))
+    try:
+        raw = json.loads(violations_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ValueError(
+            f"violations file is not valid JSON: {violations_path}: {exc}"
+        ) from exc
     modules = raw.get("modules", [])
 
     # Build invariant index

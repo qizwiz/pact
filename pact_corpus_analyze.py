@@ -159,8 +159,8 @@ def analyze_entry(entry: dict, token: str) -> AnalyzedEntry:
                         else:
                             if result.cfg_proved is None:
                                 result.cfg_proved = True
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        result.error = f"cfg: {e}"
 
         # Synthesis readiness: unguarded sheaf violation + has streaming → synthesizable
         if result.h1_rank and result.h1_rank > 0 and result.has_streaming_pattern:
@@ -196,7 +196,10 @@ def analyze_corpus(
     candidates = []
     with open(corpus_path) as f:
         for line in f:
-            d = json.loads(line)
+            try:
+                d = json.loads(line)
+            except json.JSONDecodeError:
+                continue
             if d.get("mode") not in modes:
                 continue
             if d.get("stars", 0) < min_stars:
@@ -206,7 +209,6 @@ def analyze_corpus(
                 continue
             seen.add(key)
             candidates.append(d)
-
     # Sort by stars desc, take top max_repos unique repos
     repo_seen = set()
     filtered = []

@@ -325,8 +325,14 @@ def _measure_sheaf(target: Path, verbose: bool) -> int:
                 error_sites = sg.error_sites()
                 if error_sites:
                     total_rank += len(error_sites)
-            except Exception:
-                pass
+            except Exception as _file_exc:
+                import warnings
+
+                warnings.warn(
+                    f"pact_sheaf: skipped {fpath} ({_file_exc})",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
 
         if verbose:
             print(f"  sheaf: Ȟ¹ rank ≈ {total_rank} (min independent fixes)")
@@ -358,7 +364,8 @@ def _measure_tda(target: Path, violations_doc: dict, verbose: bool) -> float:
         if not all_viols:
             return 1.0
 
-        scores = score_violations(all_viols, cg, verbose=False)
+        pairs = score_violations(cg, all_viols)
+        scores = [ts for _, ts in pairs if ts is not None]
         if not scores:
             return 0.5
 
@@ -392,8 +399,14 @@ def _measure_z3(target: Path, violations_doc: dict, verbose: bool) -> int:
                 # Feed facts and query
                 viols = eng.check(fpath, source, tree)
                 proved += len(viols) if viols else 0
-            except Exception:
-                pass
+            except Exception as exc:  # noqa: BLE001
+                import warnings
+
+                warnings.warn(
+                    f"z3-engine: skipped {fpath} ({exc})",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
 
         if verbose and proved:
             print(f"  z3-engine: {proved} formally proved violations")

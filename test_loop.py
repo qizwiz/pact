@@ -174,7 +174,10 @@ class TestIterationStateSerialization:
         s = IterationState(iteration=1)
         s.measure = MeasureResult(checker_total=5, checker_by_mode={"bare_except": 3})
         raw = json.dumps(dataclasses.asdict(s))
-        restored = json.loads(raw)
+        try:
+            restored = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            pytest.fail(f"json.loads raised JSONDecodeError: {exc}")
         assert restored["measure"]["checker_total"] == 5
 
     def test_loop_result_summary(self):

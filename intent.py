@@ -805,7 +805,12 @@ def dead_code_audit(
     """
     key = _get_key(api_key)
 
-    raw_intent = json.loads(intent_path.read_text(encoding="utf-8"))
+    try:
+        raw_intent = json.loads(intent_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ValueError(
+            f"dead_code_audit: intent file is not valid JSON: {intent_path} — {exc}"
+        ) from exc
     summaries = raw_intent.get("modules", [])
     essence = raw_intent.get("project_summary", "")
 

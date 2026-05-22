@@ -119,7 +119,12 @@ def main():
     all_repos: set[str] = set()
     with open(args.corpus) as f:
         for line in f:
-            d = json.loads(line)
+            try:
+                d = json.loads(line)
+            except json.JSONDecodeError as e:
+                import warnings
+                warnings.warn(f"Skipping malformed JSON line: {e}")
+                continue
             pairs[(d["repo"], d["file"])] = None
             all_repos.add(d["repo"])
 
@@ -137,7 +142,10 @@ def main():
     branch_cache_path = cache_dir / "branches.json"
     branch_cache: dict[str, str] = {}
     if branch_cache_path.exists():
-        branch_cache = json.loads(branch_cache_path.read_text())
+        try:
+            branch_cache = json.loads(branch_cache_path.read_text())
+        except json.JSONDecodeError:
+            branch_cache = {}
 
     # Fetch imports
     package_counter: Counter = Counter()
@@ -149,9 +157,13 @@ def main():
         cache_key = f"{repo}/{file_path}".replace("/", "__")
         cache_file = cache_dir / f"{cache_key}.json"
 
-        if cache_file.exists():
-            data = json.loads(cache_file.read_text())
-            imports = data.get("imports", [])
+          if cache_file.exists():
+              try:
+                  data = json.loads(cache_file.read_text())
+              except json.JSONDecodeError as e:
+                  import warnings
+                  warnings.warn(f"Corrupt cache file {cache_file}: {e}; ignoring.")
+                  data = {}            imports = data.get("imports", [])
         else:
             # Get default branch
             if repo not in branch_cache:
