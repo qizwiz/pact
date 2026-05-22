@@ -135,7 +135,7 @@ Five tools currently exposed. Any agent that speaks MCP (Claude Code, etc.) can 
 |---|---|---|
 | **TLC actually runs** | ❌ `validate_refinement()` does LLM symbolic replay, not TLC. `tlc_matches_prediction` is always `None` | Add `subprocess.run(["java", "-jar", "tla2tools.jar", ...])` in `validate_refinement()`; set `tlc_matches_prediction` from TLC stdout |
 | **TLC in CI** | ❌ No `java` in CI action | Add `uses: actions/setup-java@v4` + download `tla2tools.jar` in `ci.yml` |
-| **spec_learner self-improves** | ❌ Needs ≥2 bad records in corpus to fire `improve()`; currently 1 record | Build corpus from other known pact bugs (see below) |
+| **spec_learner self-improves** | ✅ Corpus now has 3 records (1 CATCHES_BUG + 2 MISSES_BUG); `improve()` activates | Run `scripts/seed_corpus.py` if corpus is missing |
 | **Loop failures → spec_learner** | ✅ `_record_heal_failure()` in `pact_loop.py` saves SpecGapRecord on ToolLoopExhausted | — |
 
 **spec_learner corpus building**: Every known pact bug class should have a gap record: bare_except (solved), json_loads_unguarded (solved), sheaf_llm_unguarded false positive (solved), cache_opacity (solved). Next: add records for `optional_dereference` and `save_without_update_fields` — these are the two largest violation classes in the dogfood run and are NOT yet in the spec_learner corpus.
@@ -274,7 +274,7 @@ Every capability that uses an LLM prompt should have a `*_improve.md` companion 
 
 9. **Make TLC actually run** — In `spec_learner.validate_refinement()`, add `subprocess.run(["java", "-jar", TLA2TOOLS, ...])` and parse output. Set `tlc_matches_prediction` from ground truth.
 
-10. **Build spec_learner corpus** — Run `spec_learner.analyze_gap()` on `optional_dereference` and `save_without_update_fields`. Need 2+ CATCHES_BUG records before `improve()` activates.
+10. ✅ **Build spec_learner corpus** — `scripts/seed_corpus.py` adds MISSES_BUG records for `optional_dereference` (nullable-path cluster gap) and `save_without_update_fields` (Django ORM field-set gap). Corpus now has 3 records (1 CATCHES_BUG + 2 MISSES_BUG). `spec_learner.improve()` now activates (needs ≥2 MISSES_BUG records).
 
 11. **Expose `pact_tda` + `pact_sheaf` as MCP tools** — 2 more MCP tools. Unblocks Claude Code calling topology and sheaf analysis directly.
 
