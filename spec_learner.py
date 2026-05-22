@@ -105,7 +105,12 @@ def _call(prompt: str, model: str, key: str) -> dict:
     if text.startswith("```"):
         text = text.split("\n", 1)[1] if "\n" in text else text[3:]
         text = text.rsplit("```", 1)[0].strip()
-    return json.loads(text)
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise ValueError(
+            f"LLM returned invalid JSON: {exc}\n\nRaw text:\n{text}"
+        ) from exc
 
 
 def _render(template_name: str, **kwargs) -> str:
