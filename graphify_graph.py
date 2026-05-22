@@ -132,16 +132,19 @@ class CallGraph:
     def _from_ast(cls, root: Path) -> "CallGraph | None":
         """Build a minimal CallGraph by walking Python AST — no graphify needed.
 
-        Creates one node per function definition and one 'call' link per
-        function call that resolves to a known function name in the same scope.
-        Only same-file calls are indexed (no cross-file resolution).
+        Pass 1: index all function definitions across all files.
+        Pass 2: build same-file call edges.
+        Pass 3: follow `from module import name` and `import module` edges to
+                cross-file calls (module-name prefix resolution).
+
+        This is less accurate than graphify (no type inference, no dynamic calls)
+        but gives a usable inter-module call graph for topology scoring.
         """
         import ast as _ast
 
         nodes: list[dict] = []
         links: list[dict] = []
         node_counter = 0
-        func_name_to_id: dict[str, str] = {}  # func_name → node_id (last seen)
 
         skip_dirs = frozenset(
             {
@@ -163,61 +166,98 @@ class CallGraph:
             )
         ][
             :200
-        ]  # cap at 200 files to avoid huge graphs on big projects
+        ]  # cap to avoid huge graphs on large projects
+
+        # Pass 1: collect all function definitions globally
+        # global_func_index: func_name → node_id (first definition wins)
+        # file_defs: fpath → {func_name → node_id}
+        global_func_index: dict[str, str] = {}
+        file_defs: dict[str, dict[str, str]] = {}
+        file_trees: dict[str, "_ast.Module"] = {}
 
         for fpath in py_files:
             try:
                 source = fpath.read_text(encoding="utf-8", errors="replace")
                 tree = _ast.parse(source, filename=str(fpath))
+                file_trees[str(fpath)] = tree
             except (SyntaxError, OSError):
                 continue
 
-            # First pass: collect all function definitions in this file
-            file_func_ids: dict[str, str] = {}
+            local: dict[str, str] = {}
             for node in _ast.walk(tree):
                 if isinstance(node, (_ast.FunctionDef, _ast.AsyncFunctionDef)):
                     nid = f"fn_{node_counter}"
                     node_counter += 1
-                    label = f"{node.name}()"
-                    loc = str(node.lineno)
                     nodes.append(
                         {
                             "id": nid,
-                            "label": label,
+                            "label": f"{node.name}()",
                             "source_file": str(fpath),
-                            "source_location": loc,
+                            "source_location": str(node.lineno),
                         }
                     )
-                    file_func_ids[node.name] = nid
-                    func_name_to_id[node.name] = nid
+                    local[node.name] = nid
+                    global_func_index.setdefault(node.name, nid)
+            file_defs[str(fpath)] = local
 
-            # Second pass: emit call links for calls to known functions
+        # Pass 2 + 3: emit call edges (same-file + cross-file via imports)
+        for fpath_str, tree in file_trees.items():
+            local = file_defs.get(fpath_str, {})
+
+            # Build import name → function_ids mapping for this file
+            # `from foo import bar` → bar resolves to global_func_index["bar"]
+            # `import foo; foo.bar()` → bar resolves to global_func_index["bar"]
+            import_aliases: dict[str, str] = {}  # local_name → canonical func_name
+            for node in _ast.walk(tree):
+                if isinstance(node, _ast.ImportFrom):
+                    for alias in node.names:
+                        local_name = alias.asname or alias.name
+                        import_aliases[local_name] = alias.name
+                elif isinstance(node, _ast.Import):
+                    for alias in node.names:
+                        local_name = alias.asname or alias.name
+                        import_aliases[local_name] = alias.name
+
             for node in _ast.walk(tree):
                 if not isinstance(node, (_ast.FunctionDef, _ast.AsyncFunctionDef)):
                     continue
-                src_id = file_func_ids.get(node.name)
+                src_id = local.get(node.name)
                 if src_id is None:
                     continue
+
                 for child in _ast.walk(node):
-                    if isinstance(child, _ast.Call):
-                        callee_name = ""
-                        if isinstance(child.func, _ast.Name):
-                            callee_name = child.func.id
-                        elif isinstance(child.func, _ast.Attribute):
-                            callee_name = child.func.attr
-                        tgt_id = file_func_ids.get(callee_name)
-                        if tgt_id and tgt_id != src_id:
-                            links.append(
-                                {
-                                    "source": src_id,
-                                    "target": tgt_id,
-                                    "context": "call",
-                                    "source_file": str(fpath),
-                                    "source_location": str(
-                                        getattr(child, "lineno", "")
-                                    ),
-                                }
-                            )
+                    if not isinstance(child, _ast.Call):
+                        continue
+
+                    callee_name = ""
+                    if isinstance(child.func, _ast.Name):
+                        callee_name = child.func.id
+                    elif isinstance(child.func, _ast.Attribute):
+                        # `module.func()` — try to resolve module import
+                        attr = child.func.attr
+                        callee_name = attr
+
+                    if not callee_name:
+                        continue
+
+                    # Resolve: same-file first, then imported, then global
+                    tgt_id = local.get(callee_name)
+                    if tgt_id is None:
+                        canon = import_aliases.get(callee_name, callee_name)
+                        tgt_id = global_func_index.get(canon)
+                        if tgt_id is None:
+                            tgt_id = global_func_index.get(callee_name)
+
+                    if tgt_id and tgt_id != src_id:
+                        links.append(
+                            {
+                                "source": src_id,
+                                "target": tgt_id,
+                                "context": "call",
+                                "source_file": fpath_str,
+                                "source_location": str(getattr(child, "lineno", "")),
+                            }
+                        )
 
         if not nodes:
             return None
