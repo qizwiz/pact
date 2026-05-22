@@ -918,6 +918,7 @@ def dead_code_audit(
     model: str = _DEFAULT_MODEL,
     api_key: Optional[str] = None,
     verbose: bool = False,
+    improve: bool = False,
 ) -> dict:
     """
     Identify structurally superseded code given the current architecture.
@@ -952,20 +953,81 @@ def dead_code_audit(
 
     try:
         result = _call_with_tools(prompt, model, key, max_tokens=6144)
+        candidates = result.get("dead_code_candidates", [])
+        patches = result.get("removal_patches", [])
+        flags = result.get("high_risk_flags", [])
         if verbose:
-            candidates = result.get("dead_code_candidates", [])
-            patches = result.get("removal_patches", [])
-            flags = result.get("high_risk_flags", [])
             print(
                 f"[dead_code] {len(candidates)} candidates, "
                 f"{len(patches)} removal patches, "
                 f"{len(flags)} high-risk flags"
+            )
+        if improve:
+            _improve_dead_code_prompt(
+                candidates, patches, summaries, model, key, verbose
             )
         return result
     except Exception as exc:
         if verbose:
             print(f"[dead_code] failed: {exc}")
         return {}
+
+
+def _improve_dead_code_prompt(
+    candidates: list[dict],
+    patches: list[dict],
+    module_summaries: list[dict],
+    model: str,
+    key: str,
+    verbose: bool,
+) -> None:
+    """Score dead_code prompt quality and rewrite if output is empty or risky."""
+    # Underperforming: zero candidates despite having modules, or false positives
+    false_positives = [
+        c for c in candidates if c.get("risk") == "LOW" and c.get("remaining_callers")
+    ]
+    no_replacement = [c for c in candidates if not c.get("replacement")]
+
+    failure_signals_parts = []
+    if len(candidates) == 0 and len(module_summaries) > 3:
+        failure_signals_parts.append(
+            f"empty_result: 0 candidates from {len(module_summaries)} modules"
+        )
+    for c in false_positives:
+        callers = c.get("remaining_callers", [])
+        failure_signals_parts.append(
+            f"risk_mislabel: {c.get('name')} marked LOW but has remaining_callers: {callers[:2]}"
+        )
+    for c in no_replacement:
+        failure_signals_parts.append(
+            f"no_replacement_named: {c.get('name')} lacks a specific replacement"
+        )
+
+    if not failure_signals_parts:
+        return  # output looks clean
+
+    try:
+        template = _load_prompt("dead_code_improve")
+        prompt = _render(
+            template,
+            prompt_text=_load_prompt("dead_code"),
+            candidates_sample=json.dumps(candidates[:4], indent=2),
+            patches_sample=json.dumps(patches[:3], indent=2),
+            failure_signals="\n".join(failure_signals_parts),
+        )
+        raw = _call(prompt, model, key, max_tokens=8192)
+        improved = raw.get("improved_prompt", "")
+        overall = raw.get("overall_score", 0.0)
+        if improved and overall < 0.8:
+            _save_prompt("dead_code", improved)
+            if verbose:
+                print(
+                    f"\n[dead_code] ✓ dead_code prompt rewritten "
+                    f"(score was {overall:.2f}, {len(failure_signals_parts)} failure signals)"
+                )
+    except Exception as exc:
+        if verbose:
+            print(f"\n[dead_code] prompt improvement failed: {exc}")
 
 
 # ---------------------------------------------------------------------------
