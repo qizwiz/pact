@@ -400,6 +400,12 @@ def main(argv=None) -> int:
         _context_main(argv[1:])
         return 0
 
+    if argv and argv[0] == "loop":
+        from .pact_loop import main as _loop_main
+
+        _loop_main(argv[1:])
+        return 0
+
     p = argparse.ArgumentParser(
         prog="pact",
         description="Python AST Constraint Tool — verify constraints across a codebase using Z3.",
