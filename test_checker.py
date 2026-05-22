@@ -5044,3 +5044,88 @@ def test_callgraph_community_of_unknown_returns_none(tmp_path):
     g = CallGraph([], [])
     assert g.community_of("no_such_func", "no_such_file.py") is None
     assert g.community_label_for(999) == ""
+
+
+def _semgrep_available():
+    import shutil
+
+    return bool(shutil.which("semgrep"))
+
+
+def test_semgrep_json_loads_unguarded_detected(tmp_path):
+    """semgrep json-loads rule flags bare json.loads() without guard."""
+    if not _semgrep_available():
+        import pytest
+
+        pytest.skip("semgrep not installed")
+    from .checker import _run_semgrep
+
+    (tmp_path / "parse.py").write_text(
+        "import json\n" "def bad(text):\n" "    return json.loads(text)\n"
+    )
+    results = _run_semgrep(tmp_path)
+    jl = [r for r in results if r.context == "json_loads_unguarded"]
+    assert len(jl) == 1, f"expected 1 json_loads finding; got {len(jl)}"
+    assert jl[0].spec_id == "semgrep"
+
+
+def test_semgrep_json_loads_guarded_not_flagged(tmp_path):
+    """semgrep json-loads rule skips json.loads() inside try/except ValueError."""
+    if not _semgrep_available():
+        import pytest
+
+        pytest.skip("semgrep not installed")
+    from .checker import _run_semgrep
+
+    (tmp_path / "parse.py").write_text(
+        "import json\n"
+        "def ok(text):\n"
+        "    try:\n"
+        "        return json.loads(text)\n"
+        "    except (json.JSONDecodeError, ValueError) as e:\n"
+        "        return {}\n"
+    )
+    results = _run_semgrep(tmp_path)
+    jl = [r for r in results if r.context == "json_loads_unguarded"]
+    assert not jl, f"guarded json.loads must not be flagged; got {jl}"
+
+
+def test_semgrep_bare_except_detected(tmp_path):
+    """semgrep bare-except rule flags bare except: blocks."""
+    if not _semgrep_available():
+        import pytest
+
+        pytest.skip("semgrep not installed")
+    from .checker import _run_semgrep
+
+    (tmp_path / "exc.py").write_text(
+        "def bad():\n"
+        "    try:\n"
+        "        do_something()\n"
+        "    except:\n"
+        "        pass\n"
+    )
+    results = _run_semgrep(tmp_path)
+    be = [r for r in results if r.context == "bare_except"]
+    assert len(be) == 1, f"expected 1 bare_except finding; got {len(be)}"
+    assert be[0].spec_id == "semgrep"
+
+
+def test_semgrep_bare_except_reraise_not_flagged(tmp_path):
+    """semgrep bare-except rule suppresses pure bare except: raise."""
+    if not _semgrep_available():
+        import pytest
+
+        pytest.skip("semgrep not installed")
+    from .checker import _run_semgrep
+
+    (tmp_path / "exc.py").write_text(
+        "def ok():\n"
+        "    try:\n"
+        "        do_something()\n"
+        "    except:\n"
+        "        raise\n"
+    )
+    results = _run_semgrep(tmp_path)
+    be = [r for r in results if r.context == "bare_except"]
+    assert not be, f"bare except: raise should not be flagged; got {be}"

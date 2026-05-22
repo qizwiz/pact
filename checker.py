@@ -238,9 +238,9 @@ _SEMGREP_RULE_TO_MODE: dict[str, str] = {
     "llm-response-unguarded-choices": "llm_response_unguarded",
     "llm-response-unguarded": "llm_response_unguarded",
     "json-loads-unguarded": "json_loads_unguarded",
-    "optional-dereference": "optional_dereference",
-    "missing-await": "missing_await",
     "bare-except": "bare_except",
+    # "optional-dereference": no semgrep rule yet (needs .first()/.get() chain awareness)
+    # "missing-await": no semgrep rule (semgrep cannot know which callables are async)
 }
 
 
@@ -324,6 +324,42 @@ def _run_semgrep(root: Path) -> list[Violation]:
                 return True
         return False
 
+    def _is_bare_except_reraise(path: str, end_line_1based: int) -> bool:
+        """Return True if the bare-except block ends with only a bare `raise`.
+
+        Scans backward from end_line to find the `except:` header, then checks
+        if the sole body statement is `raise`.  Suppresses the false positive
+        that semgrep's structural pattern cannot exclude.
+        """
+        lines = _file_lines.get(path, [])
+        # Search backward from end of match for the except: line
+        for i in range(min(end_line_1based - 1, len(lines) - 1), -1, -1):
+            stripped = lines[i].strip()
+            if stripped == "except:":
+                except_indent = len(lines[i]) - len(lines[i].lstrip())
+                # Check the next non-blank line
+                for j in range(i + 1, min(i + 10, len(lines))):
+                    body_stripped = lines[j].strip()
+                    if not body_stripped:
+                        continue
+                    body_indent = len(lines[j]) - len(lines[j].lstrip())
+                    if body_indent <= except_indent:
+                        break  # end of except body
+                    if body_stripped == "raise":
+                        # Verify no further statements in the body
+                        for k in range(j + 1, min(j + 5, len(lines))):
+                            ks = lines[k].strip()
+                            if not ks:
+                                continue
+                            ki = len(lines[k]) - len(lines[k].lstrip())
+                            if ki > except_indent:
+                                return False  # more body statements — not pure reraise
+                            break
+                        return True
+                    return False  # first body stmt is not raise
+                break
+        return False
+
     results: list[Violation] = []
     for finding in data.get("results", []):
         rule_id = finding.get("check_id", "").split(".")[-1]
@@ -345,6 +381,27 @@ def _run_semgrep(root: Path) -> list[Violation]:
                 var_name = call.split(".choices[0]")[0].strip().lstrip("(")
             if var_name and _sibling_guarded(path, line, var_name):
                 continue
+
+        # Suppress bare-except false positive: `except: raise` is a pure re-raise
+        # (semgrep structural patterns cannot exclude it, so filter in Python).
+        if mode == "bare_except" and _is_bare_except_reraise(
+            path, end.get("line", line)
+        ):
+            continue
+
+        # Skip vendor/third-party directories
+        if any(seg in path for seg in ("/_vendor/", "/vendor/", "/site-packages/")):
+            continue
+
+        # Respect # noqa — check from start line to end line of the match span
+        _file_lines_cache = _file_lines.get(path, [])
+        end_line = end.get("line", line)
+        if _file_lines_cache and any(
+            "# noqa" in _file_lines_cache[i]
+            for i in range(line - 1, min(end_line, len(_file_lines_cache)))
+            if 0 <= i < len(_file_lines_cache)
+        ):
+            continue
 
         results.append(
             Violation(

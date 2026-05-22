@@ -1,0 +1,32 @@
+rules:
+  - id: bare-except
+    pattern: |
+      try:
+        ...
+      except:
+        ...
+    message: |
+      Bare `except:` catches ALL exceptions including `KeyboardInterrupt`,
+      `SystemExit`, and `GeneratorExit` — exceptions the runtime needs to
+      clean up processes and threads cleanly.
+
+      This makes the process impossible to kill with Ctrl-C, prevents clean
+      shutdown, and swallows programming errors (NameError, AttributeError)
+      that should be reported.
+
+      **Known non-issue**: `except: raise` (pure re-raise) is excluded by
+      pact's post-filter — semgrep's structural pattern cannot exclude it
+      natively, but the Python integration layer suppresses it.
+
+      Fix: replace with a typed handler:
+        except Exception:        # catches all non-system exceptions
+            log.exception("...")  # log before suppressing
+    languages: [python]
+    severity: WARNING
+    metadata:
+      category: correctness
+      technology: [python]
+      cwe: "CWE-390: Detection of Error Condition Without Action"
+      references:
+        - https://github.com/qizwiz/pact
+      confidence: HIGH

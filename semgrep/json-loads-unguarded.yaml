@@ -1,0 +1,87 @@
+rules:
+  - id: json-loads-unguarded
+    patterns:
+      - pattern: json.loads(...)
+      # Exclude guarded try blocks — both bare handler and `as $ALIAS` forms.
+      - pattern-not-inside: |
+          try:
+            ...
+          except json.JSONDecodeError:
+            ...
+      - pattern-not-inside: |
+          try:
+            ...
+          except json.JSONDecodeError as $ALIAS:
+            ...
+      - pattern-not-inside: |
+          try:
+            ...
+          except ValueError:
+            ...
+      - pattern-not-inside: |
+          try:
+            ...
+          except ValueError as $ALIAS:
+            ...
+      - pattern-not-inside: |
+          try:
+            ...
+          except (json.JSONDecodeError, ValueError):
+            ...
+      - pattern-not-inside: |
+          try:
+            ...
+          except (json.JSONDecodeError, ValueError) as $ALIAS:
+            ...
+      - pattern-not-inside: |
+          try:
+            ...
+          except (ValueError, json.JSONDecodeError):
+            ...
+      - pattern-not-inside: |
+          try:
+            ...
+          except (ValueError, json.JSONDecodeError) as $ALIAS:
+            ...
+      - pattern-not-inside: |
+          try:
+            ...
+          except Exception:
+            ...
+      - pattern-not-inside: |
+          try:
+            ...
+          except Exception as $ALIAS:
+            ...
+      - pattern-not-inside: |
+          try:
+            ...
+          except BaseException:
+            ...
+      - pattern-not-inside: |
+          try:
+            ...
+          except BaseException as $ALIAS:
+            ...
+    message: |
+      `json.loads(...)` called without a surrounding `try/except` that catches
+      `json.JSONDecodeError` or `ValueError`.
+
+      LLM and API responses frequently return malformed JSON (truncated output,
+      markdown fences, trailing commas, control characters). An unguarded parse
+      raises `ValueError: Expecting value` at runtime.
+
+      Guard pattern:
+        try:
+            data = json.loads(text)
+        except (json.JSONDecodeError, ValueError):
+            data = {}  # handle invalid JSON
+    languages: [python]
+    severity: WARNING
+    metadata:
+      category: correctness
+      technology: [python, json, llm]
+      cwe: "CWE-755: Improper Handling of Exceptional Conditions"
+      references:
+        - https://github.com/qizwiz/pact
+      confidence: HIGH

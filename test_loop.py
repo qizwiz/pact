@@ -379,7 +379,11 @@ class TestCacheInvalidation:
 
         # Inject a bare except (without clearing — stale cache returns no violations)
         f.write_text("try:\n    pass\nexcept:\n    pass\n")
-        still_empty = [r for r in check_codebase(tmp_path) if r.file == str(f)]
+        still_empty = [
+            r
+            for r in check_codebase(tmp_path)
+            if r.file == str(f) and getattr(r, "spec_id", None) != "semgrep"
+        ]
 
         # Clear caches and re-scan — must see the new violation
         clear_file_caches()
