@@ -152,6 +152,48 @@ _TOOLS = [
             "required": ["path"],
         },
     },
+    {
+        "name": "pact_loop",
+        "description": (
+            "Full autonomous self-improvement loop. Runs measure → heal → check "
+            "until convergence (PROVED_CLEAN | CONVERGED | STUCK | TIMEOUT). "
+            "Uses Z3 Optimize for minimum-coverage fix ordering, PageRank for "
+            "call-graph priority, and spec_learner for TLA+ gap recording. "
+            "Returns a LoopResult with termination reason, violation trajectory, "
+            "fitness history, and generated ADRs. Requires ANTHROPIC_API_KEY."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "target": {
+                    "type": "string",
+                    "description": "Absolute path to directory to improve",
+                },
+                "test_cmd": {
+                    "type": "string",
+                    "description": "Shell command to run as oracle (e.g. 'pytest tests/ -x -q')",
+                    "default": "",
+                },
+                "max_iters": {
+                    "type": "integer",
+                    "description": "Maximum iterations before TIMEOUT (default 10 for MCP)",
+                    "default": 10,
+                },
+                "severity": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "default": ["critical", "high"],
+                    "description": "Violation severity levels to heal",
+                },
+                "verbose": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "Emit detailed per-phase progress logs",
+                },
+            },
+            "required": ["target"],
+        },
+    },
 ]
 
 
@@ -283,6 +325,52 @@ def _tool_pact_check(params: dict) -> dict:
     return {"project": path.name, "generated_by": "pact.checker", "modules": modules}
 
 
+def _tool_pact_loop(params: dict) -> dict:
+    from .pact_loop import main as loop_main
+
+    target = params["target"]
+    test_cmd = params.get("test_cmd", "")
+    max_iters = params.get("max_iters", 10)
+    severity = params.get("severity", ["critical", "high"])
+    verbose = params.get("verbose", False)
+    api_key = _api_key()
+
+    argv = [target, "--max-iters", str(max_iters)]
+    if test_cmd:
+        argv += ["--test-cmd", test_cmd]
+    for s in severity:
+        argv += ["--severity", s]
+    if verbose:
+        argv.append("--verbose")
+    # Pass API key via environment (already set for _api_key() call)
+
+    import io
+    import sys
+    import os
+
+    old_env = os.environ.get("ANTHROPIC_API_KEY", "")
+    os.environ["ANTHROPIC_API_KEY"] = api_key
+
+    buf = io.StringIO()
+    old_stdout = sys.stdout
+    sys.stdout = buf
+    try:
+        exit_code = loop_main(argv)
+    except SystemExit as exc:
+        exit_code = exc.code or 0
+    finally:
+        sys.stdout = old_stdout
+        if old_env:
+            os.environ["ANTHROPIC_API_KEY"] = old_env
+
+    output = buf.getvalue()
+    return {
+        "exit_code": exit_code,
+        "output": output,
+        "target": target,
+    }
+
+
 def _api_key() -> str:
     import os
 
@@ -297,6 +385,7 @@ _DISPATCH = {
     "pact_find": _tool_pact_find,
     "pact_heal": _tool_pact_heal,
     "pact_check": _tool_pact_check,
+    "pact_loop": _tool_pact_loop,
 }
 
 # ---------------------------------------------------------------------------
