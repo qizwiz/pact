@@ -233,3 +233,58 @@ def do_work():
         spec = _spec(src)
         assert "task_state" in spec
         assert "WF_<<task_state>>(Next)" in spec
+
+
+# ---------------------------------------------------------------------------
+# TLC ground-truth execution
+# ---------------------------------------------------------------------------
+
+# Minimal self-contained TLA+ spec with no CONSTANTS and a finite state space
+# (2 states: flag \in BOOLEAN).  Uses only built-in TLA+ — no EXTENDS needed.
+_MINIMAL_CLEAN_SPEC = """\
+----------------------------- MODULE PactToggle -----------------------------
+VARIABLES flag
+Init == flag = FALSE
+Next == flag' = ~flag
+Spec == Init /\\ [][Next]_flag
+TypeInvariant == flag \\in BOOLEAN
+=============================================================================
+"""
+
+
+def _tlc_available() -> bool:
+    import shutil
+    from pathlib import Path
+
+    return (
+        bool(shutil.which("java"))
+        and (Path.home() / ".local" / "share" / "tla2tools.jar").exists()
+    )
+
+
+def test_run_tlc_clean_spec():
+    """TLC reports CLEAN for a simple counter spec with no violations."""
+    if not _tlc_available():
+        import pytest
+
+        pytest.skip("java or tla2tools.jar not available")
+
+    from .spec_learner import SpecGapRecord, _run_tlc_on_spec
+
+    record = SpecGapRecord(
+        tla_spec_text=_MINIMAL_CLEAN_SPEC,
+        tlc_config_additions="INVARIANTS TypeInvariant",
+    )
+    result = _run_tlc_on_spec(record, verbose=False)
+    assert (
+        result.tlc_actual_result == "CLEAN"
+    ), f"counter spec should be clean; got: {result.tlc_actual_result}"
+
+
+def test_run_tlc_skips_when_no_spec():
+    """_run_tlc_on_spec is a no-op when tla_spec_text is empty."""
+    from .spec_learner import SpecGapRecord, _run_tlc_on_spec
+
+    record = SpecGapRecord(tla_spec_text="")
+    result = _run_tlc_on_spec(record, verbose=False)
+    assert result.tlc_actual_result == ""

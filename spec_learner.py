@@ -255,6 +255,115 @@ def validate_refinement(
     except Exception as exc:
         if verbose:
             print(f"  spec_validate failed: {exc}")
+
+    # Ground-truth TLC check — runs only when the record has a spec and a
+    # tla_spec_path that we can pass to TLC (or when we can locate a .tla
+    # file next to the source file being analysed).
+    if record.tla_spec_text:
+        record = _run_tlc_on_spec(record, verbose=verbose)
+
+    return record
+
+
+def _run_tlc_on_spec(record: "SpecGapRecord", verbose: bool = False) -> "SpecGapRecord":
+    """Write spec+config to a temp dir, run TLC, parse result, update record.
+
+    TLC is expected at ``java -jar ~/.local/share/tla2tools.jar`` (standard
+    pact dev setup).  Silently skips if java or the jar are unavailable.
+    """
+    import shutil
+    import subprocess
+    import tempfile
+
+    java = shutil.which("java")
+    jar = Path.home() / ".local" / "share" / "tla2tools.jar"
+    if not java or not jar.exists():
+        return record
+
+    # The spec text the LLM produced (may include new_invariants and actions)
+    spec_text = record.tla_spec_text.strip()
+    if not spec_text:
+        return record
+
+    # Derive a module name from the first MODULE line or fall back to Spec
+    import re
+
+    m = re.search(r"MODULE\s+(\w+)", spec_text)
+    module_name = m.group(1) if m else "PactSpec"
+
+    # Emit new_invariants and modified_actions as extra TLA+ operators appended
+    # to the spec (before the final ====)
+    extras: list[str] = []
+    for inv in record.new_invariants:
+        name = inv.get("name", "")
+        tla = inv.get("tla", "")
+        if name and tla:
+            extras.append(f"\n{name} == {tla}")
+    for act in record.modified_actions:
+        action = act.get("action", "")
+        tla = act.get("tla", "")
+        if action and tla:
+            extras.append(f"\n{action} ==\n{tla}")
+
+    if extras:
+        spec_text = re.sub(r"={4,}\s*$", "\n".join(extras) + "\n" + "=" * 77, spec_text)
+
+    # Build a minimal cfg from tlc_config_additions (if any) plus SPECIFICATION
+    cfg_lines = ["SPECIFICATION Spec"]
+    if record.tlc_config_additions.strip():
+        cfg_lines.append(record.tlc_config_additions.strip())
+    # Add invariants we injected
+    inv_names = [
+        inv.get("name", "") for inv in record.new_invariants if inv.get("name")
+    ]
+    if inv_names:
+        cfg_lines.append("INVARIANTS " + " ".join(inv_names))
+    cfg_text = "\n".join(cfg_lines)
+
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            tla_path = Path(tmp) / f"{module_name}.tla"
+            cfg_path = Path(tmp) / f"{module_name}.cfg"
+            tla_path.write_text(spec_text, encoding="utf-8")
+            cfg_path.write_text(cfg_text, encoding="utf-8")
+
+            proc = subprocess.run(
+                [
+                    java,
+                    "-XX:+UseParallelGC",
+                    "-jar",
+                    str(jar),
+                    "-config",
+                    str(cfg_path),
+                    "-deadlock",
+                    str(tla_path),
+                ],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            output = proc.stdout + proc.stderr
+            if verbose:
+                print(f"  tlc: exit={proc.returncode}, output={output[-200:]!r}")
+
+            no_error = "No error has been found" in output
+            error_found = "Error:" in output and not no_error
+            record.tlc_actual_result = (
+                "CLEAN" if no_error else ("ERROR" if error_found else "UNKNOWN")
+            )
+            # Does TLC agree with the LLM verdict?
+            llm_says_catches = record.verdict == "CATCHES_BUG"
+            record.tlc_matches_prediction = (llm_says_catches and error_found) or (
+                not llm_says_catches and no_error
+            )
+            if verbose:
+                print(
+                    f"  tlc: {record.tlc_actual_result}, matches_prediction={record.tlc_matches_prediction}"
+                )
+    except Exception as exc:
+        if verbose:
+            print(f"  tlc: skipped ({exc})")
+
     return record
 
 
