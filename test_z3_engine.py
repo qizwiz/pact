@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 
 
-from pact.z3_engine import LLMResponseEngine, PactEngine
+from pact.z3_engine import LLMResponseEngine, PactEngine, verify_file
 
 
 def _make_fixture(source: str) -> Path:
@@ -376,3 +376,79 @@ def test_llm_engine_str_unsafe():
     """)
     assert not result.proved_safe
     assert "UNSAFE" in str(result)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# verify_file — per-file Z3 patch certification
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+def _write_file(source: str) -> str:
+    """Write dedented source to a temp .py file, return its path."""
+    d = Path(tempfile.mkdtemp())
+    p = d / "code.py"
+    p.write_text(textwrap.dedent(source))
+    return str(p)
+
+
+def test_verify_file_proved_safe_on_guarded_code():
+    path = _write_file("""
+        def call_llm(client):
+            response = client.chat.completions.create(model="gpt-4o", messages=[])
+            if not response.choices:
+                return None
+            return response.choices[0].message.content
+    """)
+    result = verify_file(path)
+    assert result.proved_safe
+    assert result.violations == []
+
+
+def test_verify_file_unsafe_on_unguarded_code():
+    path = _write_file("""
+        def bad(client):
+            response = client.completions.create(model="gpt-4o", messages=[])
+            return response.choices[0].message.content
+    """)
+    result = verify_file(path)
+    assert not result.proved_safe
+    assert len(result.violations) >= 1
+
+
+def test_verify_file_safe_on_no_llm_calls():
+    path = _write_file("""
+        def pure_math(x, y):
+            return x + y
+    """)
+    result = verify_file(path)
+    assert result.proved_safe
+    assert result.scopes_analyzed == 0
+
+
+def test_verify_file_certifies_fixer_output(tmp_path):
+    """After fixer applies a guard, verify_file should prove the patched file safe."""
+    import sys
+
+    sys.path.insert(0, str(Path(__file__).parent))
+    from pact.failure_mode import FailureEvidence
+    from pact.fixer import fix_file
+
+    source = textwrap.dedent("""
+        def call_llm(client):
+            response = client.chat.completions.create(model="gpt-4o", messages=[])
+            return response.choices[0].message.content
+    """).lstrip()
+    f = tmp_path / "code.py"
+    f.write_text(source)
+    ev = FailureEvidence(
+        mode_name="llm_response_unguarded",
+        file=str(f),
+        line=3,
+        call="response.choices[0]",
+        message="",
+    )
+    result = fix_file(str(f), [ev])
+    assert result.changed
+    f.write_text(result.patched)
+    proof = verify_file(str(f))
+    assert proof.proved_safe, f"Z3 still finds violations after fix: {proof.violations}"

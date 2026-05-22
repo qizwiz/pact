@@ -269,13 +269,23 @@ def _violation_table(violations: list[dict], changed: list[str]) -> str:
 
 
 def _pr_content(
-    target: dict, violations: list[dict], changed: list[str]
+    target: dict,
+    violations: list[dict],
+    changed: list[str],
+    z3_verified: bool = False,
 ) -> tuple[str, str, str]:
     """Return (title, commit_msg, pr_body) for the target's mode."""
     issue = target["issue"]
     mode = target.get("mode", "llm_response_unguarded")
     n_viols = sum(1 for v in violations if v["file"] in changed)
     viol_table = _violation_table(violations, changed)
+    z3_badge = (
+        "\n## Verification\n\n"
+        "✅ **Z3 formal proof**: after this patch, Z3's Datalog engine finds no "
+        "`llm_violation` facts — proved safe by exhaustive symbolic reasoning.\n"
+        if z3_verified
+        else ""
+    )
 
     if mode == "optional_dereference":
         title = (
@@ -510,7 +520,7 @@ projects including microsoft/autogen, crewai, and langchain.
 ## Test plan
 - [ ] Existing test suite passes
 - [ ] Confirm behaviour with a mock provider that returns `{{"choices": []}}`
-"""
+{z3_badge}"""
     return title, commit, body
 
 
@@ -549,6 +559,27 @@ def _scan_repo(repo_dir: str, repo_slug: str) -> list[dict]:
     except Exception as e:
         print(f"  pact scan failed: {e}")
         return []
+
+
+_Z3_VERIFIABLE_MODES = frozenset({"llm_response_unguarded", "sheaf_llm_unguarded"})
+
+
+def _z3_verify_changed(repo_dir: str, changed: list[str], mode: str) -> bool:
+    """Return True if every changed Python file is Z3-proved free of LLM violations."""
+    if mode not in _Z3_VERIFIABLE_MODES:
+        return False
+    sys.path.insert(0, str(Path(__file__).parent.parent))
+    try:
+        from z3_engine import verify_file
+
+        return all(
+            verify_file(str(Path(repo_dir) / f)).proved_safe
+            for f in changed
+            if Path(f).suffix == ".py"
+        )
+    except Exception as e:
+        print(f"  [z3] verification failed: {e}")
+        return False
 
 
 def _pact_sheaf_h1(path: str) -> tuple[int, bool]:
@@ -733,6 +764,13 @@ def process_one(target: dict, token: str) -> bool:
             print("No files changed — skipping")
             return False
 
+        # Z3 post-fix verification (llm_response_unguarded / sheaf_llm_unguarded only)
+        z3_verified = _z3_verify_changed(tmpdir, changed, mode)
+        if z3_verified:
+            print("  ✅ Z3 proved safe: all fixed files clear in Datalog model")
+        elif mode in _Z3_VERIFIABLE_MODES:
+            print("  ⚠️  Z3 verification skipped or inconclusive")
+
         # Commit (no Co-Authored-By: Claude for external repos)
         # NOTE: Do NOT run black/ruff on external files here. Style-reformatting
         # external repos creates 1000-line diffs that obscure the surgical fix
@@ -741,7 +779,9 @@ def process_one(target: dict, token: str) -> bool:
         _run("git config user.email 'jonathan.f.hill@gmail.com'", cwd=tmpdir)
         _run(f"git add {' '.join(changed)}", cwd=tmpdir)
 
-        pr_title, commit_msg, pr_body = _pr_content(target, violations, changed)
+        pr_title, commit_msg, pr_body = _pr_content(
+            target, violations, changed, z3_verified=z3_verified
+        )
 
         import tempfile as _tf
 

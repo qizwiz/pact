@@ -510,3 +510,29 @@ def run_llm(root: Path) -> LLMProofResult:
     engine = LLMResponseEngine()
     engine.load(root)
     return engine.result()
+
+
+def verify_file(path: str) -> LLMProofResult:
+    """Return an LLMProofResult for a single Python file.
+
+    Use this to formally verify that a fixer patch has removed all
+    llm_response_unguarded violations from a specific file.  Unlike
+    ``run_llm(root)``, which loads an entire project, this function
+    analyzes one file in isolation — suitable for per-patch certification.
+
+    ``result.proved_safe`` is True iff Z3 found no (scope, var) pair
+    where an LLM-assigned variable is accessed without a guard.
+    """
+    engine = LLMResponseEngine()
+    lv, ua = _extract_llm_facts(path, engine._scope_intern, engine._var_intern)
+
+    id_to_key = {v: k for k, v in engine._scope_intern.items()}
+    for sid, vid in lv:
+        engine._fp.add_rule(_llm_var_rel(_bv(sid), _bv(vid)))
+        engine._scope_meta[sid] = id_to_key.get(sid, str(sid))
+    for sid, vid in ua:
+        engine._fp.add_rule(_unguarded_access_rel(_bv(sid), _bv(vid)))
+        engine._scope_meta[sid] = id_to_key.get(sid, str(sid))
+
+    engine._scopes_with_llm = len({sid for sid, _ in lv})
+    return engine.result()
