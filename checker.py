@@ -84,6 +84,7 @@ def check_codebase(
         Pre-extracted (models, functions, call_sites) tuple. If provided,
         skips the extraction step to avoid double-parsing.
     """
+    _custom_modes = modes is not None
     if modes is None:
         modes = DEFAULT_MODES
 
@@ -209,7 +210,153 @@ def check_codebase(
                 _z3_err,
             )
 
+    # Semgrep — runs rules from pact/semgrep/ as a parallel detector.
+    # Only active in full-mode runs (not when a specific mode subset is passed),
+    # to avoid false positives interfering with targeted mode checks in tests.
+    # Findings are merged with AST results (deduplication by file:line:mode).
+    # No-op if semgrep is not installed or if the rules directory is absent.
+    if not _custom_modes:
+        try:
+            _semgrep_results = _run_semgrep(root)
+            for v in _semgrep_results:
+                key = (v.file, v.line, v.context, v.call)
+                if key not in seen:
+                    seen.add(key)
+                    violations.append(v)
+        except Exception:
+            pass  # semgrep unavailable or crashed — AST results still complete
+
     return violations
+
+
+# ---------------------------------------------------------------------------
+# Semgrep integration
+# ---------------------------------------------------------------------------
+
+# Map semgrep rule IDs → pact mode names
+_SEMGREP_RULE_TO_MODE: dict[str, str] = {
+    "llm-response-unguarded-choices": "llm_response_unguarded",
+    "llm-response-unguarded": "llm_response_unguarded",
+    "json-loads-unguarded": "json_loads_unguarded",
+    "optional-dereference": "optional_dereference",
+    "missing-await": "missing_await",
+    "bare-except": "bare_except",
+}
+
+
+def _run_semgrep(root: Path) -> list[Violation]:
+    """Run semgrep rules from pact/semgrep/ against root; return Violations.
+
+    Returns an empty list if semgrep is not installed, the rules directory
+    is absent, or the run fails for any reason.
+    """
+    import json as _json
+    import subprocess as _sp
+    import shutil
+
+    if not shutil.which("semgrep"):
+        return []
+
+    rules_dir = Path(__file__).parent / "semgrep"
+    if not rules_dir.exists():
+        return []
+
+    try:
+        proc = _sp.run(
+            ["semgrep", "--config", str(rules_dir), "--json", str(root)],
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        if proc.returncode not in (0, 1):  # 1 = findings found (normal)
+            return []
+        data = _json.loads(proc.stdout)
+    except Exception:
+        return []
+
+    # Cache file lines for call-text extraction (semgrep extra.lines is
+    # unreliable when login is required — extract from source directly).
+    _file_lines: dict[str, list[str]] = {}
+
+    def _match_text(path: str, start: dict, end: dict) -> str:
+        if path not in _file_lines:
+            try:
+                _file_lines[path] = Path(path).read_text(errors="replace").splitlines()
+            except OSError:
+                _file_lines[path] = []
+        lines = _file_lines[path]
+        sl, sc = start.get("line", 1) - 1, start.get("col", 1) - 1
+        el, ec = end.get("line", 1) - 1, end.get("col", 1) - 1
+        if sl < 0 or sl >= len(lines):
+            return ""
+        if sl == el:
+            return lines[sl][sc:ec].strip()
+        return lines[sl][sc:].strip()
+
+    def _sibling_guarded(path: str, line_1based: int, var_name: str) -> bool:
+        """Return True if a sibling if-guard for var_name.choices precedes this line.
+
+        Semgrep's pattern-not-inside only suppresses matches that are INSIDE an
+        if-block; early-exit guards on the preceding line are siblings and semgrep
+        cannot suppress them. We scan backwards up to 15 lines at the same or
+        shallower indent level.
+        """
+        lines = _file_lines.get(path, [])
+        idx = line_1based - 1  # 0-based
+        if idx <= 0 or idx >= len(lines):
+            return False
+        target_indent = len(lines[idx]) - len(lines[idx].lstrip())
+        for i in range(idx - 1, max(idx - 16, -1), -1):
+            raw = lines[i]
+            stripped = raw.strip()
+            if not stripped:
+                continue
+            indent = len(raw) - len(raw.lstrip())
+            if indent > target_indent:
+                continue  # inside a nested block — skip
+            if stripped.startswith(("def ", "async def ", "class ")):
+                break  # new scope — stop scanning
+            if (
+                f"if {var_name}.choices" in stripped
+                or f"if not {var_name}.choices" in stripped
+                or f"if len({var_name}.choices)" in stripped
+            ):
+                return True
+        return False
+
+    results: list[Violation] = []
+    for finding in data.get("results", []):
+        rule_id = finding.get("check_id", "").split(".")[-1]
+        mode = _SEMGREP_RULE_TO_MODE.get(rule_id)
+        if not mode:
+            continue
+        path = finding.get("path", "")
+        start = finding.get("start", {})
+        end = finding.get("end", {})
+        line = start.get("line", 0)
+        call = _match_text(path, start, end)
+
+        # Suppress known false positive: early-return sibling guard before choices[0]
+        if "choices[0]" in call:
+            meta = finding.get("extra", {}).get("metavariables", {})
+            var_name = meta.get("$RESPONSE", {}).get("abstract_content", "")
+            if not var_name and ".choices[0]" in call:
+                # semgrep OSS doesn't populate metavariables — extract from call text
+                var_name = call.split(".choices[0]")[0].strip().lstrip("(")
+            if var_name and _sibling_guarded(path, line, var_name):
+                continue
+
+        results.append(
+            Violation(
+                file=path,
+                line=line,
+                call=call[:80],
+                missing=[finding.get("extra", {}).get("message", "")[:120]],
+                context=mode,
+                spec_id="semgrep",
+            )
+        )
+    return results
 
 
 def check_codebase_incremental(

@@ -25,23 +25,64 @@ class CallGraph:
     """
 
     def __init__(self, nodes: list[dict], links: list[dict]) -> None:
-        # node_id → {"label": str, "file": str, "loc": str}
+        # node_id → {"label": str, "file": str, "loc": str, "community": int|None}
         self._id_meta: dict[str, dict] = {}
         # (file_basename, func_label) → node_id  (for lookup by violation attrs)
         self._func_index: dict[tuple[str, str], str] = {}
+        # file_basename → node_id  (for file-level community lookup)
+        self._file_index: dict[str, str] = {}
+        # node_id → community_id
+        self._community: dict[str, int] = {}
+        # community_id → short plain-language description (from rationale nodes)
+        self._community_label: dict[int, str] = {}
 
         for n in nodes:
             nid = n.get("id", "")
             label = n.get("label", "")
             sf = n.get("source_file", "")
             loc = n.get("source_location", "")
+            community = n.get("community")
             self._id_meta[nid] = {"label": label, "file": sf, "loc": loc}
 
-            # Only index function nodes (graphify marks them with trailing "()")
+            if community is not None:
+                self._community[nid] = community
+
+            # Index function nodes (graphify marks them with trailing "()")
             if label.endswith("()"):
                 fname = label[:-2]
                 sf_key = Path(sf).name if sf else sf
                 self._func_index[(sf_key, fname)] = nid
+
+            # Index file-level nodes for community lookup by filename
+            elif sf and not label.endswith("()") and n.get("file_type") == "code":
+                sf_key = Path(sf).name if sf else sf
+                if sf_key not in self._file_index:
+                    self._file_index[sf_key] = nid
+
+        # Build community labels from rationale nodes and their rationale_for links.
+        # rationale nodes have file_type="rationale"; rationale_for links point to
+        # the code node they describe.  We use the first rationale sentence as the
+        # community label (truncated to 80 chars) for the community that code node
+        # belongs to.
+        rationale_labels: dict[str, str] = {
+            n["id"]: n.get("label", "")
+            for n in nodes
+            if n.get("file_type") == "rationale"
+        }
+        for link in links:
+            if link.get("relation") != "rationale_for":
+                continue
+            rat_id = link.get("source", "")
+            tgt_id = link.get("target", "")
+            rat_text = rationale_labels.get(rat_id, "")
+            if not rat_text:
+                continue
+            community = self._community.get(tgt_id)
+            if community is not None and community not in self._community_label:
+                # Take first sentence of the rationale, strip trailing whitespace
+                first_sentence = rat_text.split(".")[0].strip()[:80]
+                if first_sentence:
+                    self._community_label[community] = first_sentence
 
         id_meta = self._id_meta  # alias for readability below
 
@@ -105,6 +146,38 @@ class CallGraph:
             addr = f"{f}:{loc}" if f and loc else (f or loc or "")
             results.append(f"{addr}  {label}" if addr else label)
         return results
+
+    def community_of(self, func_name: str, source_file: str = "") -> int | None:
+        """Return the graphify Louvain community ID for *func_name*, or None.
+
+        Falls back to a file-level lookup when the function is not found directly
+        (useful for violations detected at the file level, not the call level).
+        """
+        sf_basename = Path(source_file).name if source_file else ""
+        node_id = None
+
+        if sf_basename:
+            node_id = self._func_index.get((sf_basename, func_name))
+        if not node_id:
+            matches = [
+                nid for (sf, fn), nid in self._func_index.items() if fn == func_name
+            ]
+            if len(matches) == 1:
+                node_id = matches[0]
+        if not node_id and sf_basename:
+            # File-level fallback — return the community of the file node
+            node_id = self._file_index.get(sf_basename)
+
+        return self._community.get(node_id) if node_id else None
+
+    def community_label_for(self, community_id: int) -> str:
+        """Return a short plain-language label for *community_id*.
+
+        The label is the first sentence of the graphify-generated rationale for
+        one of the nodes in that community (at most 80 characters).  Returns an
+        empty string if no rationale is available.
+        """
+        return self._community_label.get(community_id, "")
 
     @classmethod
     def load(cls, root: Path) -> "CallGraph | None":

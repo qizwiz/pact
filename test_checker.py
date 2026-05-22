@@ -4925,3 +4925,122 @@ def test_eager_all_with_subscript_flagged(tmp_path):
     )
     results = check_codebase(tmp_path, modes=[EAGER_ANY_GUARD])
     assert any(r.context == "eager_any_guard" for r in results)
+
+
+# ---------------------------------------------------------------------------
+# Semgrep integration
+# ---------------------------------------------------------------------------
+
+
+def test_semgrep_detects_unguarded_choices(tmp_path):
+    """semgrep rule catches response.choices[0] not caught by AST in complex guard."""
+    import shutil
+
+    if not shutil.which("semgrep"):
+        import pytest
+
+        pytest.skip("semgrep not installed")
+
+    from .checker import _run_semgrep
+
+    (tmp_path / "llm.py").write_text(
+        "def bad(client):\n"
+        '    response = client.chat.completions.create(model="gpt-4o", messages=[])\n'
+        "    return response.choices[0].message.content\n"
+    )
+    results = _run_semgrep(tmp_path)
+    assert len(results) == 1
+    assert results[0].context == "llm_response_unguarded"
+    assert results[0].spec_id == "semgrep"
+    assert "choices[0]" in results[0].call
+
+
+def test_semgrep_skips_guarded_choices(tmp_path):
+    """semgrep rule does not flag guarded response.choices access."""
+    import shutil
+
+    if not shutil.which("semgrep"):
+        import pytest
+
+        pytest.skip("semgrep not installed")
+
+    from .checker import _run_semgrep
+
+    (tmp_path / "llm.py").write_text(
+        "def ok(client):\n"
+        '    response = client.chat.completions.create(model="gpt-4o", messages=[])\n'
+        "    if not response.choices:\n"
+        "        return None\n"
+        "    return response.choices[0].message.content\n"
+    )
+    results = _run_semgrep(tmp_path)
+    assert not results
+
+
+# ---------------------------------------------------------------------------
+# graphify community + rationale enrichment
+# ---------------------------------------------------------------------------
+
+
+def test_callgraph_community_of_returns_int_for_known_func(tmp_path):
+    """community_of() returns an integer for a known function node."""
+    from pact.graphify_graph import CallGraph
+
+    nodes = [
+        {
+            "id": "fn1",
+            "label": "my_func()",
+            "file_type": "code",
+            "source_file": "app.py",
+            "source_location": "L10",
+            "community": 3,
+        }
+    ]
+    g = CallGraph(nodes, [])
+    assert g.community_of("my_func", "app.py") == 3
+
+
+def test_callgraph_community_label_from_rationale(tmp_path):
+    """community_label_for() returns rationale text for a known community."""
+    from pact.graphify_graph import CallGraph
+
+    nodes = [
+        {
+            "id": "fn1",
+            "label": "my_func()",
+            "file_type": "code",
+            "source_file": "app.py",
+            "source_location": "L10",
+            "community": 7,
+        },
+        {
+            "id": "rat1",
+            "label": "Handles authentication logic. More detail here.",
+            "file_type": "rationale",
+            "source_file": "app.py",
+            "source_location": "L1",
+            "community": 7,
+        },
+    ]
+    links = [
+        {
+            "relation": "rationale_for",
+            "source": "rat1",
+            "target": "fn1",
+            "confidence": "EXTRACTED",
+            "weight": 1.0,
+        }
+    ]
+    g = CallGraph(nodes, links)
+    assert g.community_of("my_func", "app.py") == 7
+    label = g.community_label_for(7)
+    assert "authentication" in label.lower()
+
+
+def test_callgraph_community_of_unknown_returns_none(tmp_path):
+    """community_of() returns None for functions not in the graph."""
+    from pact.graphify_graph import CallGraph
+
+    g = CallGraph([], [])
+    assert g.community_of("no_such_func", "no_such_file.py") is None
+    assert g.community_label_for(999) == ""
