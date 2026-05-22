@@ -181,11 +181,28 @@ _BRANCH_NAMES = {
 }
 
 
-def _pr_content(target: dict, n_viols: int, changed: list[str]) -> tuple[str, str, str]:
-    """Return (branch, commit_msg, pr_body) for the target's mode."""
+def _violation_table(violations: list[dict], changed: list[str]) -> str:
+    """One-row-per-violation table showing file, line, and actual expression."""
+    relevant = [v for v in violations if v["file"] in changed]
+    if not relevant:
+        return ""
+    rows = ["| File | Line | Expression |", "|------|------|------------|"]
+    for v in sorted(relevant, key=lambda v: (v["file"], v["line"]))[:12]:
+        call = (v.get("call") or "").strip() or "(see diff)"
+        rows.append(f"| `{v['file']}` | {v['line']} | `{call}` |")
+    if len(relevant) > 12:
+        rows.append(f"| *(+{len(relevant) - 12} more)* | | |")
+    return "\n".join(rows)
+
+
+def _pr_content(
+    target: dict, violations: list[dict], changed: list[str]
+) -> tuple[str, str, str]:
+    """Return (title, commit_msg, pr_body) for the target's mode."""
     issue = target["issue"]
     mode = target.get("mode", "llm_response_unguarded")
-    files_str = "\n".join(f"- `{f}`" for f in changed)
+    n_viols = sum(1 for v in violations if v["file"] in changed)
+    viol_table = _violation_table(violations, changed)
 
     if mode == "optional_dereference":
         title = (
@@ -199,37 +216,29 @@ def _pr_content(target: dict, n_viols: int, changed: list[str]) -> tuple[str, st
         )
         body = f"""## What this fixes
 
-Resolves #{issue}: accessing `.attribute` on the result of `.first()`, `.get()`,
-or `dict.get()` raises `AttributeError` when the result is `None`.
+Resolves #{issue}: calling `.attribute` on `.first()`, `.get()`, or `dict.get()`
+raises `AttributeError` when the result is `None`.
 
-This PR adds a guard at each of the {n_viols} unguarded access site(s):
+**{n_viols} site(s) fixed:**
+
+{viol_table}
 
 ```python
 # Before
-obj = Model.objects.first()
-name = obj.name  # AttributeError if table is empty
+obj = qs.first()
+name = obj.name          # AttributeError when table is empty
 
 # After
-obj = Model.objects.first()
+obj = qs.first()
 if obj is None:
-    raise ValueError("'obj' is None")
+    raise ValueError("expected at least one result")
 name = obj.name
 ```
-
-**Files changed:**
-{files_str}
-
-## Why it crashes in practice
-
-Django ORM `.first()` and dict `.get()` both return `None` when no match is
-found. Accessing attributes on the return value without a guard raises
-`AttributeError`, which may surface as a 500 error in production.
 
 ## How this was found
 
 Detected by [pact](https://github.com/qizwiz/pact), an open-source static
-checker for Python LLM and AI code. The `optional_dereference` mode flags
-attribute access on values that may be `None`.
+checker for Python AI/LLM code.
 
 ## Test plan
 - [ ] Existing test suite passes
@@ -248,13 +257,15 @@ attribute access on values that may be `None`.
         body = f"""## What this fixes
 
 Resolves #{issue}: `mapping.get(key).attribute` raises `AttributeError` when
-`key` is not in the mapping (`.get()` returns `None`).
+`key` is absent (`.get()` returns `None`).
 
-This PR adds a guard at each of the {n_viols} unguarded lookup site(s):
+**{n_viols} site(s) fixed:**
+
+{viol_table}
 
 ```python
 # Before
-value = data.get("field").strip()  # AttributeError when key absent
+value = data.get("field").strip()   # AttributeError when key absent
 
 # After
 raw = data.get("field")
@@ -263,19 +274,10 @@ if raw is None:
 value = raw.strip()
 ```
 
-**Files changed:**
-{files_str}
-
-## Why it crashes in practice
-
-`dict.get()` returns `None` by default when the key is absent. Chaining
-attribute access directly on the result silently crashes when the key is
-missing from the response (e.g., optional API fields, partial LLM outputs).
-
 ## How this was found
 
 Detected by [pact](https://github.com/qizwiz/pact), an open-source static
-checker for Python LLM and AI code.
+checker for Python AI/LLM code.
 
 ## Test plan
 - [ ] Existing test suite passes
@@ -293,10 +295,12 @@ checker for Python LLM and AI code.
         )
         body = f"""## What this fixes
 
-Resolves #{issue}: `json.loads()` raises `JSONDecodeError` when the input
-string is malformed, empty, or contains an unexpected native type.
+Resolves #{issue}: `json.loads()` raises `JSONDecodeError` when the input is
+malformed, empty, or truncated (e.g. partial streaming chunk, empty SSE event).
 
-This PR wraps each of the {n_viols} unguarded call sites:
+**{n_viols} site(s) fixed:**
+
+{viol_table}
 
 ```python
 # Before
@@ -309,25 +313,10 @@ except json.JSONDecodeError as exc:
     raise ValueError(f"Invalid JSON: {{exc}}") from exc
 ```
 
-**Files changed:**
-{files_str}
-
-## Why it crashes in practice
-
-`json.loads()` raises `json.JSONDecodeError` (a subclass of `ValueError`)
-when the input is:
-- An empty string (e.g., empty API response or SSE event with no data field)
-- Malformed/truncated JSON (partial streaming chunk)
-- A plain string that is not JSON-encoded (native Python type passed as-is)
-
-None of these are programming errors — they're runtime conditions the caller
-must handle.
-
 ## How this was found
 
 Detected by [pact](https://github.com/qizwiz/pact), an open-source static
-checker for Python LLM and AI code. The `json_loads_unguarded` mode flags
-`json.loads()` calls not wrapped in `try/except json.JSONDecodeError`.
+checker for Python AI/LLM code.
 
 ## Test plan
 - [ ] Existing test suite passes
@@ -344,35 +333,20 @@ checker for Python LLM and AI code. The `json_loads_unguarded` mode flags
         )
         body = f"""## What this fixes
 
-Resolves #{issue}: empty `catch` blocks suppress all errors silently — the
-exception is lost, nothing is logged, and the code path appears to succeed even
-when it failed.
+Resolves #{issue}: empty `catch` blocks silently swallow all errors — the
+exception is lost and the code path appears to succeed even when it failed.
 
-This PR adds `console.error(e)` to each of the {n_viols} empty catch block(s):
+**{n_viols} site(s) fixed** (adds `console.error(e)` to each):
+
+{viol_table}
 
 ```typescript
 // Before
-try {{
-  doSomething();
-}} catch (e) {{}}
+try {{ doSomething(); }} catch (e) {{}}
 
 // After
-try {{
-  doSomething();
-}} catch (e) {{
-  console.error(e);
-}}
+try {{ doSomething(); }} catch (e) {{ console.error(e); }}
 ```
-
-**Files changed:**
-{files_str}
-
-## Why it causes hard-to-debug failures
-
-Silent catch blocks are common in TypeScript when a developer adds a catch to
-satisfy TypeScript's `strict` error handling, but forgets to handle the error.
-In production this causes operations to silently fail — the error disappears,
-no stack trace is recorded, and no alert fires.
 
 ## How this was found
 
@@ -381,7 +355,7 @@ checker for TypeScript/JavaScript code.
 
 ## Test plan
 - [ ] Existing test suite passes
-- [ ] Verify the catch block now surfaces errors to monitoring/logs
+- [ ] Verify errors now surface to monitoring/logs
 """
         return title, commit, body
 
@@ -398,26 +372,22 @@ checker for TypeScript/JavaScript code.
         body = f"""## What this fixes
 
 Resolves #{issue}: calling an async function without `await` creates a coroutine
-object but never runs it — the work is silently dropped and no exception is raised.
+object but never runs it — the work is silently dropped.
 
-This PR adds `await` at each of the {n_viols} missing site(s):
+**{n_viols} site(s) fixed:**
+
+{viol_table}
 
 ```python
 # Before
-fetch_data(url)          # creates coroutine, never runs it
+fetch_data(url)       # creates coroutine, never executes it
 
 # After
-await fetch_data(url)    # actually executes the call
+await fetch_data(url) # actually runs the call
 ```
 
-**Files changed:**
-{files_str}
-
-## Why it's invisible in practice
-
-Python creates a `RuntimeWarning: coroutine 'X' was never awaited` at garbage
-collection time, but the warning is often swallowed by logging configuration.
-The code path appears to run but silently does nothing.
+Python may emit `RuntimeWarning: coroutine 'X' was never awaited` at GC time,
+but this warning is often suppressed by logging config, so the bug is silent.
 
 ## How this was found
 
@@ -440,29 +410,23 @@ checker for Python async code.
     )
     body = f"""## What this fixes
 
-Resolves #{issue}: `response.choices[0]` raises `IndexError` (and
-`response.choices[0].message` raises `AttributeError`) when the LLM returns an
-empty `choices` list. This happens under rate limiting, safety filtering, or
-incomplete streaming responses.
+Resolves #{issue}: `response.choices[0]` raises `IndexError` when the LLM
+returns an empty `choices` list — which happens under rate limiting, safety
+filtering, or a truncated streaming response.
 
-This PR adds a guard at each of the {n_viols} unguarded access sites:
+**{n_viols} site(s) fixed:**
+
+{viol_table}
 
 ```python
+# Before
+msg = response.choices[0].message   # IndexError when choices is empty
+
+# After
 if not response.choices or response.choices[0].message is None:
     raise ValueError("LLM returned empty response")
+msg = response.choices[0].message
 ```
-
-**Files changed:**
-{files_str}
-
-## Why it crashes in practice
-
-LLM providers return `choices: []` when:
-- Quota or rate limits cut off the response mid-stream
-- Content filters reject the generation
-- A transient network error truncates the response body
-
-None of these are caller errors — they're provider-side events the client must handle.
 
 ## How this was found
 
@@ -704,8 +668,7 @@ def process_one(target: dict, token: str) -> bool:
         _run("git config user.email 'jonathan.f.hill@gmail.com'", cwd=tmpdir)
         _run(f"git add {' '.join(changed)}", cwd=tmpdir)
 
-        n_viols = sum(1 for v in violations if v["file"] in changed)
-        pr_title, commit_msg, pr_body = _pr_content(target, n_viols, changed)
+        pr_title, commit_msg, pr_body = _pr_content(target, violations, changed)
 
         import tempfile as _tf
 
