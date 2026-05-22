@@ -7,3 +7,10 @@ corpus/*.jsonl
 docs/tla/*.bin
 docs/tla/states/
 docs/tla/*_TTrace_*.tla
+
+# Loop runtime state and artifacts
+.pact_loop/
+heal_*.json
+intent*.json
+pact_tool.egg-info/
+graphify-out/

@@ -160,6 +160,13 @@ def analyze_entry(entry: dict, token: str) -> AnalyzedEntry:
                             if result.cfg_proved is None:
                                 result.cfg_proved = True
                     except Exception as e:
+                        import warnings
+
+                        warnings.warn(
+                            f"pact_corpus_analyze: cfg proof failed: {e}",
+                            RuntimeWarning,
+                            stacklevel=2,
+                        )
                         result.error = f"cfg: {e}"
 
         # Synthesis readiness: unguarded sheaf violation + has streaming → synthesizable
