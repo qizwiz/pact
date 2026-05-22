@@ -36,7 +36,12 @@ _FIX_PATTERN = re.compile(
 def _run(cmd: list[str], cwd: Path, timeout: int = 30) -> str:
     try:
         r = subprocess.run(
-            cmd, cwd=str(cwd), capture_output=True, text=True, timeout=timeout
+            cmd,
+            cwd=str(cwd),
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=True,
         )
         return r.stdout
     except Exception:

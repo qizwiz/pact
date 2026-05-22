@@ -325,9 +325,18 @@ def _harvest_sites(path: str, source: str | None = None) -> SiteGraph:
 
         def visit_Attribute(self, node):
             # Detect unguarded attribute access on nullable stream vars (e.g. chunk.model).
-            # Skip when the attribute is just the receiver for a subscript already caught
-            # by visit_Subscript (e.g. chunk.choices[0] — obj is _ast.Subscript above us).
+            # Only flag LLM-specific attributes to avoid false positives on domain objects
+            # that happen to be loop-iterated from a tainted source.
             if not isinstance(node.ctx, _ast.Load):
+                self.generic_visit(node)
+                return
+            if node.attr not in _LLM_RESPONSE_ATTRS and node.attr not in {
+                "model",
+                "finish_reason",
+                "index",
+                "delta",
+                "message",
+            }:
                 self.generic_visit(node)
                 return
             obj = node.value

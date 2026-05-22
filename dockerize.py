@@ -249,7 +249,15 @@ def run_analysis(tag: str, timeout: int = 120) -> ScanResult:
 def remove_image(tag: str) -> None:
     """Remove the analysis image (cleanup)."""
     if _docker_available():
-        subprocess.run(["docker", "rmi", "-f", tag], capture_output=True)
+        result = subprocess.run(["docker", "rmi", "-f", tag], capture_output=True)
+        if result.returncode != 0:
+            import warnings
+
+            warnings.warn(
+                f"docker rmi {tag} failed (exit {result.returncode})",
+                RuntimeWarning,
+                stacklevel=2,
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -323,6 +331,10 @@ class PreciseScanner:
                 text=True,
                 timeout=self.timeout,
             )
+            if proc.returncode != 0:
+                raise RuntimeError(
+                    f"pact exited {proc.returncode}: {(proc.stderr or proc.stdout or '').strip()[:200]}"
+                )
             data = json.loads(proc.stdout) if proc.stdout.strip() else []
             return ScanResult(violations_json=data, docker_available=False)
         except Exception as e:

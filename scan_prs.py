@@ -123,6 +123,7 @@ def scan_branch(pr: dict, worktree_base: Path) -> dict:
                 ["git", "worktree", "remove", "--force", str(worktree)],
                 cwd=REPO_ROOT,
                 capture_output=True,
+                check=True,
             )
         except (subprocess.CalledProcessError, OSError):
             pass
