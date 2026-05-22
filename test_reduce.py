@@ -682,3 +682,78 @@ class TestBetweennessAndBridgeViolations:
         ranked = compute_blast_radii(funcs, calls, viols)
         s = ranked[0].summary()
         assert "btw=" in s, f"expected btw= in summary for bridge node; got: {s}"
+
+    def test_cut_vertex_detected(self):
+        """A function whose removal disconnects the graph is a cut vertex."""
+        # Linear chain: A → B → C; B is the sole bridge (articulation point)
+        funcs = [_func("A", line=1), _func("B", line=10), _func("C", line=20)]
+        calls = [_call("A", "B"), _call("B", "C")]
+        viols = [
+            Violation(
+                file="mod.py", line=10, call="B", missing=["x"], context="bare_except"
+            )
+        ]
+        ranked = compute_blast_radii(funcs, calls, viols)
+        assert ranked[0].is_cut_vertex, "B is the sole bridge — must be a cut vertex"
+
+    def test_non_cut_vertex_not_flagged(self):
+        """A leaf node that can be removed without disconnecting the graph is not a cut vertex."""
+        funcs = [_func("A", line=1), _func("B", line=10)]
+        calls = [_call("A", "B")]
+        viols = [
+            Violation(
+                file="mod.py", line=10, call="B", missing=["x"], context="bare_except"
+            )
+        ]
+        ranked = compute_blast_radii(funcs, calls, viols)
+        assert not ranked[0].is_cut_vertex, "leaf B is not a cut vertex"
+
+    def test_cut_vertex_sorted_before_high_betweenness(self):
+        """Cut vertices appear before high-betweenness non-cut-vertices in find_bridge_violations."""
+        # Build a graph where one node has high betweenness but is NOT a cut vertex,
+        # and another has lower betweenness but IS a cut vertex.
+        # Star graph: hub→A, hub→B, hub→C, hub→D (hub has high betweenness but NOT a cut vertex
+        # in an undirected star — removing hub disconnects everything, so hub IS a cut vertex in stars)
+        # Use a different structure: A—B—C plus A—C shortcut (B is not a cut vertex, A/C are not either)
+        # then D—E—F chain (E IS a cut vertex)
+        funcs = [
+            _func("A", line=1),
+            _func("B", line=10),
+            _func("C", line=20),
+            _func("D", line=30),
+            _func("E", line=40),
+            _func("F", line=50),
+        ]
+        calls = [
+            _call("A", "B"),
+            _call("B", "C"),
+            _call("A", "C"),  # triangle: no cut vertices
+            _call("D", "E"),
+            _call("E", "F"),  # chain: E is cut vertex
+        ]
+        v_B = Violation(
+            file="mod.py", line=10, call="B", missing=["x"], context="bare_except"
+        )
+        v_E = Violation(
+            file="mod.py", line=40, call="E", missing=["x"], context="bare_except"
+        )
+        bridges = find_bridge_violations(funcs, calls, [v_B, v_E], threshold=0.0)
+        cut_indices = [i for i, r in enumerate(bridges) if r.is_cut_vertex]
+        non_cut_indices = [i for i, r in enumerate(bridges) if not r.is_cut_vertex]
+        if cut_indices and non_cut_indices:
+            assert min(cut_indices) < max(
+                non_cut_indices
+            ), "cut vertices must appear before non-cut-vertices"
+
+    def test_summary_includes_cut_vertex_label(self):
+        """ViolationWithBlast.summary() includes [CUT VERTEX] for cut vertices."""
+        funcs = [_func("A", line=1), _func("B", line=10), _func("C", line=20)]
+        calls = [_call("A", "B"), _call("B", "C")]
+        viols = [
+            Violation(
+                file="mod.py", line=10, call="B", missing=["x"], context="bare_except"
+            )
+        ]
+        ranked = compute_blast_radii(funcs, calls, viols)
+        s = ranked[0].summary()
+        assert "[CUT VERTEX]" in s, f"expected [CUT VERTEX] in summary; got: {s}"

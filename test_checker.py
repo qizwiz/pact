@@ -5129,3 +5129,128 @@ def test_semgrep_bare_except_reraise_not_flagged(tmp_path):
     results = _run_semgrep(tmp_path)
     be = [r for r in results if r.context == "bare_except"]
     assert not be, f"bare except: raise should not be flagged; got {be}"
+
+
+def test_semgrep_timeout_not_set_requests_detected(tmp_path):
+    """semgrep timeout-not-set rule fires on requests.get() without timeout."""
+    if not _semgrep_available():
+        import pytest
+
+        pytest.skip("semgrep not installed")
+    from .checker import _run_semgrep
+
+    (tmp_path / "client.py").write_text(
+        "import requests\n" "def fetch(url):\n" "    return requests.get(url)\n"
+    )
+    results = _run_semgrep(tmp_path)
+    t = [r for r in results if r.context == "timeout_not_set"]
+    assert t, "requests.get() without timeout must be flagged"
+
+
+def test_semgrep_timeout_set_not_flagged(tmp_path):
+    """semgrep timeout-not-set rule does not fire when timeout= is present."""
+    if not _semgrep_available():
+        import pytest
+
+        pytest.skip("semgrep not installed")
+    from .checker import _run_semgrep
+
+    (tmp_path / "client.py").write_text(
+        "import requests\n"
+        "def fetch(url):\n"
+        "    return requests.get(url, timeout=30)\n"
+    )
+    results = _run_semgrep(tmp_path)
+    t = [r for r in results if r.context == "timeout_not_set"]
+    assert not t, f"guarded requests.get must not be flagged; got {t}"
+
+
+def test_semgrep_timeout_not_set_httpx_detected(tmp_path):
+    """semgrep timeout-not-set rule fires on httpx.post() without timeout."""
+    if not _semgrep_available():
+        import pytest
+
+        pytest.skip("semgrep not installed")
+    from .checker import _run_semgrep
+
+    (tmp_path / "client.py").write_text(
+        "import httpx\n"
+        "def send(url, data):\n"
+        "    return httpx.post(url, json=data)\n"
+    )
+    results = _run_semgrep(tmp_path)
+    t = [r for r in results if r.context == "timeout_not_set"]
+    assert t, "httpx.post() without timeout must be flagged"
+
+
+def _mypy_available() -> bool:
+    import shutil
+    import sys
+    from pathlib import Path
+
+    mypy_bin = Path(sys.executable).parent / "mypy"
+    return mypy_bin.exists() or bool(shutil.which("mypy"))
+
+
+def test_mypy_optional_dereference_detected(tmp_path):
+    """mypy detects Optional[X].attr without None check as optional_dereference."""
+    if not _mypy_available():
+        import pytest
+
+        pytest.skip("mypy not installed")
+    from .checker import _run_mypy
+
+    (tmp_path / "mod.py").write_text(
+        "from typing import Optional\n"
+        "def get() -> Optional[str]:\n"
+        "    return None\n"
+        "def bad() -> None:\n"
+        "    name = get()\n"
+        "    print(name.upper())\n"
+    )
+    results = _run_mypy(tmp_path)
+    od = [r for r in results if r.context == "optional_dereference"]
+    assert od, "mypy must flag Optional[str].upper() without None-check"
+
+
+def test_mypy_guarded_not_flagged(tmp_path):
+    """mypy does not flag Optional[X].attr when guarded by None check."""
+    if not _mypy_available():
+        import pytest
+
+        pytest.skip("mypy not installed")
+    from .checker import _run_mypy
+
+    (tmp_path / "mod.py").write_text(
+        "from typing import Optional\n"
+        "def get() -> Optional[str]:\n"
+        "    return None\n"
+        "def ok() -> None:\n"
+        "    name = get()\n"
+        "    if name is not None:\n"
+        "        print(name.upper())\n"
+    )
+    results = _run_mypy(tmp_path)
+    od = [r for r in results if r.context == "optional_dereference"]
+    assert not od, f"guarded Optional access must not be flagged; got {od}"
+
+
+def test_mypy_spec_id_is_mypy(tmp_path):
+    """mypy findings have spec_id='mypy' for downstream filtering."""
+    if not _mypy_available():
+        import pytest
+
+        pytest.skip("mypy not installed")
+    from .checker import _run_mypy
+
+    (tmp_path / "mod.py").write_text(
+        "from typing import Optional\n"
+        "def get() -> Optional[str]: return None\n"
+        "def bad() -> None:\n"
+        "    s = get()\n"
+        "    print(s.lower())\n"
+    )
+    results = _run_mypy(tmp_path)
+    assert all(
+        r.spec_id == "mypy" for r in results
+    ), "all mypy findings must have spec_id='mypy'"

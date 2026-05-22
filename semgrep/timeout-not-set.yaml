@@ -1,0 +1,51 @@
+rules:
+  - id: timeout-not-set-requests
+    patterns:
+      - pattern: requests.$METHOD(...)
+      - pattern-not: requests.$METHOD(..., timeout=..., ...)
+      - metavariable-regex:
+          metavariable: $METHOD
+          regex: "^(get|post|put|delete|patch|head|request)$"
+    message: |
+      `requests.$METHOD(...)` called without `timeout=` — blocks indefinitely when the
+      server is slow, unresponsive, or rate-limiting.
+
+      LLM API calls and external HTTP requests MUST set an explicit timeout.
+      Use `timeout=30` (seconds) or a project-level constant.
+
+      Fix:
+        requests.$METHOD(url, timeout=30)
+    languages: [python]
+    severity: WARNING
+    metadata:
+      category: correctness
+      technology: [python, requests, http, llm]
+      cwe: "CWE-400: Uncontrolled Resource Consumption"
+      references:
+        - https://docs.python-requests.org/en/latest/user/quickstart/#timeouts
+        - https://github.com/qizwiz/pact
+      confidence: HIGH
+
+  - id: timeout-not-set-httpx
+    patterns:
+      - pattern: httpx.$METHOD(...)
+      - pattern-not: httpx.$METHOD(..., timeout=..., ...)
+      - metavariable-regex:
+          metavariable: $METHOD
+          regex: "^(get|post|put|delete|patch|head|request)$"
+    message: |
+      `httpx.$METHOD(...)` called without `timeout=` — blocks indefinitely when the
+      server is slow or unresponsive.
+
+      Fix:
+        httpx.$METHOD(url, timeout=30)
+    languages: [python]
+    severity: WARNING
+    metadata:
+      category: correctness
+      technology: [python, httpx, http]
+      cwe: "CWE-400: Uncontrolled Resource Consumption"
+      references:
+        - https://www.python-httpx.org/advanced/#timeouts
+        - https://github.com/qizwiz/pact
+      confidence: HIGH

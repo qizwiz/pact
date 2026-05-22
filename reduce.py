@@ -252,6 +252,7 @@ class ViolationWithBlast:
     enclosing_func: str  # function node name in the call graph
     reachable_from: frozenset[str]  # the ancestor set itself
     betweenness: float = 0.0  # normalized betweenness centrality of enclosing_func
+    is_cut_vertex: bool = False  # True if removing this node disconnects the call graph
 
     def summary(self, show_callers: int = 3) -> str:
         v = self.violation
@@ -262,8 +263,9 @@ class ViolationWithBlast:
         filled = min(bar_width, round(math.log2(self.blast_radius + 1)))
         bar = "█" * filled + "░" * (bar_width - filled)
         btw_str = f"  btw={self.betweenness:.3f}" if self.betweenness > 0 else ""
+        cut_str = "  [CUT VERTEX]" if self.is_cut_vertex else ""
         lines = [
-            f"  {v.file}:{v.line}  [{v.context}]  blast={self.blast_radius} [{bar}]{btw_str}",
+            f"  {v.file}:{v.line}  [{v.context}]  blast={self.blast_radius} [{bar}]{btw_str}{cut_str}",
             f"    {v.call}  —  {', '.join(v.missing)}",
         ]
         if show_callers and self.reachable_from:
@@ -318,9 +320,11 @@ def compute_blast_radii(
 
     # Betweenness on undirected projection: captures structural chokepoints
     # regardless of call direction.  Normalized so values are in [0, 1].
-    btw: dict[str, float] = nx.betweenness_centrality(
-        G.to_undirected(), normalized=True
-    )
+    G_undirected = G.to_undirected()
+    btw: dict[str, float] = nx.betweenness_centrality(G_undirected, normalized=True)
+    # Articulation points: nodes whose removal disconnects the undirected graph.
+    # Exact (not approximate) — betweenness can miss them when paths are long.
+    cut_vertices: set[str] = set(nx.articulation_points(G_undirected))
 
     results: list[ViolationWithBlast] = []
     for v in violations:
@@ -334,6 +338,7 @@ def compute_blast_radii(
                     enclosing_func=func,
                     reachable_from=frozenset(ancestors),
                     betweenness=btw.get(func, 0.0),
+                    is_cut_vertex=func in cut_vertices,
                 )
             )
         else:
@@ -344,6 +349,7 @@ def compute_blast_radii(
                     enclosing_func=func or "",
                     reachable_from=frozenset(),
                     betweenness=btw.get(func or "", 0.0),
+                    is_cut_vertex=(func or "") in cut_vertices,
                 )
             )
 
@@ -366,10 +372,13 @@ def find_bridge_violations(
 
     ``threshold`` is the minimum normalized betweenness (0–1) to qualify.
     Default 0.1 selects the top-decile of the graph's structural bridges.
+
+    Cut vertices (articulation points) are sorted first regardless of betweenness
+    — they are provably graph-disconnecting and always the highest priority.
     """
     ranked = compute_blast_radii(functions, call_sites, violations)
-    bridges = [r for r in ranked if r.betweenness >= threshold]
-    return sorted(bridges, key=lambda r: -r.betweenness)
+    bridges = [r for r in ranked if r.betweenness >= threshold or r.is_cut_vertex]
+    return sorted(bridges, key=lambda r: (-int(r.is_cut_vertex), -r.betweenness))
 
 
 def find_sccs(

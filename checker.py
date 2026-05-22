@@ -226,6 +226,19 @@ def check_codebase(
         except Exception:
             pass  # semgrep unavailable or crashed — AST results still complete
 
+        # Mypy — type-system-confirmed optional_dereference violations.
+        # Complements AST heuristic with union-attr + None-attr errors.
+        # No-op if mypy is not installed.
+        try:
+            _mypy_results = _run_mypy(root)
+            for v in _mypy_results:
+                key = (v.file, v.line, v.context, v.call)
+                if key not in seen:
+                    seen.add(key)
+                    violations.append(v)
+        except Exception:
+            pass  # mypy unavailable or crashed
+
     return violations
 
 
@@ -239,6 +252,8 @@ _SEMGREP_RULE_TO_MODE: dict[str, str] = {
     "llm-response-unguarded": "llm_response_unguarded",
     "json-loads-unguarded": "json_loads_unguarded",
     "bare-except": "bare_except",
+    "timeout-not-set-requests": "timeout_not_set",
+    "timeout-not-set-httpx": "timeout_not_set",
     # "optional-dereference": no semgrep rule yet (needs .first()/.get() chain awareness)
     # "missing-await": no semgrep rule (semgrep cannot know which callables are async)
 }
@@ -411,6 +426,148 @@ def _run_semgrep(root: Path) -> list[Violation]:
                 missing=[finding.get("extra", {}).get("message", "")[:120]],
                 context=mode,
                 spec_id="semgrep",
+            )
+        )
+    return results
+
+
+def _run_mypy(root: Path) -> list[Violation]:
+    """Run mypy for optional_dereference violations.
+
+    Targets union-attr errors (Optional[X].attr without None-check) and
+    attr-defined errors where the object is definitively None.  Both are
+    type-system-confirmed optional_dereference violations — higher confidence
+    than the AST heuristic but slower to compute.
+
+    Returns an empty list when mypy is not installed or the run fails.
+    """
+    import json
+    import shutil
+    import subprocess
+    import sys
+
+    # Look for mypy: prefer the same Python env as pact (venv alongside __file__),
+    # then the same env as the caller (sys.executable), then PATH.
+    _pact_venv = Path(__file__).parent / ".venv" / "bin" / "mypy"
+    mypy_bin = None
+    for candidate in [
+        _pact_venv,
+        Path(sys.executable).parent / "mypy",
+    ]:
+        if candidate.exists():
+            mypy_bin = candidate
+            break
+    if mypy_bin is None:
+        mypy_bin_str = shutil.which("mypy")
+        if not mypy_bin_str:
+            return []
+        mypy_bin = Path(mypy_bin_str)
+
+    # Discover Python source directories: top-level dirs with ≥10 .py files
+    # and valid Python identifier names (no hyphens — mypy can't import them).
+    # Targeting specific dirs avoids duplicate-module errors from unrelated
+    # sub-repos or vendor trees that mypy sees when targeting ".".
+    import re as _re
+
+    _VALID_PY_NAME = _re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
+    _SKIP_DIRS = frozenset(
+        {"node_modules", "__pycache__", ".venv", "venv", ".git", "migrations"}
+    )
+    _py_dirs: list[str] = []
+    for _child in sorted(root.iterdir()):
+        if not _child.is_dir():
+            continue
+        if _child.name.startswith(".") or _child.name in _SKIP_DIRS:
+            continue
+        if not _VALID_PY_NAME.match(_child.name):
+            continue  # hyphens etc. — not importable as a Python package
+        _py_count = sum(1 for _ in _child.glob("**/*.py"))
+        if _py_count >= 10:
+            _py_dirs.append(_child.name)
+    _targets = _py_dirs if _py_dirs else ["."]
+
+    try:
+        proc = subprocess.run(
+            [
+                str(mypy_bin),
+                *_targets,
+                "--ignore-missing-imports",
+                "--check-untyped-defs",
+                "--follow-imports=skip",
+                "--no-error-summary",
+                "--explicit-package-bases",
+                "-O",
+                "json",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=120,
+            cwd=root,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        return []
+
+    _mypy_file_lines: dict[str, list[str]] = {}
+    results: list[Violation] = []
+
+    for raw in proc.stdout.splitlines() + proc.stderr.splitlines():
+        raw = raw.strip()
+        if not raw or not raw.startswith("{"):
+            continue
+        try:
+            finding = json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+        if finding.get("severity") != "error":
+            continue
+        code = finding.get("code", "")
+        msg = finding.get("message", "")
+        if code == "union-attr":
+            pass  # Optional[X].attr — always an optional_dereference
+        elif code == "attr-defined" and '"None" has no attribute' in msg:
+            pass  # definitively-None attribute access
+        else:
+            continue
+
+        path = finding.get("file", "")
+        line = finding.get("line", 0)
+        if not path or line <= 0:
+            continue
+
+        full_path = (
+            str((root / path).resolve()) if not Path(path).is_absolute() else path
+        )
+
+        if any(
+            seg in full_path for seg in ("/_vendor/", "/vendor/", "/site-packages/")
+        ):
+            continue
+
+        if full_path not in _mypy_file_lines:
+            try:
+                _mypy_file_lines[full_path] = (
+                    Path(full_path).read_text(errors="replace").splitlines()
+                )
+            except OSError:
+                _mypy_file_lines[full_path] = []
+
+        file_lines = _mypy_file_lines[full_path]
+        end_line = finding.get("end_line", line)
+        if file_lines and any(
+            "# noqa" in file_lines[i]
+            for i in range(line - 1, min(end_line, len(file_lines)))
+            if 0 <= i < len(file_lines)
+        ):
+            continue
+
+        results.append(
+            Violation(
+                file=full_path,
+                line=line,
+                call=msg[:80],
+                missing=[f"mypy [{code}]: {msg}"[:120]],
+                context="optional_dereference",
+                spec_id="mypy",
             )
         )
     return results
