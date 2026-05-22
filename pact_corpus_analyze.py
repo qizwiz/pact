@@ -139,6 +139,13 @@ def analyze_entry(entry: dict, token: str) -> AnalyzedEntry:
                 result.h1_rank = h1_rank_for_file(tmp)
                 result.z3_certified = result.h1_rank == 0
             except Exception as e:
+                import warnings
+
+                warnings.warn(
+                    f"pact_corpus_analyze: sheaf analysis failed: {e}",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
                 result.error = f"sheaf: {e}"
 
         # Detect streaming patterns
@@ -205,7 +212,7 @@ def analyze_corpus(
         for line in f:
             try:
                 d = json.loads(line)
-            except json.JSONDecodeError:
+            except (json.JSONDecodeError, ValueError):
                 continue
             if d.get("mode") not in modes:
                 continue

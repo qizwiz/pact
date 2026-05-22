@@ -365,15 +365,16 @@ class TestCacheInvalidation:
         f.write_text("x = 1\n")
         before = [r for r in check_codebase(tmp_path) if r.file == str(f)]
 
-        # Inject a bare except (without clearing — would still be cached)
+        # Inject a bare except (without clearing — stale cache returns no violations)
         f.write_text("try:\n    pass\nexcept:\n    pass\n")
-        cached = [r for r in check_codebase(tmp_path) if r.file == str(f)]
+        still_empty = [r for r in check_codebase(tmp_path) if r.file == str(f)]
 
         # Clear caches and re-scan — must see the new violation
         clear_file_caches()
         after = [r for r in check_codebase(tmp_path) if r.file == str(f)]
 
         assert len(before) == 0
+        assert len(still_empty) == 0, "stale cache should hide the new violation"
         # After cache clear, bare_except is visible
         assert any(
             getattr(r, "context", getattr(r, "mode_name", "")) == "bare_except"
