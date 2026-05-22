@@ -690,6 +690,95 @@ def _improve_heal_prompt(
 
 
 # ---------------------------------------------------------------------------
+# Self-improvement (verify_improve.md rubric)
+# ---------------------------------------------------------------------------
+
+
+def _improve_verify_prompt(
+    results: list[SynthesisResult], model: str, key: str, verbose: bool
+) -> None:
+    """Score verify prompt performance and rewrite if avg verify score < 0.5."""
+    if len(results) < 3:
+        return  # need enough data to detect a pattern
+
+    scored = [r for r in results if r.verify_score > 0.0]
+    if not scored:
+        return
+
+    avg_score = sum(r.verify_score for r in scored) / len(scored)
+    accepted = [
+        r for r in scored if r.verify_verdict == "ACCEPT" and r.verify_score >= 0.8
+    ]
+    accept_rate = len(accepted) / len(scored)
+
+    if avg_score >= 0.5 and accept_rate >= 0.4:
+        return  # verifier is performing adequately
+
+    # Detect oracle discrepancies (accepted by LLM but oracle failed)
+    oracle_discrepancies: list[str] = []
+    for r in results:
+        if (
+            r.verify_verdict == "ACCEPT"
+            and r.verify_score >= 0.8
+            and not r.oracle_confirmed
+            and r.applied is False
+        ):
+            oracle_discrepancies.append(
+                f"ACCEPT verdict → oracle FAIL: {r.file}:{r.line}"
+            )
+        elif r.verify_verdict == "REJECT" and r.oracle_confirmed:
+            oracle_discrepancies.append(
+                f"REJECT verdict → oracle PASS: {r.file}:{r.line}"
+            )
+
+    def _to_sample(r: SynthesisResult) -> dict:
+        return {
+            "file": r.file,
+            "line": r.line,
+            "fix_class": r.diagnosis.fix_class,
+            "verify_score": r.verify_score,
+            "verdict": r.verify_verdict,
+            "oracle_confirmed": r.oracle_confirmed,
+            "cegis_iters": r.cegis_iters,
+        }
+
+    rejected = [
+        r for r in scored if r.verify_verdict != "ACCEPT" or r.verify_score < 0.8
+    ]
+
+    try:
+        template = _load_prompt("verify_improve")
+        prompt = _render(
+            template,
+            prompt_text=_load_prompt("verify"),
+            accepted_samples=json.dumps(
+                [_to_sample(r) for r in accepted[:3]], indent=2
+            ),
+            rejected_samples=json.dumps(
+                [_to_sample(r) for r in rejected[:5]], indent=2
+            ),
+            oracle_discrepancies=(
+                "\n".join(oracle_discrepancies[:10])
+                if oracle_discrepancies
+                else "no oracle data"
+            ),
+        )
+        raw = _call(prompt, model, key, max_tokens=8192)
+        improved = raw.get("improved_prompt", "")
+        overall = raw.get("overall_score", 0.0)
+        if improved and overall < 0.8:
+            (_PROMPT_DIR / "verify.md").write_text(improved, encoding="utf-8")
+            if verbose:
+                print(
+                    f"\n[verify] ✓ verify prompt rewritten "
+                    f"(score was {overall:.2f}, accept_rate {accept_rate:.0%}, avg_verify {avg_score:.2f})"
+                )
+    except Exception as exc:
+        if verbose:
+            print(f"\n[verify] prompt improvement failed: {exc}")
+
+
+# ---------------------------------------------------------------------------
 # Apply patch to disk
 # ---------------------------------------------------------------------------
 
@@ -837,6 +926,7 @@ def heal_project(
 
     if improve:
         _improve_heal_prompt(heal.results, model, key, verbose)
+        _improve_verify_prompt(heal.results, model, key, verbose)
 
     if output:
         out_path = output if not output.is_dir() else output / "heal.json"
