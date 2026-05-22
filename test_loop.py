@@ -297,3 +297,33 @@ class TestADRGeneration:
         assert "Sheaf" in text or "sheaf" in text
         assert "Oracle" in text or "oracle" in text
         assert "0.62" in text
+
+
+# ---------------------------------------------------------------------------
+# CLI subcommand
+# ---------------------------------------------------------------------------
+
+
+class TestCLI:
+    def test_loop_help_exits_zero(self):
+        import subprocess, sys
+
+        r = subprocess.run(
+            [sys.executable, "-m", "pact", "loop", "--help"],
+            capture_output=True,
+            text=True,
+            cwd="/Users/jonathanhill/src",
+        )
+        assert r.returncode == 0
+        assert "test-cmd" in r.stdout
+
+    def test_loop_requires_target(self):
+        import subprocess, sys
+
+        r = subprocess.run(
+            [sys.executable, "-m", "pact", "loop"],
+            capture_output=True,
+            text=True,
+            cwd="/Users/jonathanhill/src",
+        )
+        assert r.returncode != 0
