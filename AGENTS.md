@@ -154,13 +154,13 @@ Five tools currently exposed. Any agent that speaks MCP (Claude Code, etc.) can 
 
 `pact_loop._measure_tda()` calls `CallGraph.load(target)` but `target` is the project being analyzed (e.g., `~/src/future-agi`), not pact-standalone itself. For external targets there is no `graphify-out/graph.json` — so `topo_score` is always 0.0 in every fitness calculation.
 
-**Fix**: Before running `_measure_tda()`, check if `target/graphify-out/graph.json` exists. If not, run graphify on the target (via `graphify <target>` CLI or the graphify skill). Only then score.
+**Status**: ✅ Fixed. `CallGraph.load()` falls back to Python AST call graph when `graphify-out/graph.json` is absent. Same-file calls only; cross-file resolution still requires graphify.
 
 ### networkx gaps (import_graph.py, graph.py)
 
 | Function | What it enables | Status |
 |---|---|---|
-| `nx.betweenness_centrality` | Find structural bottlenecks — nodes that, if fixed, break the most violation chains | ❌ Not used |
+| `nx.betweenness_centrality` | Find structural bottlenecks — nodes that, if fixed, break the most violation chains | ✅ `_topology_priority()` (40% weight) |
 | `nx.pagerank` | Rank violations by propagation risk (high-PageRank violators infect many callers) | ✅ `_topology_priority()` in `pact_loop.py` |
 | `nx.minimum_spanning_tree` | Minimal repair tree — fewest edges to cut to isolate all violation clusters | ❌ Not used |
 | `nx.k_core` | Dense violator cores — sub-graphs where violations are densely interconnected | ❌ Not used |
@@ -278,8 +278,16 @@ Every capability that uses an LLM prompt should have a `*_improve.md` companion 
 
 11. **Expose `pact_tda` + `pact_sheaf` as MCP tools** — 2 more MCP tools. Unblocks Claude Code calling topology and sheaf analysis directly.
 
-12. **Add `project_intent_improve.md`** — Self-improving prompt for cross-module synthesis. Last remaining gap in the self-improving prompts table.
+12. ✅ **Add `project_intent_improve.md`** — Shipped. Scores cross-module synthesis on 6 dimensions. All 11 prompts in the corpus now have self-improving companions.
 
-13. **`nx.betweenness_centrality`** — Find structural bottlenecks — nodes that, if fixed, break the most violation chains. Wire into `_measure()` as third topology signal.
+13. ✅ **`nx.betweenness_centrality`** — Shipped. `_topology_priority()` blends 60% PageRank + 40% betweenness_centrality for violation ordering.
 
-14. **Wire `topo_score` for external targets** — Check if `target/graphify-out/graph.json` exists; if not, run graphify on the target first. Currently `topo_score` is always 0.0 for external projects.
+14. ✅ **Wire `topo_score` for external targets** — Shipped. `CallGraph.load()` falls back to Python AST call graph when `graphify-out/graph.json` is absent. `topo_score` now works on any Python project.
+
+## Next items
+
+15. **Make TLC actually run** — `spec_learner.validate_refinement()` uses LLM symbolic replay, not TLC. Add `subprocess.run(["java", "-jar", "tla2tools.jar", ...])`. Needs `java` in CI.
+
+16. **`pact_spec_learn` as MCP tool** — Expose `spec_learner` pipeline as MCP tool so Claude Code can trigger corpus growth from any session.
+
+17. **Cross-file betweenness in `_from_ast()`** — Current AST fallback only indexes same-file calls. Add import tracking to build cross-file edges for a more accurate call graph.
