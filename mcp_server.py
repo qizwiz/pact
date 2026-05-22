@@ -6,6 +6,10 @@ Tools:
   pact_find(file_path)                 → property violations + counterexamples
   pact_heal(violations_json, test_cmd) → patch + oracle result
   pact_check(path)                     → fast static violations
+  pact_loop(target)                    → full autonomous convergence loop
+  pact_tda(violations_json, root)      → β₁ topology scoring
+  pact_sheaf(file_path)                → Ȟ¹ cohomological LLM-guard check
+  pact_spec_learn(mode, ...)           → TLA+ spec gap corpus management
 
 Usage:
     python -m pact.mcp_server
@@ -252,6 +256,55 @@ _TOOLS = [
                 },
             },
             "required": ["file_path"],
+        },
+    },
+    {
+        "name": "pact_spec_learn",
+        "description": (
+            "TLA+ specification learning pipeline. Two modes: "
+            "(1) 'record' — takes a bug description and runs the full pipeline "
+            "(analyze_gap → propose_refinement → validate_refinement → save) to "
+            "add a new training example to the spec_learner corpus. Use this when "
+            "a real bug escaped the formal spec. "
+            "(2) 'report' — returns a summary of all corpus records: verdicts, "
+            "gap names, and which prompts need improvement. "
+            "Requires ANTHROPIC_API_KEY for 'record' mode."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "mode": {
+                    "type": "string",
+                    "enum": ["record", "report"],
+                    "description": "'record' to add a new gap; 'report' to summarize corpus",
+                },
+                "bug_description": {
+                    "type": "string",
+                    "description": "What went wrong (required for 'record' mode)",
+                },
+                "bug_file": {
+                    "type": "string",
+                    "description": "Path to the file where the bug occurred",
+                },
+                "bug_line": {
+                    "type": "integer",
+                    "default": 0,
+                    "description": "Line number of the bug",
+                },
+                "bug_manifestation": {
+                    "type": "string",
+                    "description": "What the failure looked like at runtime",
+                },
+                "bug_fix": {
+                    "type": "string",
+                    "description": "What the correct fix is",
+                },
+                "tla_spec_path": {
+                    "type": "string",
+                    "description": "Path to the TLA+ spec file (defaults to PactLoop.tla)",
+                },
+            },
+            "required": ["mode"],
         },
     },
 ]
@@ -521,6 +574,61 @@ def _api_key() -> str:
     return key
 
 
+def _tool_pact_spec_learn(params: dict) -> dict:
+    import dataclasses
+
+    from .spec_learner import (
+        SpecGapRecord,
+        analyze_gap,
+        load_corpus,
+        propose_refinement,
+        report,
+        save,
+        validate_refinement,
+    )
+
+    mode = params.get("mode", "report")
+
+    if mode == "report":
+        records = load_corpus()
+        return {"corpus_size": len(records), "report": report(records)}
+
+    # mode == "record"
+    api_key = _api_key()
+    tla_path_str = params.get("tla_spec_path", "")
+    tla_path = (
+        Path(tla_path_str)
+        if tla_path_str
+        else (Path(__file__).parent / "docs" / "tla" / "PactLoop.tla")
+    )
+    tla_text = tla_path.read_text(encoding="utf-8") if tla_path.exists() else ""
+
+    record = SpecGapRecord(
+        bug_description=params.get("bug_description", ""),
+        bug_file=params.get("bug_file", ""),
+        bug_line=int(params.get("bug_line", 0)),
+        bug_manifestation=params.get("bug_manifestation", ""),
+        bug_fix=params.get("bug_fix", ""),
+        tla_spec_path=str(tla_path),
+        tla_spec_text=tla_text,
+    )
+
+    record = analyze_gap(record, key=api_key)
+    record = propose_refinement(record, key=api_key)
+    record = validate_refinement(record, key=api_key)
+    save(record)
+
+    return {
+        "gap_name": record.gap_name,
+        "verdict": record.verdict,
+        "gap_confidence": record.gap_confidence,
+        "validate_confidence": record.validate_confidence,
+        "new_invariants": record.new_invariants,
+        "verification_claim": record.verification_claim,
+        "record": dataclasses.asdict(record),
+    }
+
+
 _DISPATCH = {
     "pact_context": _tool_pact_context,
     "pact_find": _tool_pact_find,
@@ -529,6 +637,7 @@ _DISPATCH = {
     "pact_loop": _tool_pact_loop,
     "pact_tda": _tool_pact_tda,
     "pact_sheaf": _tool_pact_sheaf,
+    "pact_spec_learn": _tool_pact_spec_learn,
 }
 
 # ---------------------------------------------------------------------------
