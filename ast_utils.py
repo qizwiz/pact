@@ -174,11 +174,12 @@ def _parse_ts_cached(path: Path):
         parser = Parser(lang)
         return parser.parse(source)
     except (OSError, Exception) as _ts_import_err:
-    import warnings
-    warnings.warn(
-        f"tree-sitter or its TypeScript grammar is not available ({_ts_import_err!r}); "
-        "TypeScript function-scope detection will be skipped silently.",
-        ImportWarning,
-        stacklevel=2,
-    )
+        import warnings
+
+        warnings.warn(
+            f"tree-sitter or its TypeScript grammar is not available ({_ts_import_err!r}); "
+            "TypeScript function-scope detection will be skipped silently.",
+            ImportWarning,
+            stacklevel=2,
+        )
         return None

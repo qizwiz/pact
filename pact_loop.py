@@ -284,7 +284,7 @@ def _measure_checker(target: Path, verbose: bool) -> tuple[int, dict, dict]:
             f"  checker: {len(results)} violations — top modes: "
             + ", ".join(f"{m}({c})" for m, c in list(by_mode.items())[:4])
         )
-    return len(results), by_mode, doc
+    return len(results), by_mode, doc, results
 
 
 def _measure_interproc(target: Path, verbose: bool) -> tuple[int, int]:
@@ -405,34 +405,28 @@ def _measure_z3(target: Path, violations_doc: dict, verbose: bool) -> int:
 
 
 def _measure_blast_radii(
-    target: Path, violations_doc: dict, verbose: bool
+    target: Path, checker_violations: list, verbose: bool
 ) -> tuple[list, int, int]:
     """Blast radius + SCC + hub analysis from reduce.py."""
     try:
-        from .reduce import compute_blast_radii, find_sccs, find_hubs
-        from .graphify_graph import CallGraph
+        from .reduce import compute_blast_radii, find_sccs, find_hubs, _build_digraph
+        from .extractor import extract_from_codebase
 
-        cg = CallGraph.load(target)
-        if cg is None:
-            return [], 0, 0
+        _, functions, call_sites = extract_from_codebase(target)
 
-        all_viols_raw = []
-        for mod in violations_doc.get("modules", []):
-            for v in mod.get("violations", []):
-                all_viols_raw.append(v)
+        blast = compute_blast_radii(functions, call_sites, checker_violations)
+        top3 = [str(b) for b in sorted(blast, key=lambda b: -b.blast_radius)[:3]]
 
-        blast = compute_blast_radii(all_viols_raw, cg)
-        top3 = [b.summary() for b in sorted(blast, key=lambda b: -b.blast_radius)[:3]]
-
-        sccs = find_sccs(cg)
-        hubs = find_hubs(cg)
+        G, func_by_name = _build_digraph(functions, call_sites)
+        sccs_list = find_sccs(G, func_by_name, checker_violations) if G else []
+        hubs_list = find_hubs(G, func_by_name, checker_violations) if G else []
 
         if verbose:
             print(
-                f"  reduce: {len(sccs)} SCCs, {len(hubs)} hubs, "
+                f"  reduce: {len(sccs_list)} SCCs, {len(hubs_list)} hubs, "
                 f"top blast: {top3[0][:60] if top3 else 'n/a'}"
             )
-        return top3, len(sccs), len(hubs)
+        return top3, len(sccs_list), len(hubs_list)
     except Exception as exc:
         if verbose:
             print(f"  reduce: skipped ({exc})")
@@ -526,8 +520,8 @@ def measure(
     print("\n[loop:measure]")
 
     # 1. Static checker (all modes, all languages)
-    m.checker_total, m.checker_by_mode, m.violations_doc = _measure_checker(
-        target, verbose
+    m.checker_total, m.checker_by_mode, m.violations_doc, _checker_raw = (
+        _measure_checker(target, verbose)
     )
 
     # 2. Z3 interprocedural (Fixedpoint CHC)
@@ -544,7 +538,7 @@ def measure(
 
     # 6. Blast radii + SCCs + hubs
     m.blast_top, m.scc_count, m.hub_count = _measure_blast_radii(
-        target, m.violations_doc, verbose
+        target, _checker_raw, verbose
     )
 
     # 7. LLM property-driven find (optional — expensive)
