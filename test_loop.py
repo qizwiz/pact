@@ -472,9 +472,9 @@ class TestLoopStateMachine:
 
             if _converged(history, epsilon=EPSILON, window=WINDOW):
                 recent = history[-WINDOW:]
-                assert max(recent) - min(recent) < EPSILON, (
-                    f"converged history violates FitnessMonotone: {recent}"
-                )
+                assert (
+                    max(recent) - min(recent) < EPSILON
+                ), f"converged history violates FitnessMonotone: {recent}"
 
         check()
 
@@ -486,9 +486,13 @@ class TestLoopStateMachine:
         STUCK_WINDOW = 2
 
         @given(
-            prefix=st.lists(st.integers(min_value=0, max_value=5), min_size=0, max_size=5),
+            prefix=st.lists(
+                st.integers(min_value=0, max_value=5), min_size=0, max_size=5
+            ),
             suffix=st.lists(
-                st.integers(min_value=0, max_value=0), min_size=0, max_size=STUCK_WINDOW - 1
+                st.integers(min_value=0, max_value=0),
+                min_size=0,
+                max_size=STUCK_WINDOW - 1,
             ),
         )
         @settings(max_examples=200, deadline=None)
@@ -527,9 +531,9 @@ class TestLoopStateMachine:
                     simulated_accepted = 0
                 else:
                     simulated_accepted = n_accepted
-                assert simulated_accepted == 0 or oracle_ok, (
-                    f"OracleSafety violated: accepted={simulated_accepted} without oracle_ok"
-                )
+                assert (
+                    simulated_accepted == 0 or oracle_ok
+                ), f"OracleSafety violated: accepted={simulated_accepted} without oracle_ok"
 
         check()
 
@@ -559,8 +563,8 @@ class TestLoopStateMachine:
 
             # At least one termination condition fires by MAX_ITERS
             if len(fitness_seq) == MAX_ITERS:
-                assert timed_out or converged or stuck, (
-                    f"Loop failed to terminate after {MAX_ITERS} iterations"
-                )
+                assert (
+                    timed_out or converged or stuck
+                ), f"Loop failed to terminate after {MAX_ITERS} iterations"
 
         check()
