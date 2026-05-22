@@ -491,21 +491,41 @@ def _measure_find(
 
 
 def _topology_priority(violations_doc: dict, target: Path) -> dict[str, float]:
-    """Score each file by call-graph connectivity for heal ordering."""
+    """Score each file by PageRank on the call graph — high-PageRank violations spread most."""
     try:
+        import networkx as nx
         from .graphify_graph import CallGraph
 
         cg = CallGraph.load(target)
         if cg is None:
             return {}
+
+        # Build directed call graph: caller → callee
+        G: nx.DiGraph = nx.DiGraph()
+        for src, targets in cg._out_edges.items():
+            for tgt in targets:
+                G.add_edge(src, tgt)
+
+        if G.number_of_nodes() == 0:
+            return {}
+
+        pr: dict[str, float] = nx.pagerank(G, alpha=0.85)
+
+        # For each violated file, take the max PageRank of its functions
+        func_to_file: dict[str, str] = {
+            nid: meta["file"] for nid, meta in cg._id_meta.items() if meta.get("file")
+        }
+        file_pr: dict[str, float] = {}
+        for nid, score in pr.items():
+            fpath = func_to_file.get(nid, "")
+            if fpath:
+                file_pr[fpath] = max(file_pr.get(fpath, 0.0), score)
+
         priorities: dict[str, float] = {}
         for mod in violations_doc.get("modules", []):
             fpath = mod["path"]
-            caller_count = sum(
-                len(cg.callers_of(inv.get("id", "").rsplit("_", 1)[-1], fpath))
-                for inv in mod.get("invariants", [])
-            )
-            priorities[fpath] = float(caller_count)
+            priorities[fpath] = file_pr.get(fpath, 0.0)
+
         if priorities:
             mx = max(priorities.values()) or 1.0
             priorities = {k: v / mx for k, v in priorities.items()}

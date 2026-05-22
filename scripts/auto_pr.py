@@ -119,6 +119,64 @@ QUEUE = [
 ]
 
 STATE_FILE = Path(__file__).parent.parent / "corpus" / "auto_pr_state.json"
+CORPUS_DIR = Path(__file__).parent.parent / "corpus"
+
+
+def _dynamic_queue(already_done: set) -> list[dict]:
+    """
+    Build a dynamic target queue from scan_github JSONL files.
+
+    Groups violation records by repo, ranks by (violation_count * log(stars+1)),
+    and converts to QUEUE-format dicts (without issue numbers).
+    Called when the static QUEUE is exhausted.
+    """
+    import collections
+    import math
+
+    records_by_repo: dict[str, list] = collections.defaultdict(list)
+    for jsonl_file in sorted(CORPUS_DIR.glob("scan_github_*.jsonl")):
+        try:
+            for line in jsonl_file.read_text().splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                    repo = rec.get("repo", "")
+                    if repo and repo not in already_done:
+                        records_by_repo[repo].append(rec)
+                except json.JSONDecodeError:
+                    continue
+        except OSError:
+            continue
+
+    targets = []
+    for repo, records in records_by_repo.items():
+        stars = records[0].get("stars", 1) if records else 1
+        by_mode: dict[str, int] = collections.Counter(
+            r.get("mode", "?") for r in records
+        )
+        top_mode = by_mode.most_common(1)[0][0] if by_mode else "unknown"
+        score = len(records) * math.log(stars + 1)
+        targets.append(
+            {
+                "repo": repo,
+                "issue": None,
+                "issue_title": None,
+                "mode": top_mode,
+                "stars": stars,
+                "violation_count": len(records),
+                "priority": score,
+                "notes": f"scan_github: {len(records)} violations ({', '.join(f'{m}:{c}' for m,c in by_mode.most_common(3))})",
+            }
+        )
+
+    # Higher score = higher priority (sort descending)
+    targets.sort(key=lambda x: x["priority"], reverse=True)
+    # Re-assign integer priorities
+    for i, t in enumerate(targets):
+        t["priority"] = i + 1
+    return targets
 
 
 def _load_state() -> dict:
@@ -722,15 +780,24 @@ def main():
     state = _load_state()
     already_done = set(state["filed"] + state["skipped"])
 
-    # Find next unprocessed, non-disabled target
+    # 1. Try static curated queue first (has issue cross-references)
     target = None
     for t in sorted(QUEUE, key=lambda x: x["priority"]):
         if t["repo"] not in already_done and not t.get("skip"):
             target = t
             break
 
+    # 2. Fall back to scan_github corpus if static queue is exhausted
     if target is None:
-        print("All targets processed.")
+        dynamic = _dynamic_queue(already_done)
+        if dynamic:
+            target = dynamic[0]
+            print(
+                f"Static queue exhausted — picking from scan_github corpus ({len(dynamic)} available)"
+            )
+
+    if target is None:
+        print("All targets processed (static queue + scan_github corpus empty).")
         return
 
     try:
