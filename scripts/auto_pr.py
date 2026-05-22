@@ -123,7 +123,10 @@ STATE_FILE = Path(__file__).parent.parent / "corpus" / "auto_pr_state.json"
 
 def _load_state() -> dict:
     if STATE_FILE.exists():
-        return json.loads(STATE_FILE.read_text())
+        try:
+            return json.loads(STATE_FILE.read_text())
+        except json.JSONDecodeError:
+            return {"filed": [], "skipped": []}
     return {"filed": [], "skipped": []}
 
 
@@ -520,7 +523,10 @@ def _pact_sheaf_h1(path: str) -> tuple[int, bool]:
         h1 = h1_rank_for_file(path)
         s = sheaf_summary(path)
         return h1, s.get("using_z3", False)
-    except Exception:
+    except Exception as e:
+        import warnings
+
+        warnings.warn(f"_pact_sheaf_h1({path!r}): {e}")
         return -1, False
 
 
@@ -557,8 +563,8 @@ def _apply_pact_fix(repo_dir: str, violations: list[dict]) -> list[str]:
                         message=v.get("message", ""),
                     )
                     evidences.append(ev)
-                except Exception:
-                    pass
+                except Exception as e:
+                    print(f"  [warn] skipping violation evidence (build failed): {e}")
 
             if not evidences:
                 continue
@@ -617,22 +623,22 @@ def _manual_fix_choices(abs_path: str, viols: list[dict], changed: list, rel_pat
 
 
 def _proof_report(repo_dir: str, changed_files: list[str]) -> str:
-    """Generate Z3 proof summary for changed files."""
-    lines = ["**pact sheaf-cohomological proof status after fix:**\n"]
-    lines.append("| File | Ȟ¹ (after) | Z3 |")
-    lines.append("|------|-----------|-----|")
+    """Generate proof summary for changed files (plain language)."""
+    lines = ["**Formal verification after fix:**\n"]
+    lines.append("| File | Independent fixes needed | Z3 result |")
+    lines.append("|------|--------------------------|-----------|")
     all_proved = True
     for rel in changed_files:
         abs_path = os.path.join(repo_dir, rel)
         if not os.path.exists(abs_path):
             continue
         h1, z3 = _pact_sheaf_h1(abs_path)
-        status = "UNSAT ✓" if h1 == 0 and z3 else f"H¹={h1}"
+        status = "proved safe ✓" if h1 == 0 and z3 else f"{h1} path(s) remaining"
         if h1 != 0:
             all_proved = False
         lines.append(f"| `{rel}` | {h1} | {status} |")
     if all_proved:
-        lines.append("\nAll access sites proven safe (Z3 UNSAT certificate).")
+        lines.append("\nAll access paths verified safe by Z3 constraint solver.")
     return "\n".join(lines)
 
 
