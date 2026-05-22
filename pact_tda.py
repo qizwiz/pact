@@ -209,7 +209,9 @@ def score_corpus(
     try:
         g = json.loads(Path(graph_path).read_text())
     except json.JSONDecodeError as exc:
-        raise ValueError(f"graph_path {graph_path!r} does not contain valid JSON: {exc}") from exc
+        raise ValueError(
+            f"graph_path {graph_path!r} does not contain valid JSON: {exc}"
+        ) from exc
     cg = CallGraph(g.get("nodes", []), g.get("links", []))
 
     scored: list[dict] = []
@@ -222,7 +224,12 @@ def score_corpus(
             entry = json.loads(line)
         except json.JSONDecodeError as exc:
             import warnings
-            warnings.warn(f"Skipping invalid JSON line in corpus: {exc!s}", UserWarning, stacklevel=2)
+
+            warnings.warn(
+                f"Skipping invalid JSON line in corpus: {exc!s}",
+                UserWarning,
+                stacklevel=2,
+            )
             continue
         func = entry.get("call", "")
         sf = entry.get("file", "")

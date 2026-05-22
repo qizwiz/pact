@@ -123,6 +123,7 @@ def main():
                 d = json.loads(line)
             except json.JSONDecodeError as e:
                 import warnings
+
                 warnings.warn(f"Skipping malformed JSON line: {e}")
                 continue
             pairs[(d["repo"], d["file"])] = None
@@ -157,13 +158,15 @@ def main():
         cache_key = f"{repo}/{file_path}".replace("/", "__")
         cache_file = cache_dir / f"{cache_key}.json"
 
-          if cache_file.exists():
-              try:
-                  data = json.loads(cache_file.read_text())
-              except json.JSONDecodeError as e:
-                  import warnings
-                  warnings.warn(f"Corrupt cache file {cache_file}: {e}; ignoring.")
-                  data = {}            imports = data.get("imports", [])
+        if cache_file.exists():
+            try:
+                data = json.loads(cache_file.read_text())
+            except json.JSONDecodeError as e:
+                import warnings
+
+                warnings.warn(f"Corrupt cache file {cache_file}: {e}; ignoring.")
+                data = {}
+            imports = data.get("imports", [])
         else:
             # Get default branch
             if repo not in branch_cache:

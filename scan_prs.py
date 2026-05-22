@@ -43,8 +43,8 @@ def get_open_prs() -> list[dict]:
         return json.loads(result.stdout)
     except json.JSONDecodeError as exc:
         raise ValueError(
-            f"Failed to parse 'gh pr list' output as JSON: {exc}
-Raw output: {result.stdout!r}"
+            f"Failed to parse 'gh pr list' output as JSON: {exc!s}\n"
+            f"Raw output: {result.stdout!r}"
         ) from exc
 
 
