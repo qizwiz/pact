@@ -116,6 +116,15 @@ QUEUE = [
         "notes": "EXACT: json.loads(typed_tool['function']['arguments']) at transformation.py:276 unguarded",
         "skip": True,  # CLA pending on BerriAI/litellm — check cla-assistant.io/BerriAI/litellm?pullRequest=28148
     },
+    {
+        "repo": "n8n-io/n8n",
+        "issue": 30871,
+        "issue_title": "[Bug] silent imap death",
+        "mode": "empty_catch",
+        "stars": 189359,
+        "priority": 11,
+        "notes": "STRONG: 1292 empty catch{} blocks in TS; IMAP trigger silently dies when connection drops — swallowed errors prevent reconnect, no log output, workflow appears active but is dead",
+    },
 ]
 
 STATE_FILE = Path(__file__).parent.parent / "corpus" / "auto_pr_state.json"
