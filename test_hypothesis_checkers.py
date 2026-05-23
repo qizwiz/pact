@@ -17,12 +17,14 @@ import keyword
 import tempfile
 import textwrap
 
-from hypothesis import given, settings
+from hypothesis import Phase, given, settings, target
 from hypothesis import strategies as st
 
 from pact.failure_mode import (
     BARE_EXCEPT,
+    JSON_LOADS_UNGUARDED,
     MUTABLE_DEFAULT_ARG,
+    OPTIONAL_DEREF,
     SAVE_WITHOUT_UPDATE_FIELDS,
 )
 
@@ -71,9 +73,14 @@ def test_bare_except_soundness(varname):
 
 
 @given(_EXCEPTION_NAME)
-@settings(max_examples=50)
+@settings(
+    max_examples=50,
+    phases=[Phase.explicit, Phase.reuse, Phase.generate, Phase.target, Phase.shrink],
+)
 def test_bare_except_precision_specific_exception(exc_name):
-    """Specific exception types with real bodies are NOT flagged."""
+    """Specific exception types with real bodies are NOT flagged.
+    Targeting: guide search toward exception names most likely to cause false positives.
+    """
     source = f"""
         def fn():
             try:
@@ -82,6 +89,7 @@ def test_bare_except_precision_specific_exception(exc_name):
                 raise RuntimeError("wrapped") from e
     """
     violations = _file_violations(BARE_EXCEPT, source)
+    target(float(len(violations)))  # maximize: finds any false positives faster
     assert (
         not violations
     ), f"false positive: except {exc_name} with real body was flagged"
@@ -157,14 +165,20 @@ def test_mutable_default_with_mutation_flagged(param_name, mutable):
 
 
 @given(_IDENTIFIER, _SAFE_VALUE)
-@settings(max_examples=100)
+@settings(
+    max_examples=100,
+    phases=[Phase.explicit, Phase.reuse, Phase.generate, Phase.target, Phase.shrink],
+)
 def test_safe_default_not_flagged(param_name, safe_val):
-    """def f(x=<immutable>) is never flagged regardless of body."""
+    """def f(x=<immutable>) is never flagged regardless of body.
+    Targeting: find the (param_name, safe_val) combo most likely to cause a false positive.
+    """
     source = f"""
         def fn({param_name}={safe_val}):
             return {param_name}
     """
     violations = _file_violations(MUTABLE_DEFAULT_ARG, source)
+    target(float(len(violations)))  # maximize: any false positive surfaces faster
     assert (
         not violations
     ), f"false positive: def fn({param_name}={safe_val}) was flagged"
@@ -261,3 +275,57 @@ def test_checker_is_deterministic(mode):
     assert [(v.line, v.call) for v in r1] == [
         (v.line, v.call) for v in r2
     ], f"{mode.name} is non-deterministic"
+
+
+# ===========================================================================
+# Targeting: adaptive search for precision violations
+# ===========================================================================
+
+
+@given(_IDENTIFIER, st.integers(min_value=1, max_value=4))
+@settings(
+    max_examples=60,
+    phases=[Phase.explicit, Phase.reuse, Phase.generate, Phase.target, Phase.shrink],
+)
+def test_json_loads_guarded_precision_targeting(var, depth):
+    """json.loads() inside try/except JSONDecodeError at any nesting depth is NOT flagged.
+    Targeting: push search toward deep nesting that might confuse guard detection.
+    """
+    indent = "    " * depth
+    source = (
+        "import json\n"
+        f"def fn({var}):\n"
+        f"{indent}try:\n"
+        f"{indent}    data = json.loads({var})\n"
+        f"{indent}except json.JSONDecodeError:\n"
+        f"{indent}    data = {{}}\n"
+    )
+    violations = _file_violations(JSON_LOADS_UNGUARDED, source)
+    target(float(depth))  # hill-climb toward deepest nesting that still avoids FP
+    assert (
+        len(violations) == 0
+    ), f"False positive at depth={depth}: json.loads guarded at depth {depth} was flagged"
+
+
+@given(_IDENTIFIER, st.sampled_from(["first", "get", "filter"]))
+@settings(
+    max_examples=60,
+    phases=[Phase.explicit, Phase.reuse, Phase.generate, Phase.target, Phase.shrink],
+)
+def test_optional_deref_guarded_not_flagged_targeting(var, method):
+    """Optional dereference guarded by an if-None check is NOT flagged.
+    Targeting: push search toward the guard patterns most likely to cause false positives.
+    """
+    source = (
+        "def fn(qs):\n"
+        f"    {var} = qs.{method}()\n"
+        f"    if {var} is None:\n"
+        f"        return None\n"
+        f"    return {var}.name\n"
+    )
+    violations = _file_violations(OPTIONAL_DEREF, source)
+    # Weight by method: longer method names → more complex code → guide search harder
+    target(float(len(method)))
+    assert (
+        len(violations) == 0
+    ), f"False positive: guarded {method}() dereference was flagged for var={var!r}"
