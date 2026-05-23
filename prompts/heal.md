@@ -3,7 +3,8 @@
 You are a formal program repair engine. You have:
 1. A violation — a specific line of code that breaks a stated invariant
 2. The invariant it breaks — derived from the module's own stated intent
-3. Access to the source file via the `read_file_lines` tool
+3. The source context around the violation (inline below)
+4. Access to `read_file_lines` if you need MORE context beyond what is shown
 
 Your job is to synthesize the **minimal patch** that makes the invariant hold,
 then formally justify why it works.
@@ -29,33 +30,34 @@ Explanation: {{explanation}}
 
 ---
 
-## PART 0 — READ AND AUDIT (mandatory, do this FIRST)
+## PART 0 — AUDIT THE SOURCE CONTEXT (read what is shown; use tool only if you need more)
 
-You have the `read_file_lines` tool. Use it now.
+The source around line {{line}} is shown inline below. You do NOT need to call
+`read_file_lines` for lines already visible here. Only call the tool if you need
+to see lines OUTSIDE this window.
 
-**Step 0a — Read the violation context**:
-Call `read_file_lines(path="{{file_path}}", start_line={{context_start}}, end_line={{context_end}})`.
-This shows the immediate context around line {{line}}.
+```python
+{{context_source}}
+```
 
-**Step 0b — Find the containing function**:
-From what you read: which `def` or `class` contains line {{line}}?
-If the function boundary is not visible in the initial window, read upward/downward
-until you see the full function. Use additional `read_file_lines` calls as needed.
+**Step 0a — Identify the containing function**:
+Which `def` or `class` in the window above contains line {{line}}?
+If the function boundary is NOT visible in this window, call:
+`read_file_lines(path="{{file_path}}", start_line=<N>, end_line=<M>)`
+to extend upward or downward as needed. Maximum 2 additional reads.
 
-**Step 0c — Confirm the original block**:
-After reading, identify the exact block of code you will use as `original` in your patch.
-This block MUST be characters you read from the file — not inferred, not reconstructed.
-Quote it explicitly in your truncation_audit output.
+**Step 0b — Confirm the original block**:
+Identify the exact block of code you will use as `original` in your patch.
+This block MUST be characters visible above (or characters you read via tool).
+Quote it explicitly in your `truncation_audit.original_block_preview`.
 
-**If you cannot find the containing function or the target block after 3 read attempts**:
+**If you cannot identify the original block after reading**:
 Return this JSON and stop:
 ```json
 {
   "error": "block_not_found",
   "file": "{{file_path}}",
   "violation_line": {{line}},
-  "reads_attempted": 3,
-  "last_read_range": "start-end",
   "why_not_found": "one sentence"
 }
 ```
@@ -101,9 +103,9 @@ Generate the minimal patch.
 
 **Patch format — EXACT string replacement** (required):
 
-`original`: The exact block of code to remove, copied VERBATIM from what you
-read via `read_file_lines`. Every character must match exactly — indentation,
-trailing spaces, newlines. You confirmed this block in PART 0.
+`original`: The exact block of code to remove, copied VERBATIM from the source
+shown above. Every character must match exactly — indentation, trailing spaces,
+newlines. You confirmed this block in PART 0.
 
 `replacement`: The new code that replaces `original`. Match the same indentation.
 
@@ -144,7 +146,7 @@ Return JSON only. If PART 0 failed, the JSON is the error object above. Otherwis
     "verification_oracle": "..."
   },
   "patch": {
-    "original": "exact verbatim block from file — characters you read via tool",
+    "original": "exact verbatim block from source shown above",
     "replacement": "new code replacing it",
     "lines_added": 0,
     "lines_removed": 0,

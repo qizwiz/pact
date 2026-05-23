@@ -432,7 +432,7 @@ def _triage(
         readme_excerpt=_collect_readme(root),
     )
 
-    raw = _call(prompt, model, key, max_tokens=4096)
+    raw = _call(prompt, model, key, max_tokens=8192)
     essence = raw.get("project_essence", "")
     key_files = [f["path"] for f in raw.get("key_files", [])]
 

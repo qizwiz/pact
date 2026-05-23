@@ -381,7 +381,7 @@ def _synthesize(
     feedback: str = "",
 ) -> Optional[SynthesisResult]:
     line = int(violation.get("line", 1))
-    _, ctx_start, ctx_end = _context_window(source_lines, line)
+    ctx_text, ctx_start, ctx_end = _context_window(source_lines, line)
     file_path = str(Path(violation.get("file", "?")).resolve())
 
     template = _load_prompt("heal")
@@ -400,6 +400,7 @@ def _synthesize(
         explanation=violation.get("explanation", ""),
         context_start=ctx_start,
         context_end=ctx_end,
+        context_source=ctx_text,
     )
 
     raw = _call_with_tools(prompt, model, key, max_tokens=8192)
