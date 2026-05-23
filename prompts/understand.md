@@ -24,6 +24,28 @@ falls outside the visible range. Do NOT read lines you can already see inline.
 
 ---
 
+## DECLARED INTENT (what the code was supposed to do — compare against implementation)
+
+### Git history (recent commits to this file — shows how intent evolved)
+```
+{{git_log}}
+```
+
+### Intent signals (module/function docstrings + TODO/FIXME/HACK/BUG comments)
+```
+{{intent_signals}}
+```
+
+**INTENT GAP PROTOCOL** — Before reading source details, scan the declared intent above:
+1. For each docstring claim: is it enforced by visible code? If NO → `intent_gap` invariant, confidence ≥ 0.90.
+2. For each TODO/FIXME/BUG still present in source: the code self-reports a deficiency → `intent_gap` invariant, confidence 0.95.
+3. For each git commit saying "fix X" or "ensure Y": is X/Y enforced in visible code? If NO → `intent_gap` invariant, confidence 0.85.
+
+Intent gaps are the MOST ACTIONABLE findings: the developer stated what was needed; the code failed to deliver it.
+*(This protocol informs Part 2 invariants only — do not produce separate output here.)*
+
+---
+
 ## THE ONE UNRECOVERABLE FAILURE: FABRICATION
 
 The source block above may be truncated. **Writing anything about code you cannot see is the only unrecoverable failure.** A short honest analysis of 2 visible functions is worth more than a complete-looking analysis that invents 8 more.
@@ -219,17 +241,25 @@ BAD: Assumptions about functions not in `visible_definitions`.
 
 Based ONLY on `visible_definitions`. Every invariant must pass the fabrication test: you must be able to quote the exact source line in `derived_from`.
 
-**MANDATORY INVARIANT SOURCES**: The following patterns in visible source ALWAYS produce invariants — if you see them and produce no invariant, that is a failure:
+**MANDATORY INVARIANT SOURCES**: The following patterns ALWAYS produce invariants — if you see them and produce no invariant, that is a failure:
 1. **bare `except Exception:` or `except:`** that sets a flag or passes → error_contract invariant about silent failure
 2. **`frozenset` constant with inline exclusion comments** → data_flow invariant about what is intentionally excluded
 3. **Two constants that cover the same domain** (e.g., `_KNOWN_ASYNC_APIS` + `_KNOWN_ASYNC_METHODS`) → invariant about their interaction or collision risk
 4. **Boolean flag set by import try/except** → guard_requirement invariant that all callers must check the flag
+5. **Any TODO/FIXME/BUG/HACK comment in visible source** → `intent_gap` invariant: the code self-reports a known deficiency; confidence 0.95
+6. **Any docstring claim not enforced by visible code** → `intent_gap` invariant: declared behavior without implementation; confidence 0.90–0.95
+7. **Git commit says "fix X" or "ensure Y" but visible code has no guard for X/Y** → `intent_gap` invariant; confidence 0.85
+
+**intent_gap confidence calibration**:
+- 0.95: TODO/FIXME/BUG still in source (self-reported), or docstring says "raises/returns X" with no visible enforcement
+- 0.90: docstring claims a property that visible code lacks
+- 0.85: git history claims a fix was applied but no evidence visible in source
 
 **INVARIANT QUALITY TEST**: Ask "Could this invariant have been written from a description of the module, without reading the actual code?" If yes, rewrite it to reference a specific line, threshold, type annotation, or structural choice visible in the code.
 
 For each invariant:
 - **id**: inv_NNN
-- **type**: nullable_contract | async_contract | error_contract | guard_requirement | data_flow | uniqueness | cache_contract | other
+- **type**: nullable_contract | async_contract | error_contract | guard_requirement | data_flow | uniqueness | cache_contract | intent_gap | other
 - **statement**: plain English — what must always be true
 - **applies_to**: names verbatim from `visible_definitions` ONLY
 - **formal**: semi-formal (∀ / always: / never:)

@@ -496,6 +496,57 @@ def _improve_triage_prompt(
 # ---------------------------------------------------------------------------
 
 
+def _extract_git_log(path: Path) -> str:
+    """Return last 10 commit subjects for this file (git history of intent)."""
+    import subprocess
+
+    try:
+        result = subprocess.run(
+            ["git", "log", "--follow", "--oneline", "-10", "--", str(path)],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            cwd=str(path.parent),
+        )
+        return result.stdout.strip() or "(no git history for this file)"
+    except Exception:
+        return "(git not available)"
+
+
+def _extract_intent_signals(source: str) -> str:
+    """Module docstring + per-function docstrings (first line) + TODO/FIXME/HACK/BUG comments."""
+    signals: list[str] = []
+
+    try:
+        tree = ast.parse(source)
+        mod_doc = ast.get_docstring(tree)
+        if mod_doc:
+            signals.append(f"[MODULE DOCSTRING]\n{mod_doc[:600]}")
+
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                doc = ast.get_docstring(node)
+                if doc:
+                    first = doc.split("\n")[0].strip()[:150]
+                    if first:
+                        signals.append(f'[line {node.lineno}] {node.name}: "{first}"')
+    except SyntaxError:
+        pass
+
+    _intent_re = re.compile(
+        r"#\s*(TODO|FIXME|HACK|BUG|NOTE|WARN(?:ING)?|XXX)[:\s]+(.*)",
+        re.IGNORECASE,
+    )
+    for i, line in enumerate(source.splitlines(), 1):
+        m = _intent_re.search(line)
+        if m:
+            tag = m.group(1).upper()
+            text = m.group(2).strip()[:120]
+            signals.append(f"[line {i}] {tag}: {text}")
+
+    return "\n".join(signals) if signals else "(none found)"
+
+
 def _understand_module(
     path: Path,
     project_essence: str,
@@ -514,6 +565,9 @@ def _understand_module(
         size = f"{len(source):,} bytes{', truncated' if truncated else ''}"
         print(f"  → {path.name} ({size})")
 
+    git_log = _extract_git_log(path)
+    intent_signals = _extract_intent_signals(source)
+
     template = _load_prompt("understand")
     prompt = _render(
         template,
@@ -522,6 +576,8 @@ def _understand_module(
         file_path=str(path.resolve()),
         source=source,
         truncation_note=trunc_note,
+        git_log=git_log,
+        intent_signals=intent_signals,
     )
 
     # Use tool-enabled call — model can read beyond truncation point if needed

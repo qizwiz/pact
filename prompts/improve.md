@@ -55,6 +55,9 @@ Does the understanding cover the real failure modes in the code? Look at the
 source — are there try/except blocks, None checks, empty-list guards that
 the output didn't mention? Are the assumptions section listing the actual
 implicit assumptions visible in the code?
+Also check: does any docstring in `source_excerpt` make a claim that is NOT
+backed by a corresponding invariant? Unverified docstring claims are missed
+`intent_gap` invariants and count as completeness failures.
 Score 10 only if you cannot find anything significant the output missed.
 
 **ACTIONABILITY** (target: 8+)
@@ -70,6 +73,10 @@ scan wouldn't show? Does it identify the subtle design decisions, the
 implicit contracts, the things that would bite you if you didn't know them?
 Score < 5 if the output is a summary of what the code does rather than
 an analysis of why it works the way it does.
+Score 10 if the output contains `intent_gap` invariants: places where
+docstrings, TODO/FIXME/HACK comments, or git history declare something
+that the visible code does NOT enforce — the gap between declared and
+actual behavior is the most actionable finding possible.
 
 ---
 
