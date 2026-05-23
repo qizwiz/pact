@@ -547,6 +547,9 @@ def _extract_intent_signals(source: str) -> str:
     return "\n".join(signals) if signals else "(none found)"
 
 
+_SIGNATURE_ONLY_BYTES = 30_000  # files larger than this get sig-summary + tool calls
+
+
 def _understand_module(
     path: Path,
     project_essence: str,
@@ -554,19 +557,36 @@ def _understand_module(
     key: str,
     verbose: bool,
 ) -> ModuleIntent:
-    source, truncated = _read_truncated(path)
-    trunc_note = (
-        "\n[FILE TRUNCATED — remaining signatures:]\n" + _signature_summary(source)
-        if truncated
-        else ""
-    )
+    raw_bytes = path.read_bytes()
+    full_source = raw_bytes.decode("utf-8", errors="replace")
+
+    # For large files, send signature summary as primary context so the model
+    # doesn't exhaust tool rounds trying to sequentially page through 100KB+.
+    # Tool calls are still available for targeted reads of specific functions.
+    if len(raw_bytes) > _SIGNATURE_ONLY_BYTES:
+        sig = _signature_summary(full_source)
+        source = sig
+        trunc_note = (
+            f"\n[LARGE FILE — {len(raw_bytes):,} bytes shown as signature map. "
+            f'Use read_file_lines(path="{path.resolve()}", start_line=N, end_line=M) '
+            f"to read any function body in full.]"
+        )
+        truncated = True
+    else:
+        source, truncated = _read_truncated(path)
+        trunc_note = (
+            "\n[FILE TRUNCATED — remaining signatures:]\n" + _signature_summary(source)
+            if truncated
+            else ""
+        )
 
     if verbose:
-        size = f"{len(source):,} bytes{', truncated' if truncated else ''}"
+        size = f"{len(raw_bytes):,} bytes{', sig-map' if len(raw_bytes) > _SIGNATURE_ONLY_BYTES else (', truncated' if truncated else '')}"
         print(f"  → {path.name} ({size})")
 
+    # Intent signals always derived from full source, not sig map
     git_log = _extract_git_log(path)
-    intent_signals = _extract_intent_signals(source)
+    intent_signals = _extract_intent_signals(full_source)
 
     template = _load_prompt("understand")
     prompt = _render(
@@ -580,7 +600,7 @@ def _understand_module(
         intent_signals=intent_signals,
     )
 
-    # Use tool-enabled call — model can read beyond truncation point if needed
+    # Use tool-enabled call — model reads specific function bodies on demand
     raw = _call_with_tools(prompt, model, key, max_tokens=8192)
 
     u = raw.get("understanding", {})
