@@ -408,6 +408,57 @@ def test_optional_dereference_malformed_call_skipped(tmp_path):
     assert len(result.skipped) == 1
 
 
+def _ev_mypy(line, call, file="x.py"):
+    return FailureEvidence(
+        mode_name="optional_dereference",
+        file=file,
+        line=line,
+        call=call,
+        message="",
+        spec_id="mypy",
+    )
+
+
+def test_optional_dereference_mypy_format_guard_inserted(tmp_path):
+    src = textwrap.dedent("""\
+        def fn(result):
+            return result.upper()
+    """)
+    f = tmp_path / "ex.py"
+    f.write_text(src)
+    ev = _ev_mypy(2, 'Item "None" of "str | None" has no attribute "upper"', str(f))
+    result = fix_file(str(f), [ev])
+    assert result.changed
+    assert "if result is None:" in result.patched
+    assert "raise ValueError(f\"'result' is None\")" in result.patched
+    assert len(result.applied) == 1
+    assert len(result.skipped) == 0
+
+
+def test_optional_dereference_mypy_fallback_no_attr_in_message(tmp_path):
+    src = textwrap.dedent("""\
+        def fn(obj):
+            return obj.value
+    """)
+    f = tmp_path / "ex.py"
+    f.write_text(src)
+    # mypy message without 'has no attribute' phrasing — fallback to first var.attr in source
+    ev = _ev_mypy(2, 'Item "None" of "X | None" ...', str(f))
+    result = fix_file(str(f), [ev])
+    assert result.changed
+    assert "if obj is None:" in result.patched
+
+
+def test_optional_dereference_mypy_no_source_match_skipped(tmp_path):
+    src = "x = 1\n"
+    f = tmp_path / "ex.py"
+    f.write_text(src)
+    ev = _ev_mypy(1, 'Item "None" of "str | None" has no attribute "upper"', str(f))
+    result = fix_file(str(f), [ev])
+    assert not result.changed
+    assert len(result.skipped) == 1
+
+
 def test_optional_dereference_syntactically_valid(tmp_path):
     src = textwrap.dedent("""\
         def process(result):

@@ -310,7 +310,8 @@ def _fix_missing_await(
 # ---------------------------------------------------------------------------
 # Violation: var used without None check where var was assigned from an
 # Optional source (dict.get(), nullable DB field, optional return type).
-# ev.call format: "var.attr"  (the dereference that triggered the flag)
+# ev.call format (AST): "var.attr"
+# ev.call format (mypy, spec_id="mypy"): 'Item "None" of "T | None" has no attribute "X"'
 #
 # Fix: insert `if var is None:\n    raise ValueError("'var' is None")\n`
 # immediately before the enclosing statement.  Multiple dereferences of the
@@ -318,6 +319,32 @@ def _fix_missing_await(
 # ---------------------------------------------------------------------------
 
 _OPT_PAT = re.compile(r"^(\w+)\.\w+")
+_OPT_PAT_SEARCH = re.compile(r"(\w+)\.\w+")
+_MYPY_ATTR_PAT = re.compile(r'has no attribute "(\w+)"')
+
+
+def _extract_opt_var(ev: "FailureEvidence", lines: list[str]) -> str | None:
+    """Extract the None-dereference variable name from a violation.
+
+    AST violations: ev.call = "var.attr" — regex matches directly.
+    Mypy violations: ev.call = 'Item "None" of "T | None" has no attribute "X"'
+        → extract attr "X" from message, then find var.X in source line.
+    """
+    m = _OPT_PAT.match(ev.call)
+    if m:
+        return m.group(1)
+    if getattr(ev, "spec_id", None) == "mypy":
+        src_line = lines[ev.line - 1] if ev.line and 0 < ev.line <= len(lines) else ""
+        attr_m = _MYPY_ATTR_PAT.search(ev.call)
+        if attr_m:
+            attr = re.escape(attr_m.group(1))
+            var_m = re.search(rf"(\w+)\.{attr}\b", src_line)
+            if var_m:
+                return var_m.group(1)
+        fallback = _OPT_PAT_SEARCH.search(src_line)
+        if fallback:
+            return fallback.group(1)
+    return None
 
 
 def _fix_optional_dereference(
@@ -332,11 +359,10 @@ def _fix_optional_dereference(
 
     by_insert_line: dict[int, list[tuple[str, FailureEvidence]]] = {}
     for ev in violations:
-        m = _OPT_PAT.match(ev.call)
-        if not m:
+        var = _extract_opt_var(ev, lines)
+        if var is None:
             skipped.append(ev)
             continue
-        var = m.group(1)
         insert_line = stmt_index.get(ev.line, ev.line)
         by_insert_line.setdefault(insert_line, []).append((var, ev))
 
