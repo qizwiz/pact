@@ -254,6 +254,9 @@ _SEMGREP_RULE_TO_MODE: dict[str, str] = {
     "bare-except": "bare_except",
     "timeout-not-set-requests": "timeout_not_set",
     "timeout-not-set-httpx": "timeout_not_set",
+    "queryset-first-none-dereference": "optional_dereference",
+    "queryset-last-none-dereference": "optional_dereference",
+    "dict-get-none-dereference": "optional_dereference",
     # "optional-dereference": no semgrep rule yet (needs .first()/.get() chain awareness)
     # "missing-await": no semgrep rule (semgrep cannot know which callables are async)
 }
@@ -403,6 +406,21 @@ def _run_semgrep(root: Path) -> list[Violation]:
             path, end.get("line", line)
         ):
             continue
+
+        # Suppress optional_dereference FP: X.first().attr if X else Y
+        # Semgrep pattern-not cannot suppress inline ternary guards on the same line.
+        if rule_id in {
+            "queryset-first-none-dereference",
+            "queryset-last-none-dereference",
+        }:
+            import re as _re2
+
+            _src_lines = _file_lines.get(path, [])
+            if _src_lines and 0 < line <= len(_src_lines):
+                if _re2.search(
+                    r"\.\b(?:first|last)\(\)\.\w+\s+if\s+\w", _src_lines[line - 1]
+                ):
+                    continue
 
         # Skip vendor/third-party directories
         if any(seg in path for seg in ("/_vendor/", "/vendor/", "/site-packages/")):

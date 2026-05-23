@@ -5254,3 +5254,63 @@ def test_mypy_spec_id_is_mypy(tmp_path):
     assert all(
         r.spec_id == "mypy" for r in results
     ), "all mypy findings must have spec_id='mypy'"
+
+
+def test_semgrep_queryset_first_dereference_detected(tmp_path):
+    """semgrep optional-dereference rule fires on qs.first().attr."""
+    if not _semgrep_available():
+        import pytest
+
+        pytest.skip("semgrep not installed")
+    from .checker import _run_semgrep
+
+    (tmp_path / "mod.py").write_text("def fn(qs):\n" "    return qs.first().name\n")
+    results = _run_semgrep(tmp_path)
+    od = [r for r in results if r.context == "optional_dereference"]
+    assert od, "qs.first().name must be flagged as optional_dereference"
+
+
+def test_semgrep_queryset_first_ternary_guard_not_flagged(tmp_path):
+    """semgrep optional-dereference does not flag qs.first().attr if qs else None."""
+    if not _semgrep_available():
+        import pytest
+
+        pytest.skip("semgrep not installed")
+    from .checker import _run_semgrep
+
+    (tmp_path / "mod.py").write_text(
+        "def fn(qs):\n" "    return qs.first().name if qs else None\n"
+    )
+    results = _run_semgrep(tmp_path)
+    od = [r for r in results if r.context == "optional_dereference"]
+    assert not od, f"ternary-guarded first() must not be flagged; got {od}"
+
+
+def test_semgrep_dict_get_dereference_detected(tmp_path):
+    """semgrep optional-dereference rule fires on d.get(key).attr without default."""
+    if not _semgrep_available():
+        import pytest
+
+        pytest.skip("semgrep not installed")
+    from .checker import _run_semgrep
+
+    (tmp_path / "mod.py").write_text("def fn(d):\n" "    return d.get('key').upper()\n")
+    results = _run_semgrep(tmp_path)
+    od = [r for r in results if r.context == "optional_dereference"]
+    assert od, "d.get('key').upper() must be flagged as optional_dereference"
+
+
+def test_semgrep_dict_get_with_default_not_flagged(tmp_path):
+    """semgrep optional-dereference does not flag d.get(key, default).attr."""
+    if not _semgrep_available():
+        import pytest
+
+        pytest.skip("semgrep not installed")
+    from .checker import _run_semgrep
+
+    (tmp_path / "mod.py").write_text(
+        "def fn(d):\n" "    return d.get('key', '').upper()\n"
+    )
+    results = _run_semgrep(tmp_path)
+    od = [r for r in results if r.context == "optional_dereference"]
+    assert not od, f"d.get(key, default).upper() must not be flagged; got {od}"

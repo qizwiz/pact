@@ -1,0 +1,59 @@
+rules:
+  # -------------------------------------------------------------------------
+  # QuerySet.first() / .last() inline dereference
+  # -------------------------------------------------------------------------
+  # Catches: qs.first().name, qs.filter(...).first().id, etc.
+  # Does NOT catch: obj = qs.first(); obj.name  (handled by AST checker)
+  # -------------------------------------------------------------------------
+  - id: queryset-first-none-dereference
+    patterns:
+      - pattern: $X.first().$ATTR
+    message: >
+      `$X.first()` returns None when no rows match — accessing `.$ATTR` without
+      a None check raises AttributeError. Assign to a variable and add
+      `if result is None: ...` before accessing attributes.
+    languages: [python]
+    severity: WARNING
+    metadata:
+      category: correctness
+      technology: [python, django, orm]
+      confidence: HIGH
+      references:
+        - https://github.com/qizwiz/pact
+
+  - id: queryset-last-none-dereference
+    patterns:
+      - pattern: $X.last().$ATTR
+    message: >
+      `$X.last()` returns None when no rows match — accessing `.$ATTR` without
+      a None check raises AttributeError.
+    languages: [python]
+    severity: WARNING
+    metadata:
+      category: correctness
+      technology: [python, django, orm]
+      confidence: HIGH
+      references:
+        - https://github.com/qizwiz/pact
+
+  # -------------------------------------------------------------------------
+  # dict.get() inline dereference (without default)
+  # -------------------------------------------------------------------------
+  # Catches: d.get('key').upper(), headers.get('Content-Type').split('/'), etc.
+  # Does NOT flag: d.get('key', '').upper()  (has a default value)
+  # -------------------------------------------------------------------------
+  - id: dict-get-none-dereference
+    patterns:
+      - pattern: $X.get($KEY).$ATTR
+      - pattern-not: $X.get($KEY, $DEFAULT).$ATTR
+    message: >
+      `$X.get($KEY)` returns None when the key is absent — accessing `.$ATTR`
+      raises AttributeError. Use `$X.get($KEY, default)` or add a None guard.
+    languages: [python]
+    severity: WARNING
+    metadata:
+      category: correctness
+      technology: [python]
+      confidence: HIGH
+      references:
+        - https://github.com/qizwiz/pact
