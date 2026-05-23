@@ -5,7 +5,8 @@
     "langchain-ai/langchain",
     "infiniflow/ragflow",
     "Significant-Gravitas/AutoGPT",
-    "google/adk-python"
+    "google/adk-python",
+    "n8n-io/n8n"
   ],
   "skipped": [
     "Aider-AI/aider"
