@@ -459,6 +459,27 @@ def test_optional_dereference_mypy_no_source_match_skipped(tmp_path):
     assert len(result.skipped) == 1
 
 
+def test_optional_dereference_semgrep_queryset_first_skipped(tmp_path):
+    """Semgrep queryset-first violations must be skipped — None comes from .first(), not qs."""
+    src = textwrap.dedent("""\
+        def get_name(qs):
+            return qs.first().name
+    """)
+    f = tmp_path / "ex.py"
+    f.write_text(src)
+    ev = FailureEvidence(
+        mode_name="optional_dereference",
+        file=str(f),
+        line=2,
+        call="qs.first().name",
+        message="",
+        spec_id="semgrep",
+    )
+    result = fix_file(str(f), [ev])
+    assert not result.changed
+    assert len(result.skipped) == 1
+
+
 def test_optional_dereference_syntactically_valid(tmp_path):
     src = textwrap.dedent("""\
         def process(result):

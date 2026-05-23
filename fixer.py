@@ -323,13 +323,22 @@ _OPT_PAT_SEARCH = re.compile(r"(\w+)\.\w+")
 _MYPY_ATTR_PAT = re.compile(r'has no attribute "(\w+)"')
 
 
+_QUERYSET_CHAIN_PAT = re.compile(r"\.\b(?:first|last)\(\)\.")
+
+
 def _extract_opt_var(ev: "FailureEvidence", lines: list[str]) -> str | None:
     """Extract the None-dereference variable name from a violation.
 
     AST violations: ev.call = "var.attr" — regex matches directly.
     Mypy violations: ev.call = 'Item "None" of "T | None" has no attribute "X"'
         → extract attr "X" from message, then find var.X in source line.
+    Semgrep queryset-first/last: ev.call = "qs.first().name" — the None comes
+        from .first()/.last(), not from qs; skip to avoid inserting wrong guard.
     """
+    if getattr(ev, "spec_id", None) == "semgrep" and _QUERYSET_CHAIN_PAT.search(
+        ev.call
+    ):
+        return None
     m = _OPT_PAT.match(ev.call)
     if m:
         return m.group(1)
