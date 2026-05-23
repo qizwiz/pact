@@ -504,26 +504,44 @@ def _run_mypy(root: Path) -> list[Violation]:
             _py_dirs.append(_child.name)
     _targets = _py_dirs if _py_dirs else ["."]
 
-    try:
-        proc = subprocess.run(
-            [
-                str(mypy_bin),
-                *_targets,
-                "--ignore-missing-imports",
-                "--check-untyped-defs",
-                "--follow-imports=skip",
-                "--no-error-summary",
-                "--explicit-package-bases",
-                "-O",
-                "json",
-            ],
-            capture_output=True,
-            text=True,
-            timeout=120,
-            cwd=root,
-        )
-    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
-        return []
+    _mypy_flags = [
+        "--ignore-missing-imports",
+        "--check-untyped-defs",
+        "--follow-imports=skip",
+        "--no-error-summary",
+        "--explicit-package-bases",
+        "-O",
+        "json",
+    ]
+    # Try dmypy (daemon) first — much faster on repeated runs because it caches
+    # parsed ASTs. Fall back to plain mypy if the daemon is unavailable or fails.
+    _dmypy_bin = mypy_bin.parent / "dmypy"
+    proc = None
+    if _dmypy_bin.exists():
+        try:
+            proc = subprocess.run(
+                [str(_dmypy_bin), "run", "--", *_targets, *_mypy_flags],
+                capture_output=True,
+                text=True,
+                timeout=120,
+                cwd=root,
+            )
+            # dmypy exits 2 on internal error (e.g. daemon stale); fall through
+            if proc.returncode == 2:
+                proc = None
+        except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+            proc = None
+    if proc is None:
+        try:
+            proc = subprocess.run(
+                [str(mypy_bin), *_targets, *_mypy_flags],
+                capture_output=True,
+                text=True,
+                timeout=120,
+                cwd=root,
+            )
+        except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+            return []
 
     _mypy_file_lines: dict[str, list[str]] = {}
     results: list[Violation] = []
