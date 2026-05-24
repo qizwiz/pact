@@ -1213,6 +1213,94 @@ def extract_file_intent(
     return module
 
 
+def _verify_intent_gaps(
+    intent: "ProjectIntent",
+    module_sources: dict[str, str],
+    model: str,
+    key: str,
+    verbose: bool,
+) -> None:
+    """
+    Z3-verify intent_gap invariants: prune false positives, promote confirmed gaps.
+
+    For each high-confidence intent_gap invariant, runs contract_encoder.verify_contract()
+    against the first function listed in applies_to:
+      UNSAT → claim IS enforced; mark as z3_refuted (false positive), lower confidence.
+      SAT   → confirmed gap with concrete counterexample; promote to high severity.
+      other → leave unchanged (Z3 couldn't encode the claim).
+    """
+    try:
+        from pact.contract_encoder import verify_contract
+    except ImportError:
+        return
+
+    for module in intent.modules:
+        source = module_sources.get(module.path, "")
+        if not source:
+            continue
+
+        for inv in module.invariants:
+            if inv.type != "intent_gap" or inv.confidence < 0.85:
+                continue
+            if not inv.applies_to:
+                continue
+
+            func_name = inv.applies_to[0]
+            if verbose:
+                print(
+                    f"  [Z3] verifying intent_gap: {func_name} — {inv.statement[:60]}…"
+                )
+
+            try:
+                result = verify_contract(
+                    contract=inv.statement,
+                    function_source=source,
+                    function_name=func_name,
+                    api_key=key,
+                    model=model,
+                )
+            except Exception:
+                continue
+
+            if result.status == "unsat":
+                # Claim IS formally enforced — LLM was wrong, this is a false positive
+                inv.confidence = max(0.0, inv.confidence - 0.4)
+                inv.derived_from = (
+                    f"z3_refuted: {inv.derived_from} "
+                    f"[Z3 proved contract holds — UNSAT, no counterexample]"
+                )
+                # Remove associated violations for this invariant
+                module.violations = [
+                    v for v in module.violations if v.invariant_id != inv.id
+                ]
+                if verbose:
+                    print(
+                        f"    → UNSAT: false positive pruned (confidence now {inv.confidence:.2f})"
+                    )
+
+            elif result.status == "sat" and result.counterexample:
+                # Confirmed gap — Z3 found a concrete violating input
+                ce = str(result.counterexample)
+                inv.derived_from = (
+                    f"z3_confirmed: {inv.derived_from} "
+                    f"[Z3 counterexample: {ce[:120]}]"
+                )
+                # Upgrade any associated violations to high severity
+                for v in module.violations:
+                    if v.invariant_id == inv.id:
+                        v.severity = "high"
+                        v.explanation = (
+                            f"{v.explanation}\nZ3 counterexample: {ce[:200]}"
+                            + (
+                                f"\nCEGIS: {result.cegis_reasoning}"
+                                if result.cegis_reasoning
+                                else ""
+                            )
+                        )
+                if verbose:
+                    print(f"    → SAT: confirmed gap, counterexample: {ce[:80]}")
+
+
 def extract_project_intent(
     root: Path,
     model: str = _DEFAULT_MODEL,
@@ -1311,6 +1399,10 @@ def extract_project_intent(
         except Exception as exc:
             if verbose:
                 print(f"  project_intent failed: {exc}")
+
+    # Step 5b: Z3 verification of intent_gap invariants — prune false positives,
+    # promote confirmed gaps with concrete counterexamples.
+    _verify_intent_gaps(intent, module_sources, model, key, verbose)
 
     # Step 6: one batch improve pass using the 3 hardest modules
     if improve and intent.modules:
