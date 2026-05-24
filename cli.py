@@ -369,32 +369,37 @@ def _show_cut_vertex_contracts(
     functions: list,
     call_sites: list,
     root: Path,
+    intent_trigger: bool = False,
+    model: str = "claude-haiku-4-5-20251001",
+    api_key: str | None = None,
 ) -> None:
     """Print behavioral contracts for cut vertices, sourced from intent JSON if present.
 
-    This is the NetworkX → intent trigger: structurally load-bearing functions
-    automatically surface their declared contracts for Z3 verification.
-    No LLM calls — reads existing intent_pact_self.json when available.
+    With --intent-trigger: for any cut vertex file that lacks a contract, calls
+    extract_file_intent() to extract one via LLM and merges the result into the
+    intent JSON. This closes the NetworkX → intent → Z3 pipeline automatically.
     """
+    import os
+
     cv_files = cut_vertex_files(functions, call_sites)
     if not cv_files:
         return
 
     # Look for intent JSON in the target directory and cwd
-    intent_paths = [
-        root / "intent_pact_self.json",
-        Path.cwd() / "intent_pact_self.json",
-    ]
-    intent_data: dict = {}
-    for ip in intent_paths:
+    intent_json_path: Path | None = None
+    for ip in [root / "intent_pact_self.json", Path.cwd() / "intent_pact_self.json"]:
         if ip.exists():
-            try:
-                intent_data = json.loads(ip.read_text())
-            except Exception:
-                pass
+            intent_json_path = ip
             break
 
-    # Build basename → (abs_path, contract, gaps) lookup for path-agnostic matching
+    intent_data: dict = {}
+    if intent_json_path:
+        try:
+            intent_data = json.loads(intent_json_path.read_text())
+        except Exception:
+            pass
+
+    # Build absolute-path + basename → (contract, gaps) lookup
     contracts: dict[str, tuple[str, list[str]]] = {}
     for module in intent_data.get("modules", []):
         abs_path = module.get("path", "")
@@ -405,27 +410,92 @@ def _show_cut_vertex_contracts(
             if inv.get("type") == "intent_gap" and inv.get("confidence", 0) >= 0.85
         ]
         if contract or gaps:
-            # Index by absolute path AND basename so both match
             contracts[abs_path] = (contract, gaps)
             contracts[Path(abs_path).name] = (contract, gaps)
 
     print(
         f"\n⬡ pact --reduce: {len(cv_files)} cut vertex file(s) — structural load-bearing joints\n"
     )
+    new_modules: list[dict] = []
     for file_path, func_names in sorted(cv_files.items()):
         print(f"  {file_path}")
         print(f"    functions: {', '.join(func_names)}")
         contract, gaps = contracts.get(file_path, ("", []))
+        if not contract and not gaps:
+            contract, gaps = contracts.get(Path(file_path).name, ("", []))
+
         if contract:
             short = contract[:120] + ("…" if len(contract) > 120 else "")
             print(f"    contract:  {short}")
         if gaps:
             for g in gaps[:2]:
-                short_g = g[:100] + ("…" if len(g) > 100 else "")
-                print(f"    intent_gap: {short_g}")
+                print(f"    intent_gap: {g[:100]}{'…' if len(g) > 100 else ''}")
+
         if not contract and not gaps:
-            print("    contract:  (run `pact intent analyze <file>` to extract)")
+            if intent_trigger:
+                key = api_key or os.environ.get("ANTHROPIC_API_KEY", "")
+                if not key:
+                    print(
+                        "    contract:  (--intent-trigger: ANTHROPIC_API_KEY not set)"
+                    )
+                else:
+                    print("    contract:  (triggering intent analysis…)")
+                    try:
+                        from .intent import extract_file_intent
+
+                        mi = extract_file_intent(
+                            Path(file_path), model=model, api_key=key
+                        )
+                        extracted = getattr(mi.understanding, "behavioral_contract", "")
+                        if extracted:
+                            short = extracted[:120] + (
+                                "…" if len(extracted) > 120 else ""
+                            )
+                            print(f"    contract:  {short}  [extracted]")
+                        else:
+                            print("    contract:  (no contract extracted)")
+                        from dataclasses import asdict
+
+                        new_modules.append(
+                            {
+                                "path": file_path,
+                                "understanding": (
+                                    asdict(mi.understanding) if mi.understanding else {}
+                                ),
+                                "violations": [
+                                    {
+                                        "severity": v.severity,
+                                        "explanation": v.evidence,
+                                    }
+                                    for v in (mi.violations or [])
+                                ],
+                                "invariants": [
+                                    {
+                                        "id": inv.id,
+                                        "type": inv.type,
+                                        "confidence": inv.confidence,
+                                        "statement": inv.statement,
+                                    }
+                                    for inv in (mi.invariants or [])
+                                ],
+                            }
+                        )
+                    except Exception as exc:
+                        print(f"    contract:  (intent analysis failed: {exc})")
+            else:
+                print(
+                    "    contract:  (run `pact intent analyze <file>` or use --intent-trigger)"
+                )
         print()
+
+    # Merge newly extracted modules into the intent JSON
+    if new_modules and intent_json_path:
+        existing_paths = {m.get("path") for m in intent_data.get("modules", [])}
+        added = [m for m in new_modules if m["path"] not in existing_paths]
+        if added:
+            intent_data.setdefault("modules", []).extend(added)
+            intent_json_path.write_text(json.dumps(intent_data, indent=2))
+            print(f"  ↳ {len(added)} module(s) added to {intent_json_path.name}")
 
 
 def main(argv=None) -> int:
@@ -561,6 +631,20 @@ def main(argv=None) -> int:
             "Apply the full three-stage reduction pipeline (SCC contraction → "
             "dead-node pruning → transitive reduction) and show before/after stats"
         ),
+    )
+    p.add_argument(
+        "--intent-trigger",
+        action="store_true",
+        help=(
+            "With --reduce: for each cut vertex that lacks a behavioral contract, "
+            "automatically run intent analysis (requires ANTHROPIC_API_KEY)"
+        ),
+    )
+    p.add_argument(
+        "--model",
+        default="claude-haiku-4-5-20251001",
+        metavar="MODEL",
+        help="Claude model for --intent-trigger (default: claude-haiku-4-5-20251001)",
     )
     p.add_argument(
         "--fitness",
@@ -768,9 +852,15 @@ def main(argv=None) -> int:
                 "\n✓  pact --reduce: call graph has no detected tangles, pass-throughs, or hubs"
             )
 
-        # NetworkX → intent trigger: show behavioral contracts for cut vertices.
-        # Reads intent_pact_self.json if present — zero extra LLM calls.
-        _show_cut_vertex_contracts(functions, call_sites, root)
+        # NetworkX → intent trigger: surface contracts for cut vertices.
+        # With --intent-trigger, extracts missing contracts via LLM.
+        _show_cut_vertex_contracts(
+            functions,
+            call_sites,
+            root,
+            intent_trigger=args.intent_trigger,
+            model=args.model,
+        )
 
     if args.reduce_apply and not args.json_mode:
         result = apply_full_reduction(functions, call_sites, violations)

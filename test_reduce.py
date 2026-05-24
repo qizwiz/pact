@@ -757,3 +757,44 @@ class TestBetweennessAndBridgeViolations:
         ranked = compute_blast_radii(funcs, calls, viols)
         s = ranked[0].summary()
         assert "[CUT VERTEX]" in s, f"expected [CUT VERTEX] in summary; got: {s}"
+
+
+# ---------------------------------------------------------------------------
+# _show_cut_vertex_contracts (intent trigger)
+# ---------------------------------------------------------------------------
+
+
+class TestShowCutVertexContracts:
+    """Tests for the NetworkX → intent trigger in _show_cut_vertex_contracts."""
+
+    def _linear_graph(self):
+        """A→B→C: B is a cut vertex."""
+        funcs = [_func("A"), _func("B"), _func("C")]
+        calls = [_call("A", "B"), _call("B", "C")]
+        return funcs, calls
+
+    def test_no_cut_vertices_prints_nothing(self, tmp_path, capsys):
+        from .cli import _show_cut_vertex_contracts
+
+        funcs = [_func("A"), _func("B")]
+        calls = [_call("A", "B")]  # no cut vertex — removing either doesn't disconnect
+        _show_cut_vertex_contracts(funcs, calls, tmp_path)
+        assert capsys.readouterr().out == ""
+
+    def test_cut_vertex_without_trigger_shows_hint(self, tmp_path, capsys):
+        from .cli import _show_cut_vertex_contracts
+
+        funcs, calls = self._linear_graph()
+        _show_cut_vertex_contracts(funcs, calls, tmp_path)
+        out = capsys.readouterr().out
+        assert "cut vertex" in out
+        assert "pact intent analyze" in out or "intent-trigger" in out
+
+    def test_trigger_no_api_key_shows_warning(self, tmp_path, capsys, monkeypatch):
+        from .cli import _show_cut_vertex_contracts
+
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        funcs, calls = self._linear_graph()
+        _show_cut_vertex_contracts(funcs, calls, tmp_path, intent_trigger=True)
+        out = capsys.readouterr().out
+        assert "ANTHROPIC_API_KEY" in out
