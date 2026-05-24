@@ -497,20 +497,79 @@ def _improve_triage_prompt(
 
 
 def _extract_git_log(path: Path) -> str:
-    """Return last 10 commit subjects for this file (git history of intent)."""
+    """Git history of intent: raw log + pattern analysis (reverts, repeated fixes, density)."""
     import subprocess
+    import re as _re
 
     try:
         result = subprocess.run(
-            ["git", "log", "--follow", "--oneline", "-10", "--", str(path)],
+            ["git", "log", "--follow", "--oneline", "-40", "--", str(path)],
             capture_output=True,
             text=True,
             timeout=5,
             cwd=str(path.parent),
         )
-        return result.stdout.strip() or "(no git history for this file)"
+        raw = result.stdout.strip()
     except Exception:
         return "(git not available)"
+
+    if not raw:
+        return "(no git history for this file)"
+
+    lines = raw.splitlines()
+
+    # --- Pattern analysis ---
+    patterns: list[str] = []
+
+    # Reverts: explicit evidence of an intent that couldn't be sustained
+    revert_re = _re.compile(r"\brevert\b", _re.IGNORECASE)
+    reverts = [ln for ln in lines if revert_re.search(ln)]
+    if reverts:
+        patterns.append(
+            f"REVERT ({len(reverts)}x — intent attempted and pulled back):\n"
+            + "\n".join(f"  {r}" for r in reverts)
+        )
+
+    # Repeated fix keywords — structural instability, not a one-time bug
+    fix_re = _re.compile(r"\b(fix|fixes|fixed|repair|correct|bug)\b", _re.IGNORECASE)
+    fix_subjects = [ln for ln in lines if fix_re.search(ln)]
+    if len(fix_subjects) >= 3:
+        patterns.append(
+            f"REPEATED FIXES ({len(fix_subjects)}x — recurring instability):\n"
+            + "\n".join(f"  {s}" for s in fix_subjects[:6])
+        )
+
+    # "ensure/guarantee/always" commits with no paired verification commit
+    ensure_re = _re.compile(
+        r"\b(ensure|guarantee|always|enforce|must)\b", _re.IGNORECASE
+    )
+    verify_re = _re.compile(
+        r"\b(test|verify|assert|check|spec|proof)\b", _re.IGNORECASE
+    )
+    ensure_subjects = [ln for ln in lines if ensure_re.search(ln)]
+    unverified = [ln for ln in ensure_subjects if not verify_re.search(ln)]
+    if unverified:
+        patterns.append(
+            f"UNVERIFIED ASSERTIONS ({len(unverified)}x — 'ensure/always' with no test/verify commit):\n"
+            + "\n".join(f"  {s}" for s in unverified[:4])
+        )
+
+    # Dense commit activity — load-bearing or poorly bounded
+    density_note = ""
+    if len(lines) >= 20:
+        density_note = f"HIGH COMMIT DENSITY ({len(lines)}+ commits visible — this file changes frequently)"
+
+    sections = [f"Recent commits ({len(lines)} shown):\n" + "\n".join(lines[:10])]
+    if len(lines) > 10:
+        sections[0] += f"\n  ... ({len(lines) - 10} more)"
+    if patterns:
+        sections.append(
+            "=== INTENT PATTERNS (first-class signals) ===\n" + "\n\n".join(patterns)
+        )
+    if density_note:
+        sections.append(density_note)
+
+    return "\n\n".join(sections)
 
 
 def _extract_intent_signals(source: str) -> str:

@@ -41,6 +41,12 @@ falls outside the visible range. Do NOT read lines you can already see inline.
 2. For each TODO/FIXME/BUG still present in source: the code self-reports a deficiency → `intent_gap` invariant, confidence 0.95.
 3. For each git commit saying "fix X" or "ensure Y": is X/Y enforced in visible code? If NO → `intent_gap` invariant, confidence 0.85.
 
+**GIT PATTERN SIGNALS** — the git log may contain pre-analysed patterns. Treat these as first-class intent evidence:
+- `REVERT (Nx)`: an intent was attempted and pulled back N times. This is the strongest possible signal of a sustained intent gap — the developer tried to deliver something and couldn't. Confidence 0.95. State what was reverted and why it matters.
+- `REPEATED FIXES (Nx)`: the same area has been fixed 3+ times. This is structural instability — the design is wrong, not just the implementation. Confidence 0.85. Name the recurring failure mode.
+- `UNVERIFIED ASSERTIONS`: commits say "ensure X" or "always Y" with no paired test/verify commit. The assertion was aspirational. Confidence 0.80. State what was asserted and whether visible code delivers it.
+- `HIGH COMMIT DENSITY`: this file changes frequently — it is either load-bearing or poorly bounded. Note this in `design_intent`.
+
 Intent gaps are the MOST ACTIONABLE findings: the developer stated what was needed; the code failed to deliver it.
 
 **NOT intent gaps** (these are code quality findings — belong in `failure_modes` or `assumptions`, not `violations`):
