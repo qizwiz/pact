@@ -42,6 +42,12 @@ falls outside the visible range. Do NOT read lines you can already see inline.
 3. For each git commit saying "fix X" or "ensure Y": is X/Y enforced in visible code? If NO → `intent_gap` invariant, confidence 0.85.
 
 Intent gaps are the MOST ACTIONABLE findings: the developer stated what was needed; the code failed to deliver it.
+
+**NOT intent gaps** (these are code quality findings — belong in `failure_modes` or `assumptions`, not `violations`):
+- A variable that is uninitialised or conditionally populated due to environment (e.g., Python version)
+- A heuristic constant that might produce false positives
+- A code path that is unreachable in the current runtime but reachable in another
+
 *(This protocol informs Part 2 invariants only — do not produce separate output here.)*
 
 ---
@@ -313,56 +319,61 @@ BAD INVARIANT — generic, could be written from a description alone:
 
 ## PART 3 — VIOLATIONS
 
-For each invariant: does the visible code actually satisfy it?
+**CONTRACT-FIRST GATE — apply before writing any violation:**
+
+A violation entry is only valid if it contradicts a specific claim in the module's `behavioral_contract` or `purpose`. Before writing a violation, state internally: *"The behavioral_contract says [X]. The code fails to deliver [X] because [Y]."* If you cannot complete that sentence from visible code, do not emit a violation — the finding is a code quality note, not an intent gap.
+
+**LINTER BOUNDARY**: The following are NOT violations regardless of visibility — a linter can catch them; pact should not:
+- A variable that is set but conditionally populated (depends on Python version, platform, or environment)
+- A constant that might collide with a non-target pattern (false-positive risk in heuristics)
+- Two constants that might drift out of sync with no enforcement
+
+These may belong in `failure_modes` or `assumptions` of the understanding, but not in violations.
+
+**WHAT IS A VIOLATION**: A violation is evidence that the module fails to deliver its stated purpose — its docstring makes a claim the code does not honour, a git commit says "ensure X" but X is absent, or a TODO/BUG names a missing capability the module is supposed to have.
 
 For each violation:
 - **invariant_id**: which invariant
 - **line**: exact line number in the source block
 - **evidence**: quote the specific code verbatim
 - **severity**: critical | high | medium | low
-- **explanation**: answer three questions explicitly: (1) Which function/caller is affected? (2) What does the caller receive when the invariant is violated? (3) What is the user-visible symptom? If you cannot answer all three from visible code, say so rather than fabricating.
-
-**MANDATORY VIOLATION SOURCES**: The following ALWAYS produce violation entries if visible:
-1. Any `except Exception:` or bare `except:` that does not log or re-raise → always at least `medium`, typically `high` for analysis modules because the user receives incorrect (silent) results
-2. Any constant containing values that collide with common non-async patterns (e.g., `'get'` in `_KNOWN_ASYNC_METHODS`) → `medium` false-positive risk
-3. Two constants claimed to mirror each other (e.g., `# mirrors extractor._SKIP_DIRS`) with no enforcement mechanism → `low` staleness risk
-
-Failing to report a violation for a visible swallowed exception is treated as fabrication.
+- **explanation**: answer three questions explicitly: (1) Which function/caller is affected? (2) What does the caller receive when the invariant is violated? (3) What is the user-visible symptom — specifically, how does this contradict what the module claims to do? If you cannot answer all three from visible code, say so rather than fabricating.
 
 **Truncation rule**: Do NOT report violations in code you cannot see.
 
-GOOD VIOLATION:
+GOOD VIOLATION — contract-anchored (docstring claims error signalling, code swallows silently):
 ```json
 {
   "invariant_id": "inv_001",
   "line": 19,
   "evidence": "except Exception:\n    _HAS_TS = False",
   "severity": "high",
-  "explanation": "(1) Any caller of TS/TSX analysis functions. (2) Caller receives empty violation list []. (3) User sees zero TypeScript violations on every file with no warning that tree-sitter failed to load — a broken install produces identical output to a clean codebase."
+  "explanation": "(1) Any caller of TS/TSX analysis functions. (2) Caller receives empty violation list []. (3) The module docstring states 'always surfaces analysis errors to the caller' — a broken tree-sitter install produces zero violations with no warning, directly contradicting that claim."
 }
 ```
 
-GOOD VIOLATION (false-positive):
+GOOD VIOLATION — intent gap (TODO still in source):
 ```json
 {
   "invariant_id": "inv_002",
-  "line": 95,
-  "evidence": "\"get\",",
-  "severity": "medium",
-  "explanation": "(1) _scan_missing_await (not yet visible) uses _KNOWN_ASYNC_METHODS. (2) Any .get() call — including synchronous dict.get() — matches the async heuristic. (3) User sees spurious missing_await violations on dict/Map .get() calls, eroding trust in the checker."
+  "line": 47,
+  "evidence": "# TODO: feed Z3 counterexample back to Hypothesis for targeted shrinking",
+  "severity": "high",
+  "explanation": "(1) The hypothesis_generator pipeline. (2) Caller receives generic random inputs rather than counterexample-guided inputs. (3) The module's stated purpose is 'adversarial input generation from behavioral contracts' — the TODO self-reports that counterexample feedback is missing, making the generation non-adversarial."
 }
 ```
 
-BAD VIOLATION — invented line number and evidence:
+BAD VIOLATION — code quality pattern, not a contract contradiction:
 ```json
 {
   "invariant_id": "inv_003",
-  "line": 0,
-  "evidence": "if score.overall < 0.8:",
-  "severity": "high",
-  "explanation": "uses hardcoded 0.8 threshold"
+  "line": 95,
+  "evidence": "\"get\",",
+  "severity": "medium",
+  "explanation": "Any .get() call including dict.get() will match the async heuristic."
 }
 ```
+*(BAD: this is a false-positive risk in a heuristic — a linter concern. The module never claimed .get() is always async.)*
 
 ---
 
@@ -383,7 +394,7 @@ Before writing the closing `}`, verify:
 12. No extra top-level keys — exactly four: `truncation_audit`, `invariants`, `violations`, `understanding`
 13. `assumptions` field string is CLOSED — previous outputs have truncated here without closing
 14. No invariant or violation references a function not in `visible_definitions`
-15. If ANY `except Exception:` or `except:` block is visible in source → `invariants` is non-empty AND `violations` is non-empty
+15. If ANY `except Exception:` or `except:` block is visible AND the `behavioral_contract` claims the module always signals errors to callers → `violations` is non-empty. If the module makes no such claim, a swallowed exception belongs in `failure_modes`, not `violations`.
 16. `key_abstractions` field closes with either complete analysis or `[source truncated at: <last_visible_line>]` — never an open string
 
 ---
