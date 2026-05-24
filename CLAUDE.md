@@ -92,10 +92,10 @@ Known intent_gap violations in pact itself (to be confirmed by self-analysis):
 - Graphify rationale nodes: extracted but never fed to intent layer
 
 **Priority order for next improvements:**
-1. Z3 contract encoder — generalize `encoder.py` from Django fields to any `behavioral_contract: str`
-2. NetworkX → intent trigger — when cut vertex found, automatically run intent on that file
-3. Hypothesis from contracts — generate `@given` strategy from `behavioral_contract` text
-4. Graphify rationale → intent — feed rationale node text as declared intent layer
+1. NetworkX → intent trigger — when cut vertex found, automatically run intent on that file
+2. Graphify rationale → intent — feed rationale node text as declared intent layer
+3. `pact pipeline` TLC execution — add Java/TLC invocation to actually verify TLA+ specs (currently generates spec but doesn't run TLC)
+4. `pact pipeline --auto` flag — run pipeline automatically after `pact intent analyze` without separate invocation
 
 ---
 
@@ -106,7 +106,7 @@ Known intent_gap violations in pact itself (to be confirmed by self-analysis):
 cd ~/src/ && ~/src/pact-standalone/.venv/bin/python -m pytest --import-mode=importlib \
   --pyargs pact.test_fixer pact.test_checker pact.test_z3_engine \
   pact.test_hypothesis_checkers pact.test_ts_checker pact.test_ts_fixer \
-  pact.test_loop pact.test_specgen pact.test_reduce -q --tb=short
+  pact.test_loop pact.test_specgen pact.test_reduce pact.test_pipeline -q --tb=short
 
 # Lint (always in this order)
 cd ~/src/pact-standalone && .venv/bin/ruff check --fix FILE && .venv/bin/black FILE
@@ -119,6 +119,9 @@ cd ~/src/pact-standalone && .venv/bin/python -m pact heal . --violations intent_
 
 # Full structural check on pact itself
 cd ~/src/pact-standalone && .venv/bin/python -m pact reduce . --top 20
+
+# Pipeline: route intent findings to formal tools
+cd ~/src/pact-standalone && .venv/bin/python -m pact pipeline intent_pact_self.json -v
 ```
 
 ## RULES
