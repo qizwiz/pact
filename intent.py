@@ -497,77 +497,198 @@ def _improve_triage_prompt(
 
 
 def _extract_git_log(path: Path) -> str:
-    """Git history of intent: raw log + pattern analysis (reverts, repeated fixes, density)."""
+    """Git history of intent: dated log + pattern analysis (reverts, repeated fixes, density)."""
     import subprocess
     import re as _re
+    from datetime import date, timedelta
 
-    try:
-        result = subprocess.run(
-            ["git", "log", "--follow", "--oneline", "-40", "--", str(path)],
-            capture_output=True,
-            text=True,
-            timeout=5,
-            cwd=str(path.parent),
-        )
-        raw = result.stdout.strip()
-    except Exception:
-        return "(git not available)"
+    cwd = str(path.parent)
 
+    def _run(*args: str, timeout: int = 5) -> str:
+        try:
+            r = subprocess.run(
+                list(args), capture_output=True, text=True, timeout=timeout, cwd=cwd
+            )
+            return r.stdout.strip()
+        except Exception:
+            return ""
+
+    # Dated subjects + author: "<hash> <YYYY-MM-DD> <author> <subject>"
+    raw = _run(
+        "git", "log", "--follow", "--format=%h %as %an\t%s", "-40", "--", str(path)
+    )
     if not raw:
         return "(no git history for this file)"
 
-    lines = raw.splitlines()
+    # Parse into structured records
+    record_re = _re.compile(r"^([0-9a-f]+)\s+(\d{4}-\d{2}-\d{2})\s+([^\t]+)\t(.*)$")
+    records: list[tuple[str, str, str, str]] = []  # (hash, date, author, subject)
+    for ln in raw.splitlines():
+        m = record_re.match(ln)
+        if m:
+            records.append((m.group(1), m.group(2), m.group(3), m.group(4)))
+
+    if not records:
+        return "(no git history for this file)"
+
+    # --- Temporal density ---
+    today = date.today()
+    recent_cutoff = (today - timedelta(days=90)).isoformat()
+    recent = [r for r in records if r[1] >= recent_cutoff]
+    span_days = max(
+        1,
+        (date.fromisoformat(records[0][1]) - date.fromisoformat(records[-1][1])).days,
+    )
+    commits_per_week = len(records) / max(1, span_days / 7)
 
     # --- Pattern analysis ---
     patterns: list[str] = []
-
-    # Reverts: explicit evidence of an intent that couldn't be sustained
     revert_re = _re.compile(r"\brevert\b", _re.IGNORECASE)
-    reverts = [ln for ln in lines if revert_re.search(ln)]
-    if reverts:
-        patterns.append(
-            f"REVERT ({len(reverts)}x — intent attempted and pulled back):\n"
-            + "\n".join(f"  {r}" for r in reverts)
-        )
-
-    # Repeated fix keywords — structural instability, not a one-time bug
+    readd_re = _re.compile(
+        r"\b(re-add|readd|re-implement|reimplement|restore|re-introduce)\b",
+        _re.IGNORECASE,
+    )
     fix_re = _re.compile(r"\b(fix|fixes|fixed|repair|correct|bug)\b", _re.IGNORECASE)
-    fix_subjects = [ln for ln in lines if fix_re.search(ln)]
-    if len(fix_subjects) >= 3:
-        patterns.append(
-            f"REPEATED FIXES ({len(fix_subjects)}x — recurring instability):\n"
-            + "\n".join(f"  {s}" for s in fix_subjects[:6])
-        )
-
-    # "ensure/guarantee/always" commits with no paired verification commit
     ensure_re = _re.compile(
         r"\b(ensure|guarantee|always|enforce|must)\b", _re.IGNORECASE
     )
     verify_re = _re.compile(
         r"\b(test|verify|assert|check|spec|proof)\b", _re.IGNORECASE
     )
-    ensure_subjects = [ln for ln in lines if ensure_re.search(ln)]
-    unverified = [ln for ln in ensure_subjects if not verify_re.search(ln)]
+    # Stopwords for theme extraction — strip these before clustering
+    _STOP = frozenset(
+        "fix fixes fixed the a an and or of in for with to from that this "
+        "is was are were be been has have had it its also now only not "
+        "feat chore refactor update add remove when if".split()
+    )
+
+    def _themes(subj: str) -> list[str]:
+        """Extract content words from a commit subject for theme clustering."""
+        # Strip conventional prefix like "fix(intent+heal):" → "intent heal"
+        subj = _re.sub(
+            r"^[a-z]+\(([^)]+)\):",
+            lambda m: m.group(1).replace("+", " ").replace(",", " "),
+            subj,
+        )
+        words = _re.split(r"[\s\-_/+,.:]+", subj.lower())
+        return [w for w in words if w and w not in _STOP and len(w) > 2]
+
+    # Reverts — intent attempted and pulled back
+    revert_records = [r for r in records if revert_re.search(r[3])]
+    readd_records = [r for r in records if readd_re.search(r[3])]
+    if revert_records:
+        bodies: list[str] = []
+        for rhash, rdate, _author, rsubj in revert_records[:3]:
+            body = _run("git", "show", "--format=%b", "--no-patch", rhash)
+            bodies.append(
+                f"  {rdate} {rsubj}"
+                + (f"\n    [{body[:200].strip()}]" if body.strip() else "")
+            )
+        label = "REVERT+READD" if readd_records else "REVERT"
+        note = (
+            " — intent attempted, pulled back, then re-attempted"
+            if readd_records
+            else " — intent attempted and pulled back"
+        )
+        patterns.append(
+            f"{label} ({len(revert_records)}x{note}):\n" + "\n".join(bodies)
+        )
+        if readd_records:
+            patterns[-1] += "\n  Re-add attempts:\n" + "\n".join(
+                f"  {r[1]} {r[3]}" for r in readd_records[:3]
+            )
+
+    # Repeated fixes — clustered by theme, bodies for dominant cluster
+    fix_records = [r for r in records if fix_re.search(r[3])]
+    if len(fix_records) >= 3:
+        # Cluster by theme: count word co-occurrence across fix subjects
+        theme_count: dict[str, int] = {}
+        theme_commits: dict[str, list[tuple]] = {}
+        for rec in fix_records:
+            for word in _themes(rec[3]):
+                theme_count[word] = theme_count.get(word, 0) + 1
+                theme_commits.setdefault(word, []).append(rec)
+        # Top themes appearing in ≥2 fixes
+        top_themes = sorted(
+            [(w, c) for w, c in theme_count.items() if c >= 2],
+            key=lambda x: -x[1],
+        )[:4]
+
+        fix_recent = [r for r in fix_records if r[1] >= recent_cutoff]
+        accel = (
+            f" — {len(fix_recent)} in last 90 days, accelerating"
+            if fix_recent and len(fix_recent) >= len(fix_records) // 2
+            else ""
+        )
+        fix_section = (
+            f"REPEATED FIXES ({len(fix_records)}x — recurring instability{accel}):\n"
+        )
+        if top_themes:
+            fix_section += "  Recurring themes:\n"
+            for word, count in top_themes:
+                # Fetch body for the most recent fix in this theme cluster
+                cluster = sorted(theme_commits[word], key=lambda r: r[1], reverse=True)
+                rhash, rdate, _author, rsubj = cluster[0]
+                body = _run("git", "show", "--format=%b", "--no-patch", rhash)
+                body_note = f"\n      [{body[:150].strip()}]" if body.strip() else ""
+                fix_section += f"    '{word}' ×{count}: {rdate} {rsubj}{body_note}\n"
+        else:
+            fix_section += "\n".join(f"  {r[1]} {r[3]}" for r in fix_records[:6])
+        patterns.append(fix_section.rstrip())
+
+    # Unverified assertions — check window of ±2 commits
+    unverified = []
+    for idx, r in enumerate(records):
+        if not ensure_re.search(r[3]):
+            continue
+        window = records[max(0, idx - 2) : idx + 3]
+        if not any(verify_re.search(w[3]) for w in window):
+            unverified.append(r)
     if unverified:
         patterns.append(
-            f"UNVERIFIED ASSERTIONS ({len(unverified)}x — 'ensure/always' with no test/verify commit):\n"
-            + "\n".join(f"  {s}" for s in unverified[:4])
+            f"UNVERIFIED ASSERTIONS ({len(unverified)}x — 'ensure/always' with no nearby test/verify commit):\n"
+            + "\n".join(f"  {r[1]} {r[3]}" for r in unverified[:4])
         )
 
-    # Dense commit activity — load-bearing or poorly bounded
-    density_note = ""
-    if len(lines) >= 20:
-        density_note = f"HIGH COMMIT DENSITY ({len(lines)}+ commits visible — this file changes frequently)"
+    # Author diversity — ownership signal
+    authors = [r[2] for r in records]
+    unique_authors = sorted(set(authors))
+    if len(unique_authors) >= 3:
+        from collections import Counter
 
-    sections = [f"Recent commits ({len(lines)} shown):\n" + "\n".join(lines[:10])]
-    if len(lines) > 10:
-        sections[0] += f"\n  ... ({len(lines) - 10} more)"
+        author_counts = Counter(authors).most_common(5)
+        patterns.append(
+            f"AUTHOR DIVERSITY ({len(unique_authors)} authors — unclear ownership or coordination overhead):\n"
+            + "\n".join(f"  {a} ({c}x)" for a, c in author_counts)
+        )
+    elif len(unique_authors) == 1:
+        patterns.append(f"SINGLE AUTHOR ({unique_authors[0]}) — knowledge silo risk")
+
+    # Build output
+    density_line = ""
+    if commits_per_week >= 2:
+        density_line = (
+            f"HIGH COMMIT DENSITY ({commits_per_week:.1f}/week over {span_days}d"
+            + (f", {len(recent)} in last 90 days" if recent else "")
+            + " — load-bearing or poorly bounded)"
+        )
+    elif len(records) >= 20:
+        density_line = (
+            f"COMMIT DENSITY: {len(records)} commits over {span_days}d "
+            f"({commits_per_week:.1f}/week)"
+        )
+
+    sections = [
+        f"Recent commits ({len(records)} shown, {records[0][1]} → {records[-1][1]}):\n"
+        + "\n".join(f"  {r[1]} {r[3]}" for r in records[:10])
+        + (f"\n  ... ({len(records) - 10} more)" if len(records) > 10 else "")
+    ]
     if patterns:
         sections.append(
             "=== INTENT PATTERNS (first-class signals) ===\n" + "\n\n".join(patterns)
         )
-    if density_note:
-        sections.append(density_note)
+    if density_line:
+        sections.append(density_line)
 
     return "\n\n".join(sections)
 

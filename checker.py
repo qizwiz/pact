@@ -513,35 +513,22 @@ def _run_mypy(root: Path) -> list[Violation]:
         "-O",
         "json",
     ]
-    # Try dmypy (daemon) first — much faster on repeated runs because it caches
-    # parsed ASTs. Fall back to plain mypy if the daemon is unavailable or fails.
-    _dmypy_bin = mypy_bin.parent / "dmypy"
+    # Use plain mypy (not dmypy daemon). The daemon is optimized for analyzing
+    # the same codebase repeatedly (IDE/incremental use). pact analyzes many
+    # different codebases per session, so the daemon's cross-cwd cache is a
+    # liability: it leaks one process per unique working directory and returns
+    # stale results when the same daemon sees unrelated tmp directories.
     proc = None
-    if _dmypy_bin.exists():
-        try:
-            proc = subprocess.run(
-                [str(_dmypy_bin), "run", "--", *_targets, *_mypy_flags],
-                capture_output=True,
-                text=True,
-                timeout=120,
-                cwd=root,
-            )
-            # dmypy exits 2 on internal error (e.g. daemon stale); fall through
-            if proc.returncode == 2:
-                proc = None
-        except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
-            proc = None
-    if proc is None:
-        try:
-            proc = subprocess.run(
-                [str(mypy_bin), *_targets, *_mypy_flags],
-                capture_output=True,
-                text=True,
-                timeout=120,
-                cwd=root,
-            )
-        except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
-            return []
+    try:
+        proc = subprocess.run(
+            [str(mypy_bin), *_targets, *_mypy_flags],
+            capture_output=True,
+            text=True,
+            timeout=120,
+            cwd=root,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        return []
 
     _mypy_file_lines: dict[str, list[str]] = {}
     results: list[Violation] = []
