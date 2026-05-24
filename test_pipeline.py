@@ -9,6 +9,7 @@ import pytest
 from .pipeline import (
     PipelineResult,
     StepResult,
+    _execute_heal,
     _intent_summary,
     _render_tla_spec,
     _topo_sort,
@@ -375,6 +376,30 @@ class TestRunPipeline:
         with _mock_llm(json.dumps(plan)):
             result = run_pipeline(intent_path, verbose=False)
         assert len(result.results) <= 8
+
+    def test_execute_heal_maps_zero_patches_to_unknown(self, tmp_path, monkeypatch):
+        # _execute_heal with an intent JSON that has 0 violations → 0 patches → "unknown".
+        # This exercises the real heal_project call path end-to-end without LLM calls
+        # (heal_project short-circuits when violations_attempted == 0).
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "fake")
+        # intent JSON with no violations — heal_project will find nothing to fix
+        intent_path = tmp_path / "intent.json"
+        intent_path.write_text(json.dumps({"modules": []}))
+        (tmp_path / "target.py").write_text("def f(x): return x or None")
+        step = {
+            "step": 1,
+            "tool": "heal",
+            "module_path": str(tmp_path / "target.py"),
+            "function_name": "f",
+            "violation_summary": "missing guard",
+            "depends_on": [],
+            "rationale": "fix violation",
+        }
+        r = _execute_heal(step, intent_path, "fake", "claude-sonnet-4-6", False)
+        assert r.tool == "heal"
+        assert r.status == "unknown"
+        assert r.details["violations_attempted"] == 0
+        assert r.details["patches_accepted"] == 0
 
     def test_missing_api_key_raises(self, tmp_path, monkeypatch):
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)

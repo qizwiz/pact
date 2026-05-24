@@ -12,7 +12,7 @@ plan via LLM, then executes it deterministically:
     z3         → verify_contract()       (single-call behavioral contracts)
     tla        → generate_tla_spec()     (cross-call temporal obligations)
     hypothesis → stress_contract()       (adversarial inputs from contract)
-    heal       → (future: pact heal)     (minimal structural fix)
+    heal       → heal_project()           (minimal structural fix, CEGIS-verified)
 
 Usage:
     pact pipeline <intent_json>
@@ -252,7 +252,7 @@ def _execute_tla(step: dict, verbose: bool) -> StepResult:
     )
 
     # Write spec to docs/tla/ alongside existing specs
-    out_dir = Path(__file__).parent / "docs" / "tla"
+    out_dir = Path(__file__).parent / "docs" / "tla" / "generated"
     out_dir.mkdir(parents=True, exist_ok=True)
     stem = f"{Path(module_path).stem}_{fn}_{spec_template}"
     tla_path = out_dir / f"{stem}.tla"
@@ -415,9 +415,46 @@ def _load_source(module_path: str) -> str:
         return ""
 
 
+def _execute_heal(
+    step: dict,
+    intent_path: Path,
+    key: str,
+    model: str,
+    verbose: bool,
+) -> StepResult:
+    from .heal import heal_project
+
+    module_path = step.get("module_path", "")
+    result = heal_project(
+        violations_path=intent_path,
+        model=model,
+        api_key=key,
+        severity_filter=["critical", "high", "medium"],
+        apply=False,
+        verbose=verbose,
+        project_root=Path(module_path).parent if module_path else None,
+    )
+    accepted = result.patches_accepted
+    attempted = result.violations_attempted
+    summary = f"{accepted}/{attempted} patch(es) verified (dry-run — use pact heal --apply to write)"
+    return StepResult(
+        step=step["step"],
+        tool="heal",
+        module_path=module_path,
+        status="verified" if accepted > 0 else "unknown",
+        summary=summary,
+        details={
+            "patches_accepted": accepted,
+            "patches_rejected": result.patches_rejected,
+            "violations_attempted": attempted,
+        },
+    )
+
+
 def _execute_step(
     step: dict,
     prior_results: dict[int, StepResult],
+    intent_path: Path,
     key: str,
     model: str,
     verbose: bool,
@@ -430,7 +467,7 @@ def _execute_step(
         fn = step.get("function_name") or "module-level"
         print(f"  step {step['step']}: {tool} → {Path(module_path).name}:{fn}")
 
-    # Skip if a dependency was not verified (avoid running heal on non-violations)
+    # Skip heal if no prior dependency confirmed a violation
     deps = step.get("depends_on", [])
     if tool == "heal":
         dep_violated = any(
@@ -454,6 +491,8 @@ def _execute_step(
             return _execute_hypothesis(step, source, key, model)
         elif tool == "tla":
             return _execute_tla(step, verbose)
+        elif tool == "heal":
+            return _execute_heal(step, intent_path, key, model, verbose)
         else:
             return StepResult(
                 step=step["step"],
@@ -528,7 +567,7 @@ def run_pipeline(
     prior: dict[int, StepResult] = {}
 
     for step in ordered:
-        result = _execute_step(step, prior, key, model, verbose)
+        result = _execute_step(step, prior, intent_path, key, model, verbose)
         results.append(result)
         prior[result.step] = result
 
