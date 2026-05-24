@@ -7,6 +7,8 @@ corpus/*.jsonl
 docs/tla/*.bin
 docs/tla/states/
 docs/tla/*_TTrace_*.tla
+# TLC jar (binary — download separately)
+docs/tla/tla2tools.jar
 # Pipeline-generated specs (ephemeral — regenerated each run)
 docs/tla/generated/
 

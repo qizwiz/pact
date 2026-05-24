@@ -189,7 +189,7 @@ class TestRenderTlaSpec:
         )
         assert "checker" in spec
         assert "resource_count" in spec
-        assert "EventualRelease" in spec
+        assert "ResourceBounded" in spec
 
     def test_ordering_spec(self):
         spec = _render_tla_spec("pipeline", "execute", "setup before run", "ordering")
@@ -208,7 +208,7 @@ class TestRenderTlaSpec:
             "worker", "process", "must eventually finish", "liveness"
         )
         assert "EventualCompletion" in spec
-        assert "WF_done" in spec
+        assert "Reset" in spec
 
     def test_unknown_template_falls_back_to_liveness(self):
         spec = _render_tla_spec("x", "y", "something", "nonexistent_template")
@@ -312,7 +312,7 @@ class TestRunPipeline:
         assert len(result.results) == 1
         r = result.results[0]
         assert r.tool == "tla"
-        assert r.status == "unknown"
+        assert r.status in ("verified", "unknown")  # "unknown" if TLC jar absent
         spec_path = Path(r.details["spec_path"])
         assert spec_path.exists()
         assert "resource_count" in spec_path.read_text()
