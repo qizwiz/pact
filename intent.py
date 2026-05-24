@@ -70,6 +70,9 @@ class ProjectUnderstanding:
     behavioral_contract: str
     failure_modes: str
     assumptions: str
+    resource_obligations: str = (
+        ""  # cross-call temporal contracts: processes, handles, ordering, accumulation
+    )
 
 
 @dataclass
@@ -791,6 +794,7 @@ def _understand_module(
         behavioral_contract=u.get("behavioral_contract", ""),
         failure_modes=u.get("failure_modes", ""),
         assumptions=u.get("assumptions", ""),
+        resource_obligations=u.get("resource_obligations", ""),
     )
 
     invariants = [

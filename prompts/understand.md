@@ -113,7 +113,7 @@ Before writing a single JSON character, do this silently:
 ```
 This guarantees both keys exist even if the model exhausts tokens inside `understanding`. **Do not skip this step. Do not defer it. Skipping this step has produced broken outputs in the past.**
 
-**STEP 4**: Open `"understanding": {` — write each field as a SHORT, COMPLETE string within your pre-computed budget. If you are mid-sentence and approaching the word limit, close the sentence immediately and close the field string. Never let a field string run open.
+**STEP 4**: Open `"understanding": {` — write each field as a SHORT, COMPLETE string within your pre-computed budget. If you are mid-sentence and approaching the word limit, close the sentence immediately and close the field string. Never let a field string run open. Fields in order: `purpose`, `design_intent`, `key_abstractions`, `behavioral_contract`, `failure_modes`, `assumptions`, `resource_obligations`.
 
 **STEP 5**: Close `"understanding": }` then replace `"invariants": []` with the real array.
 
@@ -246,6 +246,25 @@ List implicit assumptions embedded in the VISIBLE code only. For each, quote the
 GOOD: "`_KNOWN_ASYNC_METHODS` includes `'get'` without qualification — assumes any `.get(...)` call is async; `dict.get(key, default)` and `Map.get(key)` are sync and will produce false positives in `_scan_missing_await`. `_SKIP_DIRS` comment says 'mirrors extractor._SKIP_DIRS' — assumes both stay in sync; if extractor adds a skip dir without updating this module, that directory gets analyzed unnecessarily. The bare `except Exception: pass` for JS assumes a missing JS parser is non-fatal — if the user expects JS analysis, they get no error."
 
 BAD: Assumptions about functions not in `visible_definitions`.
+
+### resource_obligations
+**Cross-call temporal contracts** — obligations that span multiple invocations or require cleanup after use. Single-call behavioral contracts go in `behavioral_contract`; this field captures what the module owes *across* calls.
+
+Look for these patterns in visible code:
+- **Subprocess/process spawning**: `subprocess.run`, `subprocess.Popen`, or any command that starts a daemon or server. State the lifecycle obligation: "spawns at most one process per X" or "caller must stop the process after use."
+- **Global/module-level mutable state**: any `_cache = {}`, `_registry = []`, or similar collection modified inside functions. State the accumulation obligation: "cache grows without bound unless cleared" or "registry is append-only across the process lifetime."
+- **Ordering constraints**: any function that checks an `_initialized`, `_started`, or `_open` flag. State the sequencing obligation: "must call setup() before run(); violation raises X."
+- **Handle/connection lifecycle**: `open()`, `socket()`, `requests.Session()` without context manager. State the cleanup obligation: "caller must close the handle; no automatic cleanup."
+- **Idempotency contract**: functions named `ensure_X`, `initialize_X`, `setup_X`. State whether repeated calls are safe or produce double-effects.
+- **Missing timeout**: `subprocess.run`, network calls without `timeout=`. State the liveness risk: "can block indefinitely if remote is unresponsive."
+
+**If none of these patterns appear in visible code**, write: `"(none detected in visible source)"`
+
+**Downstream use**: this field is consumed by the pipeline orchestrator to route to TLA+ (for process/ordering/accumulation properties) or Z3 (for bounded-call properties). Be specific — vague obligations cannot be encoded.
+
+GOOD: "`subprocess.run(['dmypy', 'run', ...])` at line 522 spawns a mypy daemon process. Obligation: at most one daemon should exist per process lifetime; repeated calls with different `cwd` values each start a new daemon with no corresponding stop. `_mypy_file_lines: dict` (line 546) is populated inside `_run_mypy` but never cleared between calls — accumulates across invocations in the same process."
+
+BAD: "The module uses subprocesses." (too vague to encode)
 
 ---
 
@@ -389,7 +408,7 @@ Before writing the closing `}`, verify:
 1. `truncation_audit` is present and closed
 2. `invariants` array is present and closed — even if empty
 3. `violations` array is present and closed — even if empty
-4. `understanding` has all six fields, each a closed string within the dynamic word limit
+4. `understanding` has all seven fields, each a closed string within the dynamic word limit: `purpose`, `design_intent`, `key_abstractions`, `behavioral_contract`, `failure_modes`, `assumptions`, `resource_obligations`
 5. `key_abstractions` is NOT an empty string
 6. The outer `}` closes the entire object
 7. No field references a name absent from `truncation_audit.visible_definitions`
@@ -422,6 +441,7 @@ Return JSON only — no markdown fences, no explanation outside the JSON:
     "key_abstractions": "...",
     "behavioral_contract": "...",
     "failure_modes": "...",
-    "assumptions": "..."
+    "assumptions": "...",
+    "resource_obligations": "..."
   }
 }
