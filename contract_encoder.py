@@ -59,6 +59,7 @@ class ContractVerificationResult:
     encoding_approach: str = ""
     limitations: str = ""
     error: str = ""
+    cegis_reasoning: str = ""  # LLM's analysis of the counterexample (SAT case)
 
 
 def _load_prompt(name: str) -> str:
@@ -243,16 +244,51 @@ def verify_contract(
 
     # Step 2: Execute Z3 script
     z3_result = _run_z3_script(z3_script)
+    status = z3_result.get("status", "unknown")
+    counterexample = z3_result.get("counterexample")
+    explanation = z3_result.get("explanation", "")
+    cegis_reasoning = ""
+
+    # Step 3: CEGIS — when Z3 finds a counterexample, the LLM reasons about it.
+    # LLM sees: original contract, function source, Z3 script, concrete violating input.
+    # It decides: genuine violation or encoding error? If encoding error, refines the script.
+    if status == "sat" and counterexample:
+        try:
+            cegis_template = _load_prompt("contract_cegis")
+            cegis_prompt = _render(
+                cegis_template,
+                function_name=function_name,
+                contract=contract,
+                function_source=func_src[:3000],
+                z3_script=z3_script,
+                counterexample=json.dumps(counterexample, indent=2),
+            )
+            cegis_raw = _call_llm(cegis_prompt, model, key)
+            cegis_reasoning = cegis_raw.get("reasoning", "")
+            is_genuine = cegis_raw.get("is_genuine_violation", True)
+            refined = cegis_raw.get("refined_z3_script", "")
+
+            if not is_genuine and refined and "import z3" in refined:
+                # Encoding was wrong — run the refined script
+                refined_result = _run_z3_script(refined)
+                if refined_result.get("status") in ("unsat", "sat", "unknown"):
+                    status = refined_result.get("status", "unknown")
+                    counterexample = refined_result.get("counterexample")
+                    explanation = refined_result.get("explanation", "")
+                    z3_script = refined  # surface the corrected script
+        except Exception:
+            pass  # CEGIS round is best-effort; base result still valid
 
     return ContractVerificationResult(
         function_name=function_name,
         contract=contract,
-        status=z3_result.get("status", "unknown"),
-        counterexample=z3_result.get("counterexample"),
-        explanation=z3_result.get("explanation", ""),
+        status=status,
+        counterexample=counterexample,
+        explanation=explanation,
         z3_script=z3_script,
         encoding_approach=encoding_approach,
         limitations=limitations,
+        cegis_reasoning=cegis_reasoning,
     )
 
 
