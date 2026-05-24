@@ -301,6 +301,80 @@ def _context_window(
     return ctx, start + 1, end
 
 
+def _func_at_line(source: str, line: int) -> str:
+    """Return the name of the innermost function containing `line` (1-indexed)."""
+    import ast as _ast
+
+    try:
+        tree = _ast.parse(source)
+        for node in _ast.walk(tree):
+            if isinstance(node, (_ast.FunctionDef, _ast.AsyncFunctionDef)):
+                if node.lineno <= line <= node.end_lineno:
+                    return node.name
+    except SyntaxError:
+        pass
+    return ""
+
+
+def _z3_verify(
+    result: "SynthesisResult",
+    patched_source: str,
+    model: str,
+    key: str,
+    verbose: bool,
+) -> tuple[Optional[str], float, str]:
+    """
+    Formally verify the patched function satisfies the invariant using Z3.
+
+    Returns (verdict, score, feedback):
+      - ("ACCEPT", 1.0, ...) when Z3 proves contract holds (UNSAT)
+      - ("REJECT", 0.0, ...) when Z3 finds a counterexample (SAT)
+      - (None, 0.0, "")     when Z3 cannot encode the contract — caller falls back to LLM rubric
+    """
+    try:
+        from pact.contract_encoder import verify_contract
+    except ImportError:
+        return None, 0.0, ""
+
+    func_name = _func_at_line(patched_source, result.line)
+    if not func_name:
+        return None, 0.0, ""
+
+    try:
+        z3_result = verify_contract(
+            contract=result.invariant_statement,
+            function_source=patched_source,
+            function_name=func_name,
+            api_key=key,
+            model=model,
+        )
+    except Exception as exc:
+        if verbose:
+            print(f"    Z3 verify error: {exc}")
+        return None, 0.0, ""
+
+    import json as _json
+
+    if z3_result.status == "unsat":
+        feedback = "Z3: contract formally holds — no counterexample exists (UNSAT)"
+        if z3_result.cegis_reasoning:
+            feedback += f"\n{z3_result.cegis_reasoning}"
+        return "ACCEPT", 1.0, feedback
+
+    if z3_result.status == "sat":
+        ce = _json.dumps(z3_result.counterexample) if z3_result.counterexample else "?"
+        feedback = (
+            f"Z3: contract VIOLATED after patch — counterexample: {ce}\n"
+            f"{z3_result.explanation}"
+        )
+        if z3_result.cegis_reasoning:
+            feedback += f"\nCEGIS: {z3_result.cegis_reasoning}"
+        return "REJECT", 0.0, feedback
+
+    # unknown / encoding_failed → fall back to LLM rubric
+    return None, 0.0, ""
+
+
 def apply_patch(source: str, original: str, replacement: str) -> Optional[str]:
     """
     Apply a patch by exact string replacement of `original` with `replacement`.
@@ -458,7 +532,12 @@ def _verify(
 ) -> tuple[float, str, str]:
     """
     Returns (score, verdict, counterexample_feedback).
-    Runs checker on patched code first, then LLM rubric scoring.
+
+    Verification order (first decisive answer wins):
+      1. Checker:  did the original violation disappear?  If still present → REJECT immediately.
+      2. Z3:       does the patched function formally satisfy the invariant?
+                   UNSAT → ACCEPT (1.0); SAT → REJECT with concrete counterexample.
+      3. LLM rubric (fallback): only when Z3 cannot encode the contract (unknown/encoding_failed).
     """
     source = "".join(source_lines)
     patched = apply_patch(source, result.patch.original, result.patch.replacement)
@@ -473,6 +552,30 @@ def _verify(
 
     still_present, new_viols = _check_patched(patched, result.line)
 
+    # Layer 1: checker says violation is still there — no point running Z3
+    if still_present:
+        return (
+            0.0,
+            "REJECT",
+            f"The original violation at line {result.line} is STILL PRESENT "
+            "after applying the patch — the invariant has not been satisfied.",
+        )
+
+    # Layer 2: Z3 formal verification on the patched function
+    if verbose:
+        print("    Z3: encoding invariant for formal verification...")
+    z3_verdict, z3_score, z3_feedback = _z3_verify(result, patched, model, key, verbose)
+    if z3_verdict is not None:
+        feedback_parts = [z3_feedback]
+        if new_viols:
+            feedback_parts.append(f"New violations introduced: {json.dumps(new_viols)}")
+        if verbose:
+            print(f"    Z3: {z3_verdict} (score={z3_score:.2f})")
+        return z3_score, z3_verdict, "\n".join(filter(None, feedback_parts))
+
+    # Layer 3: LLM rubric — Z3 could not encode this contract
+    if verbose:
+        print("    Z3: could not encode contract — falling back to LLM rubric")
     patch_display = f"ORIGINAL:\n{result.patch.original}\n\nREPLACEMENT:\n{result.patch.replacement}"
     template = _load_prompt("verify")
     prompt = _render(
@@ -508,19 +611,12 @@ def _verify(
     verdict = raw.get("verdict", "REJECT")
     reason = raw.get("verdict_reason", "")
 
-    # Build CEGIS feedback from weaknesses
     weaknesses = raw.get("weaknesses", [])
     feedback_parts = [reason] if reason else []
     for w in weaknesses:
         feedback_parts.append(f"[{w.get('dimension','?')}] {w.get('problem','')}")
         if w.get("better_patch"):
             feedback_parts.append(f"Suggested fix:\n{w['better_patch']}")
-
-    if still_present:
-        feedback_parts.append(
-            f"The original violation at line {result.line} is STILL PRESENT "
-            "after applying the patch — the invariant has not been satisfied."
-        )
     if new_viols:
         feedback_parts.append(f"New violations introduced: {json.dumps(new_viols)}")
 
