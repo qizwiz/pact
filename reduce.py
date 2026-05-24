@@ -381,6 +381,32 @@ def find_bridge_violations(
     return sorted(bridges, key=lambda r: (-int(r.is_cut_vertex), -r.betweenness))
 
 
+def cut_vertex_files(
+    functions: list[FunctionManifest],
+    call_sites: list[CallSite],
+) -> dict[str, list[str]]:
+    """Return a mapping of file path → list of cut-vertex function names.
+
+    Cut vertices (articulation points) are functions whose removal would
+    disconnect the call graph — they are structurally load-bearing regardless
+    of whether they have any violations. This is the NetworkX signal that
+    should trigger intent analysis and Z3 contract verification.
+    """
+    if not _HAS_NX:
+        return {}
+    G, func_by_name = _build_digraph(functions, call_sites)
+    if G is None:
+        return {}
+    G_undirected = G.to_undirected()
+    cut_verts: set[str] = set(nx.articulation_points(G_undirected))
+    result: dict[str, list[str]] = {}
+    for name in cut_verts:
+        f = func_by_name.get(name)
+        if f and f.file:
+            result.setdefault(f.file, []).append(name)
+    return result
+
+
 def find_sccs(
     G, func_by_name: dict, violations: list[Violation]
 ) -> list[ReductionCandidate]:

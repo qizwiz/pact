@@ -12,6 +12,7 @@ from .reduce import (
     apply_full_reduction,
     compute_blast_radii,
     compute_fitness,
+    cut_vertex_files,
 )
 from .refactor import suggest_refactors
 from .specgen import spec_gen
@@ -364,6 +365,69 @@ def _extract_top_level_imports(root: Path) -> dict[str, str]:
     return found
 
 
+def _show_cut_vertex_contracts(
+    functions: list,
+    call_sites: list,
+    root: Path,
+) -> None:
+    """Print behavioral contracts for cut vertices, sourced from intent JSON if present.
+
+    This is the NetworkX → intent trigger: structurally load-bearing functions
+    automatically surface their declared contracts for Z3 verification.
+    No LLM calls — reads existing intent_pact_self.json when available.
+    """
+    cv_files = cut_vertex_files(functions, call_sites)
+    if not cv_files:
+        return
+
+    # Look for intent JSON in the target directory and cwd
+    intent_paths = [
+        root / "intent_pact_self.json",
+        Path.cwd() / "intent_pact_self.json",
+    ]
+    intent_data: dict = {}
+    for ip in intent_paths:
+        if ip.exists():
+            try:
+                intent_data = json.loads(ip.read_text())
+            except Exception:
+                pass
+            break
+
+    # Build basename → (abs_path, contract, gaps) lookup for path-agnostic matching
+    contracts: dict[str, tuple[str, list[str]]] = {}
+    for module in intent_data.get("modules", []):
+        abs_path = module.get("path", "")
+        contract = (module.get("understanding") or {}).get("behavioral_contract", "")
+        gaps = [
+            inv.get("statement", "")
+            for inv in module.get("invariants", [])
+            if inv.get("type") == "intent_gap" and inv.get("confidence", 0) >= 0.85
+        ]
+        if contract or gaps:
+            # Index by absolute path AND basename so both match
+            contracts[abs_path] = (contract, gaps)
+            contracts[Path(abs_path).name] = (contract, gaps)
+
+    print(
+        f"\n⬡ pact --reduce: {len(cv_files)} cut vertex file(s) — structural load-bearing joints\n"
+    )
+    for file_path, func_names in sorted(cv_files.items()):
+        print(f"  {file_path}")
+        print(f"    functions: {', '.join(func_names)}")
+        contract, gaps = contracts.get(file_path, ("", []))
+        if contract:
+            short = contract[:120] + ("…" if len(contract) > 120 else "")
+            print(f"    contract:  {short}")
+        if gaps:
+            for g in gaps[:2]:
+                short_g = g[:100] + ("…" if len(g) > 100 else "")
+                print(f"    intent_gap: {short_g}")
+        if not contract and not gaps:
+            print("    contract:  (run `pact intent analyze <file>` to extract)")
+        print()
+
+
 def main(argv=None) -> int:
     # Top-level: if first arg is "spec", "fix", "preflight", or "intent", delegate
     if argv is None:
@@ -698,6 +762,10 @@ def main(argv=None) -> int:
             print(
                 "\n✓  pact --reduce: call graph has no detected tangles, pass-throughs, or hubs"
             )
+
+        # NetworkX → intent trigger: show behavioral contracts for cut vertices.
+        # Reads intent_pact_self.json if present — zero extra LLM calls.
+        _show_cut_vertex_contracts(functions, call_sites, root)
 
     if args.reduce_apply and not args.json_mode:
         result = apply_full_reduction(functions, call_sites, violations)
