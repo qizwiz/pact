@@ -798,3 +798,79 @@ class TestShowCutVertexContracts:
         _show_cut_vertex_contracts(funcs, calls, tmp_path, intent_trigger=True)
         out = capsys.readouterr().out
         assert "ANTHROPIC_API_KEY" in out
+
+
+# ---------------------------------------------------------------------------
+# compute_structural_coverage
+# ---------------------------------------------------------------------------
+
+
+class TestStructuralCoverage:
+    """Tests for structural coverage metric (cut vertices × intent JSON)."""
+
+    def _linear(self):
+        """A→B→C: B is the cut vertex."""
+        funcs = [_func("A", file="a.py"), _func("B", file="b.py"), _func("C", file="c.py")]
+        calls = [_call("A", "B"), _call("B", "C")]
+        return funcs, calls
+
+    def test_no_cut_vertices_perfect_coverage(self, tmp_path):
+        from .reduce import compute_structural_coverage
+
+        funcs = [_func("A"), _func("B")]
+        calls = [_call("A", "B")]
+        cov = compute_structural_coverage(funcs, calls)
+        assert cov.score == 1.0
+        assert cov.total == 0
+        assert cov.dark_files == []
+
+    def test_cut_vertex_no_intent_json_is_dark(self, tmp_path):
+        from .reduce import compute_structural_coverage
+
+        funcs, calls = self._linear()
+        cov = compute_structural_coverage(funcs, calls, intent_path=tmp_path / "missing.json")
+        assert cov.total >= 1
+        assert cov.covered == 0
+        assert cov.score == 0.0
+        assert len(cov.dark_files) >= 1
+
+    def test_cut_vertex_with_contract_is_covered(self, tmp_path):
+        import json
+        from .reduce import compute_structural_coverage
+
+        funcs, calls = self._linear()
+        # b.py is the cut vertex — give it a contract
+        intent = {
+            "modules": [
+                {
+                    "path": "b.py",
+                    "understanding": {"behavioral_contract": "routes calls"},
+                    "violations": [],
+                    "invariants": [],
+                }
+            ]
+        }
+        intent_path = tmp_path / "intent.json"
+        intent_path.write_text(json.dumps(intent))
+        cov = compute_structural_coverage(funcs, calls, intent_path=intent_path)
+        assert cov.covered >= 1
+        assert cov.score > 0.0
+
+    def test_summary_contains_score(self, tmp_path):
+        from .reduce import compute_structural_coverage
+
+        funcs, calls = self._linear()
+        cov = compute_structural_coverage(funcs, calls)
+        summary = cov.summary()
+        assert "%" in summary or "structural coverage" in summary
+
+    def test_to_dict_has_required_keys(self, tmp_path):
+        from .reduce import compute_structural_coverage
+
+        funcs, calls = self._linear()
+        cov = compute_structural_coverage(funcs, calls)
+        d = cov.to_dict()
+        assert "score" in d
+        assert "covered" in d
+        assert "total" in d
+        assert "dark" in d

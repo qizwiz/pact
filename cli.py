@@ -12,6 +12,7 @@ from .reduce import (
     apply_full_reduction,
     compute_blast_radii,
     compute_fitness,
+    compute_structural_coverage,
     cut_vertex_files,
 )
 from .refactor import suggest_refactors
@@ -656,6 +657,29 @@ def main(argv=None) -> int:
         ),
     )
     p.add_argument(
+        "--coverage",
+        action="store_true",
+        help=(
+            "Structural coverage: fraction of cut vertices (load-bearing joints) "
+            "that have verified behavioral contracts in an intent JSON. "
+            "CI-trackable — gate on coverage >= threshold to prevent unspecified "
+            "joints from accumulating. Reads intent_pact_self.json from cwd by default."
+        ),
+    )
+    p.add_argument(
+        "--coverage-intent",
+        metavar="FILE",
+        default=None,
+        help="Intent JSON to use for --coverage (default: intent_pact_self.json in cwd)",
+    )
+    p.add_argument(
+        "--coverage-threshold",
+        type=float,
+        default=0.0,
+        metavar="N",
+        help="Exit 1 if structural coverage is below N (0.0–1.0). Use with --coverage in CI.",
+    )
+    p.add_argument(
         "--blast-radius",
         action="store_true",
         help=(
@@ -873,6 +897,20 @@ def main(argv=None) -> int:
         print("\n⬡ pact --fitness: structural fitness of call graph\n")
         print(fitness.summary())
         print()
+
+    if args.coverage and not args.json_mode:
+        intent_p = Path(args.coverage_intent) if args.coverage_intent else None
+        cov = compute_structural_coverage(functions, call_sites, intent_path=intent_p)
+        print("\n⬡ pact --coverage: structural coverage of load-bearing joints\n")
+        print(cov.summary())
+        print()
+        threshold = args.coverage_threshold
+        if threshold > 0.0 and cov.total > 0 and cov.score < threshold:
+            print(
+                f"  ✗ coverage {cov.score:.0%} is below threshold {threshold:.0%} — exit 1",
+                file=sys.stderr,
+            )
+            sys.exit(1)
 
     if args.graph:
         # Use suggestion data for accurate attribution if available; else compute

@@ -255,6 +255,7 @@ class HealResult:
     patches_accepted: int = 0
     patches_rejected: int = 0
     results: list[SynthesisResult] = field(default_factory=list)
+    oracle_warning: str = ""  # set when patches applied without oracle validation
 
 
 # ---------------------------------------------------------------------------
@@ -264,6 +265,37 @@ class HealResult:
 
 def _read_source(path: Path) -> list[str]:
     return path.read_text(encoding="utf-8", errors="replace").splitlines(keepends=True)
+
+
+def _autodetect_test_cmd(project_root: Path) -> Optional[str]:
+    """Detect the test runner for a project from common marker files.
+
+    Checked in priority order:
+      pytest markers → python -m pytest
+      tox.ini        → tox
+      Makefile test  → make test
+    Returns None when no runner is detected.
+    """
+    root = project_root.resolve()
+    # pytest: any of these files signal a pytest project
+    pytest_markers = [
+        "pytest.ini",
+        "pyproject.toml",  # may contain [tool.pytest.ini_options]
+        "setup.cfg",  # may contain [tool:pytest]
+        "conftest.py",
+    ]
+    if any((root / m).exists() for m in pytest_markers):
+        return "python -m pytest -q --tb=short"
+    if (root / "tox.ini").exists():
+        return "tox"
+    if (root / "Makefile").exists():
+        try:
+            content = (root / "Makefile").read_text(errors="replace")
+            if "\ntest:" in content or "test:\n" in content:
+                return "make test"
+        except OSError:
+            pass
+    return None
 
 
 def _run_oracle(test_cmd: str, cwd: Path, verbose: bool) -> tuple[bool, str]:
@@ -959,6 +991,15 @@ def heal_project(
         violations_attempted=len(to_heal),
     )
 
+    # Auto-detect test runner when apply=True but no explicit test_cmd.
+    # This closes the oracle safety gap: patches applied to disk are oracle-validated
+    # by default rather than relying on Z3 alone.
+    effective_test_cmd = test_cmd
+    if apply and not effective_test_cmd and project_root:
+        effective_test_cmd = _autodetect_test_cmd(project_root)
+        if effective_test_cmd and verbose:
+            print(f"[heal] auto-detected oracle: {effective_test_cmd!r}")
+
     if verbose:
         print(f"[heal] {len(to_heal)} violations to attempt ({', '.join(sev_set)})")
 
@@ -988,7 +1029,7 @@ def heal_project(
             model,
             key,
             verbose,
-            test_cmd=test_cmd,
+            test_cmd=effective_test_cmd,
             project_root=project_root,
         )
 
@@ -1001,25 +1042,33 @@ def heal_project(
         heal.results.append(result)
 
         accepted = result.verify_verdict == "ACCEPT" and result.verify_score >= 0.8
-        if test_cmd:
+        if effective_test_cmd:
             accepted = accepted and result.oracle_confirmed
 
         if accepted:
             heal.patches_accepted += 1
             if apply and not result.applied:
-                # oracle loop already applied if test_cmd was set
+                # oracle loop already applied if effective_test_cmd was set
                 _apply_to_disk(result, verbose)
         else:
             heal.patches_rejected += 1
             if verbose:
                 oracle_note = (
                     " (oracle rejected)"
-                    if test_cmd and not result.oracle_confirmed
+                    if effective_test_cmd and not result.oracle_confirmed
                     else ""
                 )
                 print(
                     f"  patch not accepted ({result.verify_verdict}, {result.verify_score:.2f}){oracle_note}"
                 )
+
+    # Warn when patches were applied to disk without oracle validation
+    if apply and heal.patches_accepted > 0 and not effective_test_cmd:
+        heal.oracle_warning = (
+            f"{heal.patches_accepted} patch(es) applied with Z3 verification only — "
+            "no test oracle detected. Add --test-cmd or a pytest/tox/Makefile to enable "
+            "full oracle validation."
+        )
 
     if improve:
         _improve_heal_prompt(heal.results, model, key, verbose)
@@ -1099,7 +1148,7 @@ def main(argv=None):
 
     args = p.parse_args(argv)
 
-    heal_project(
+    result = heal_project(
         violations_path=args.violations,
         model=args.model,
         api_key=args.api_key,
@@ -1109,8 +1158,10 @@ def main(argv=None):
         output=args.out,
         verbose=args.verbose,
         test_cmd=args.test_cmd,
-        project_root=args.path.resolve() if args.test_cmd else None,
+        project_root=args.path.resolve(),  # always pass — needed for oracle autodetect
     )
+    if result.oracle_warning:
+        print(f"\n⚠  {result.oracle_warning}")
 
 
 if __name__ == "__main__":

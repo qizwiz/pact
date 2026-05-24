@@ -76,18 +76,25 @@ The violations in `intent_pact_self.json` ARE the improvement queue. This is sel
 3. Filter for violations that require structural tools (Z3, NetworkX, Hypothesis)
 4. Implement the fix for one violation
 5. `ruff check --fix FILE && black FILE` on any .py edits
-6. Run tests: `cd ~/src/ && ~/src/pact-standalone/.venv/bin/python -m pytest --import-mode=importlib --pyargs pact.test_fixer pact.test_checker pact.test_z3_engine pact.test_hypothesis_checkers pact.test_ts_checker pact.test_ts_fixer pact.test_loop pact.test_specgen pact.test_reduce -q --tb=short`
-7. Must pass 521+ tests. Fix failures before committing.
+6. Run tests: `cd ~/src/ && ~/src/pact-standalone/.venv/bin/python -m pytest --import-mode=importlib --pyargs pact.test_fixer pact.test_checker pact.test_z3_engine pact.test_hypothesis_checkers pact.test_ts_checker pact.test_ts_fixer pact.test_loop pact.test_specgen pact.test_reduce pact.test_pipeline pact.test_heal -q --tb=short`
+7. Must pass 559+ tests. Fix failures before committing.
 8. Commit and push.
 
 ---
 
-## CURRENT GAP SUMMARY (as of 2026-05-23)
+## CURRENT GAP SUMMARY (as of 2026-05-24)
 
-Known intent_gap violations in pact itself (to be confirmed by self-analysis):
-- `heal.py` docstring: "Verification oracle: Z3 + test suite" — actual: LLM rubric only
-- `intent.py` pipeline step 4: "Violations — contradictions with module's own intent" — no formal verification
-- `reduce.py`: NetworkX cut vertices computed but do not trigger contract extraction
+Closed gaps:
+- `reduce.py`: NetworkX cut vertices now trigger intent analysis via `--intent-trigger` flag
+- `pipeline.py`: TLA+ specs now run TLC for real (all 4 templates verified, real verified/violated/unknown status)
+- `pipeline.py`: `heal` step now calls `heal_project()` for real CEGIS-verified patches
+- `heal.py`: oracle safety gap closed — `_autodetect_test_cmd` finds pytest/tox/make automatically; `oracle_warning` emitted when applying without oracle
+
+Remaining gaps (Z3-confirmed via self-analysis 2026-05-24):
+- `checker.py:599`: semgrep and mypy detectors unconditionally silenced when custom modes used (Z3 SAT confirmed)
+- `_interproc_z3`: tainted_json IDB rule missing `not calls_sanitizer_G` check (Z3 SAT confirmed)
+- `sheaf_summary`: h1_topological always 0, guard_deficit never surfaces topological gaps (Z3 SAT confirmed)
+- `_improve_context_prompt`: silently drops prompt-rewrite failures when verbose=False (Z3 SAT confirmed)
 - Hypothesis: present in test suite only, absent from user-code analysis pipeline
 - Graphify rationale nodes: extracted but never fed to intent layer
 
@@ -106,7 +113,7 @@ Known intent_gap violations in pact itself (to be confirmed by self-analysis):
 cd ~/src/ && ~/src/pact-standalone/.venv/bin/python -m pytest --import-mode=importlib \
   --pyargs pact.test_fixer pact.test_checker pact.test_z3_engine \
   pact.test_hypothesis_checkers pact.test_ts_checker pact.test_ts_fixer \
-  pact.test_loop pact.test_specgen pact.test_reduce pact.test_pipeline -q --tb=short
+  pact.test_loop pact.test_specgen pact.test_reduce pact.test_pipeline pact.test_heal -q --tb=short
 
 # Lint (always in this order)
 cd ~/src/pact-standalone && .venv/bin/ruff check --fix FILE && .venv/bin/black FILE

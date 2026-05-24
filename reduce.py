@@ -53,7 +53,9 @@ Usage
 from __future__ import annotations
 
 import collections
+import json
 from dataclasses import dataclass
+from pathlib import Path
 
 from .extractor import CallSite, FunctionManifest
 from .encoder import Violation
@@ -845,6 +847,121 @@ class GraphFitness:
                 " substantially exceeds its minimum equivalent structure"
             )
         return "\n".join(lines)
+
+
+@dataclass
+class StructuralCoverage:
+    """Fraction of cut vertices (load-bearing joints) with verified behavioral contracts.
+
+    A cut vertex without a contract is a structural blind spot: the call graph
+    says this function is critical, but there is no formal specification of what
+    it must do. This score is CI-trackable — teams can gate PRs on coverage >= N%.
+
+    covered:   cut vertices with a behavioral_contract in the intent JSON
+    total:     total cut vertices found by NetworkX
+    dark:      cut vertices with no contract (the coverage gap)
+    """
+
+    covered: int
+    total: int
+    dark_files: list[
+        tuple[str, list[str]]
+    ]  # (file_path, [func_names]) with no contract
+
+    @property
+    def score(self) -> float:
+        return self.covered / self.total if self.total > 0 else 1.0
+
+    def summary(self) -> str:
+        bar_width = 20
+        filled = round(self.score * bar_width)
+        bar = "█" * filled + "░" * (bar_width - filled)
+        lines = [
+            f"  structural coverage: {self.score:.0%}  [{bar}]"
+            f"  ({self.covered}/{self.total} cut vertices have verified contracts)",
+        ]
+        if self.dark_files:
+            lines.append(
+                f"  {len(self.dark_files)} file(s) with unverified load-bearing functions:"
+            )
+            for path, funcs in self.dark_files[:5]:
+                lines.append(f"    {path}: {', '.join(funcs)}")
+            if len(self.dark_files) > 5:
+                lines.append(f"    … and {len(self.dark_files) - 5} more")
+            lines.append(
+                "  → run: pact reduce --reduce --intent-trigger  to extract missing contracts"
+            )
+        else:
+            lines.append("  ✓ all load-bearing joints have behavioral contracts")
+        return "\n".join(lines)
+
+    def to_dict(self) -> dict:
+        return {
+            "score": round(self.score, 3),
+            "covered": self.covered,
+            "total": self.total,
+            "dark": [{"file": f, "functions": fns} for f, fns in self.dark_files],
+        }
+
+
+def compute_structural_coverage(
+    functions: list[FunctionManifest],
+    call_sites: list[CallSite],
+    intent_path: Path | None = None,
+) -> StructuralCoverage:
+    """Cross-reference NetworkX cut vertices with intent JSON to compute coverage score.
+
+    Reads behavioral contracts from intent_path (or searches cwd for
+    intent_pact_self.json). A cut vertex is "covered" when its file has a non-empty
+    behavioral_contract in the intent JSON.
+
+    This is the metric CI pipelines should gate on: if structural coverage drops
+    below a threshold (e.g. 80%), new load-bearing joints have appeared without
+    formal specifications.
+    """
+    cv_files = cut_vertex_files(functions, call_sites)
+    if not cv_files:
+        return StructuralCoverage(covered=0, total=0, dark_files=[])
+
+    # Load intent JSON: explicit path → cwd fallback
+    intent_data: dict = {}
+    search_paths: list[Path] = []
+    if intent_path:
+        search_paths.append(Path(intent_path))
+    search_paths += [
+        Path.cwd() / "intent_pact_self.json",
+        Path.cwd() / "intent.json",
+    ]
+    for p in search_paths:
+        if p.exists():
+            try:
+                intent_data = json.loads(p.read_text())
+                break
+            except Exception:
+                pass
+
+    # Build path + basename → has_contract lookup
+    has_contract: set[str] = set()
+    for module in intent_data.get("modules", []):
+        contract = (module.get("understanding") or {}).get("behavioral_contract", "")
+        if contract and contract.strip():
+            abs_path = module.get("path", "")
+            has_contract.add(abs_path)
+            has_contract.add(Path(abs_path).name)
+
+    covered = 0
+    dark: list[tuple[str, list[str]]] = []
+    for file_path, func_names in sorted(cv_files.items()):
+        if file_path in has_contract or Path(file_path).name in has_contract:
+            covered += 1
+        else:
+            dark.append((file_path, func_names))
+
+    return StructuralCoverage(
+        covered=covered,
+        total=len(cv_files),
+        dark_files=dark,
+    )
 
 
 def compute_fitness(

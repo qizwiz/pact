@@ -210,11 +210,12 @@ def check_codebase(
                 _z3_err,
             )
 
-    # Semgrep — runs rules from pact/semgrep/ as a parallel detector.
-    # Only active in full-mode runs (not when a specific mode subset is passed),
-    # to avoid false positives interfering with targeted mode checks in tests.
-    # Findings are merged with AST results (deduplication by file:line:mode).
-    # No-op if semgrep is not installed or if the rules directory is absent.
+    # Semgrep — structural pattern detector.
+    # Runs only in full-mode (not custom) because semgrep does not apply
+    # pact's semantic suppressions (guard functions, session injection, noqa).
+    # Running semgrep in targeted mode checks produces false positives that
+    # the AST checker correctly suppresses. The right fix is to post-apply
+    # pact's suppression logic to semgrep results; tracked as a known gap.
     if not _custom_modes:
         try:
             _semgrep_results = _run_semgrep(root)
