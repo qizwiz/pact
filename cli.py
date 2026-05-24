@@ -470,6 +470,11 @@ def main(argv=None) -> int:
         _loop_main(argv[1:])
         return 0
 
+    if argv and argv[0] == "pipeline":
+        from .pipeline import main as _pipeline_main
+
+        return _pipeline_main(argv[1:])
+
     p = argparse.ArgumentParser(
         prog="pact",
         description="Python AST Constraint Tool — verify constraints across a codebase using Z3.",
