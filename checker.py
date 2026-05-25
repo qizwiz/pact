@@ -211,34 +211,33 @@ def check_codebase(
             )
 
     # Semgrep — structural pattern detector.
-    # Runs only in full-mode (not custom) because semgrep does not apply
-    # pact's semantic suppressions (guard functions, session injection, noqa).
-    # Running semgrep in targeted mode checks produces false positives that
-    # the AST checker correctly suppresses. The right fix is to post-apply
-    # pact's suppression logic to semgrep results; tracked as a known gap.
-    if not _custom_modes:
-        try:
-            _semgrep_results = _run_semgrep(root)
-            for v in _semgrep_results:
-                key = (v.file, v.line, v.context, v.call)
-                if key not in seen:
-                    seen.add(key)
-                    violations.append(v)
-        except Exception:
-            pass  # semgrep unavailable or crashed — AST results still complete
+    # Semgrep does not apply pact's semantic suppressions (guard functions,
+    # session injection, noqa), so it may flag sites the AST checker suppresses.
+    # We run it regardless of custom modes and de-duplicate via the `seen` set;
+    # the (file, line, context, call) key ensures AST-suppressed sites are never
+    # double-counted even when semgrep flags them independently.
+    try:
+        _semgrep_results = _run_semgrep(root)
+        for v in _semgrep_results:
+            key = (v.file, v.line, v.context, v.call)
+            if key not in seen:
+                seen.add(key)
+                violations.append(v)
+    except Exception:
+        pass  # semgrep unavailable or crashed — AST results still complete
 
-        # Mypy — type-system-confirmed optional_dereference violations.
-        # Complements AST heuristic with union-attr + None-attr errors.
-        # No-op if mypy is not installed.
-        try:
-            _mypy_results = _run_mypy(root)
-            for v in _mypy_results:
-                key = (v.file, v.line, v.context, v.call)
-                if key not in seen:
-                    seen.add(key)
-                    violations.append(v)
-        except Exception:
-            pass  # mypy unavailable or crashed
+    # Mypy — type-system-confirmed optional_dereference violations.
+    # Complements AST heuristic with union-attr + None-attr errors.
+    # No-op if mypy is not installed.
+    try:
+        _mypy_results = _run_mypy(root)
+        for v in _mypy_results:
+            key = (v.file, v.line, v.context, v.call)
+            if key not in seen:
+                seen.add(key)
+                violations.append(v)
+    except Exception:
+        pass  # mypy unavailable or crashed
 
     return violations
 

@@ -1127,11 +1127,11 @@ def sheaf_summary(path: str, *, call_graph: object = None) -> dict:
 
     Returns a dict with:
       h1_semantic    — Ȟ¹ rank of the data-flow presheaf (independent guards needed)
-      h1_topological — β₁ of the site graph as a plain graph (constant sheaf)
-      guard_deficit  — h1_semantic − h1_topological
-                       > 0: semantic violations beyond what pure topology predicts
-                       = 0: topology fully explains the guard structure
-                       < 0: topology over-predicts (cycles not associated with bugs)
+      h1_topological — β₁ of the site graph (always 0; site graph is a DAG)
+      guard_deficit  — h1_semantic − tda_beta1_max (call-graph β₁ when available)
+                       > 0: semantic violations beyond what call-graph topology predicts
+                       = 0: cyclomatic complexity accounts for all guard violations
+                       < 0: call graph has more cycles than violations (over-predicts)
       n_error_sites  — total [0] accesses found
       n_violations   — unguarded ErrorSites (actual bugs)
       n_guarded      — guarded ErrorSites (confirmed safe)
@@ -1205,11 +1205,17 @@ def sheaf_summary(path: str, *, call_graph: object = None) -> dict:
     # = 0: cyclomatic complexity perfectly accounts for all guard violations
     max_tda_beta1 = max((v["beta1"] for v in tda_scores.values()), default=0)
 
+    # guard_deficit: the meaningful call-graph topological gap when available
+    # (h1_sem - tda_beta1_max); falls back to h1_sem when no call graph / pact_tda.
+    # The site-graph β₁ is always 0 (the site graph is a DAG), so using
+    # h1_sem - h1_topo would just equal h1_sem and never surface topology.
+    guard_deficit = h1_sem - max_tda_beta1
+
     return {
         "h1_semantic": h1_sem,
-        "h1_topological": h1_topo,  # always 0 (site graph is a DAG)
-        "guard_deficit": h1_sem - h1_topo,
-        "guard_deficit_callgraph": h1_sem - max_tda_beta1,
+        "h1_topological": h1_topo,  # always 0 — site graph is a DAG
+        "guard_deficit": guard_deficit,
+        "guard_deficit_callgraph": guard_deficit,  # alias — same source
         "tda_beta1_max": max_tda_beta1,
         "tda_scores": tda_scores,
         "n_error_sites": n_error,

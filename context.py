@@ -195,6 +195,14 @@ def _improve_context_prompt(
                     f"\n[context] ✓ context prompt rewritten (score was {overall:.2f})"
                 )
     except Exception as exc:
+        import warnings
+
+        warnings.warn(
+            f"context: prompt improvement failed ({type(exc).__name__}: {exc}); "
+            "context.md was not updated",
+            RuntimeWarning,
+            stacklevel=2,
+        )
         if verbose:
             print(f"\n[context] prompt improvement failed: {exc}")
 
