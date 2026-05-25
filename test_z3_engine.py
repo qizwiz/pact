@@ -452,3 +452,39 @@ def test_verify_file_certifies_fixer_output(tmp_path):
     f.write_text(result.patched)
     proof = verify_file(str(f))
     assert proof.proved_safe, f"Z3 still finds violations after fix: {proof.violations}"
+
+
+def test_async_llm_call_acreate_detected():
+    """acreate (async OpenAI variant) must be recognised as an LLM call."""
+    result = _llm_run("""
+        async def bad(client):
+            response = await client.chat.completions.acreate(model="gpt-4o", messages=[])
+            return response.choices[0].message.content
+    """)
+    assert (
+        not result.proved_safe
+    ), "acreate call with unguarded choices[0] must be unsafe"
+
+
+def test_async_llm_call_agenerate_detected():
+    """agenerate (async LangChain variant) must be recognised as an LLM call."""
+    result = _llm_run("""
+        async def bad(llm):
+            response = await llm.agenerate(["prompt"])
+            return response.choices[0].message.content
+    """)
+    assert (
+        not result.proved_safe
+    ), "agenerate call with unguarded choices[0] must be unsafe"
+
+
+def test_stream_llm_call_detected():
+    """stream() (synchronous streaming) must be recognised as an LLM call."""
+    result = _llm_run("""
+        def bad(client):
+            response = client.chat.completions.stream(model="gpt-4o", messages=[])
+            return response.choices[0].message.content
+    """)
+    assert (
+        not result.proved_safe
+    ), "stream call with unguarded choices[0] must be unsafe"

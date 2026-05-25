@@ -279,7 +279,31 @@ _llm_violation_rel = Function("llm_violation", _BVS, _BVS, BoolSort())
 
 # These must match failure_mode._LLM_RESPONSE_SOURCES / _LLM_RESPONSE_ATTRS
 _LLM_CALL_ATTRS = frozenset(
-    {"create", "complete", "generate", "invoke", "chat", "completions", "messages"}
+    {
+        # Synchronous methods (original set)
+        "create",
+        "complete",
+        "generate",
+        "invoke",
+        "chat",
+        "completions",
+        "messages",
+        # Async variants (OpenAI SDK, Anthropic SDK, etc.)
+        "acreate",
+        "agenerate",
+        "ainvoke",
+        "astream",
+        "astream_events",
+        # Streaming (synchronous)
+        "stream",
+        "stream_complete",
+        # Generic callable / provider-agnostic
+        "run",
+        "__call__",
+        # Google Vertex / Gemini
+        "predict",
+        "count_tokens",
+    }
 )
 _LLM_LIST_ATTRS = frozenset({"choices", "content", "outputs", "candidates"})
 
@@ -377,21 +401,23 @@ def _extract_llm_facts(
         visit_AsyncFunctionDef = visit_FunctionDef  # type: ignore[assignment]
 
         def visit_Assign(self, node):
-            if (
-                len(node.targets) == 1
-                and isinstance(node.targets[0], _ast.Name)
-                and isinstance(node.value, _ast.Call)
-            ):
-                func = node.value.func
-                attr = (
-                    func.attr
-                    if isinstance(func, _ast.Attribute)
-                    else func.id if isinstance(func, _ast.Name) else None
-                )
-                if attr and attr in _LLM_CALL_ATTRS:
-                    var = node.targets[0].id
-                    self._llm_vars[var] = node.lineno
-                    llm_var_facts.append((_sid(self._scope), _vid(var)))
+            if len(node.targets) == 1 and isinstance(node.targets[0], _ast.Name):
+                # Unwrap `await expr` so async assignments are treated the same
+                # as synchronous ones: `response = await client.acreate(...)`
+                rhs = node.value
+                if isinstance(rhs, _ast.Await):
+                    rhs = rhs.value
+                if isinstance(rhs, _ast.Call):
+                    func = rhs.func
+                    attr = (
+                        func.attr
+                        if isinstance(func, _ast.Attribute)
+                        else func.id if isinstance(func, _ast.Name) else None
+                    )
+                    if attr and attr in _LLM_CALL_ATTRS:
+                        var = node.targets[0].id
+                        self._llm_vars[var] = node.lineno
+                        llm_var_facts.append((_sid(self._scope), _vid(var)))
             self.generic_visit(node)
 
         def visit_If(self, node):
