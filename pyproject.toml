@@ -39,5 +39,10 @@ pact-mcp = "pact.mcp_server:main"
 packages = ["pact"]
 package-dir = {"pact" = "."}
 
+[tool.pact]
+# Oracle command used by heal's CEGIS loop — overrides auto-detection.
+# pact uses relative imports so tests must run from the parent of the package dir.
+oracle_cmd = "cd /Users/jonathanhill/src && /Users/jonathanhill/src/pact-standalone/.venv/bin/python -m pytest --import-mode=importlib --pyargs pact.test_fixer pact.test_checker pact.test_z3_engine pact.test_hypothesis_checkers pact.test_ts_checker pact.test_ts_fixer pact.test_loop pact.test_specgen pact.test_reduce pact.test_pipeline pact.test_heal -q --tb=short"
+
 [tool.pytest.ini_options]
 # inherited from pytest.ini

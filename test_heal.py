@@ -61,6 +61,15 @@ class TestAutodetectTestCmd:
         cmd = _autodetect_test_cmd(tmp_path)
         assert "pytest" in cmd  # pytest wins
 
+    def test_pyproject_pact_oracle_cmd_overrides_all(self, tmp_path):
+        # [tool.pact].oracle_cmd wins over any auto-detected runner
+        (tmp_path / "pytest.ini").write_text("[pytest]\n")
+        (tmp_path / "pyproject.toml").write_text(
+            '[tool.pact]\noracle_cmd = "make custom-test"\n'
+        )
+        cmd = _autodetect_test_cmd(tmp_path)
+        assert cmd == "make custom-test"
+
 
 # ---------------------------------------------------------------------------
 # oracle_warning on HealResult

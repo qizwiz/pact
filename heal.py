@@ -279,6 +279,28 @@ def _autodetect_test_cmd(project_root: Path) -> Optional[str]:
     import sys as _sys
 
     root = project_root.resolve()
+
+    # Check for explicit oracle_cmd in [tool.pact] section of pyproject.toml first.
+    # This overrides auto-detection for projects with non-standard test invocations
+    # (e.g. packages that need --import-mode=importlib or a specific working directory).
+    pyproject = root / "pyproject.toml"
+    if pyproject.exists():
+        try:
+            import tomllib as _tomllib
+        except ImportError:
+            try:
+                import tomli as _tomllib  # type: ignore[no-redef]
+            except ImportError:
+                _tomllib = None  # type: ignore[assignment]
+        if _tomllib is not None:
+            try:
+                cfg = _tomllib.loads(pyproject.read_text(encoding="utf-8"))
+                cmd = cfg.get("tool", {}).get("pact", {}).get("oracle_cmd")
+                if cmd:
+                    return cmd
+            except Exception:
+                pass
+
     # pytest: any of these files signal a pytest project
     pytest_markers = [
         "pytest.ini",
@@ -720,7 +742,11 @@ def _heal_violation(
         except Exception as exc:
             if verbose:
                 print(f"    synthesis failed: {exc}")
-            return None
+            # Don't give up — feed the error back and retry on next iteration
+            feedback = (
+                f"Previous synthesis attempt failed: {exc}. Return ONLY a JSON object."
+            )
+            continue
 
         if verbose:
             print(
