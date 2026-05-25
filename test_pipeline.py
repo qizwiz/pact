@@ -746,6 +746,37 @@ class TestContractTemplates:
         result = self._run(script)
         assert result["status"] == "unsat", f"Expected UNSAT (release guaranteed), got: {result}"
 
+    def test_error_contract_sat_when_silent(self):
+        """error_contract with silent_on_exception=True returns SAT."""
+        from pact.contract_templates import render_z3_template
+
+        script = render_z3_template(
+            "error_contract",
+            {
+                "exception_name": "SyntaxError",
+                "function_name": "_parse_py_cached",
+                "silent_on_exception": True,
+            },
+        )
+        result = self._run(script)
+        assert result["status"] == "sat", f"Expected SAT (silent swallow), got: {result}"
+        assert result["counterexample"]["caller_notified"] == "False"
+
+    def test_error_contract_unsat_when_notified(self):
+        """error_contract with silent_on_exception=False returns UNSAT."""
+        from pact.contract_templates import render_z3_template
+
+        script = render_z3_template(
+            "error_contract",
+            {
+                "exception_name": "OSError",
+                "function_name": "_parse_ts_cached",
+                "silent_on_exception": False,
+            },
+        )
+        result = self._run(script)
+        assert result["status"] == "unsat", f"Expected UNSAT (caller notified), got: {result}"
+
     def test_unsupported_kind_raises_key_error(self):
         """render_z3_template raises KeyError for unknown contract_kind."""
         from pact.contract_templates import render_z3_template

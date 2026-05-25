@@ -302,6 +302,65 @@ def _resource_lifecycle(params: dict) -> str:
 
 
 # ---------------------------------------------------------------------------
+# error_contract
+# ---------------------------------------------------------------------------
+# An exception is caught and silently swallowed — caller receives an identical
+# sentinel (None, [], False) regardless of whether an error occurred.
+# SAT when silent_on_exception=True  → exception raised but caller not notified (bug)
+# UNSAT when silent_on_exception=False → exception produces distinguishable signal (fixed)
+# ---------------------------------------------------------------------------
+
+_ERROR_CONTRACT_TEMPLATE = """\
+import z3
+import json
+
+s = z3.Solver()
+
+exception_raised = z3.Bool('exception_raised')
+caller_notified = z3.Bool('caller_notified')
+
+if SILENT_ON_EXCEPTION:
+    # Bug: EXCEPTION_NAME caught and swallowed — caller receives same sentinel
+    # SAT witness: exception_raised=True AND caller_notified=False
+    s.add(exception_raised)
+    s.add(z3.Not(caller_notified))
+else:
+    # Fixed: exception produces distinct signal (log, re-raise, or typed return)
+    # UNSAT: cannot have exception_raised=True AND caller_notified=False
+    s.add(z3.Implies(exception_raised, caller_notified))
+    s.add(exception_raised)
+    s.add(z3.Not(caller_notified))
+
+result = s.check()
+if str(result) == 'sat':
+    m = s.model()
+    ce = {
+        'exception_raised': str(m[exception_raised]),
+        'caller_notified': str(m[caller_notified]),
+        'explanation': 'EXCEPTION_NAME silently swallowed in FUNCTION_NAME — caller cannot detect error'
+    }
+    print(json.dumps({'status': 'sat', 'counterexample': ce,
+                      'explanation': 'EXCEPTION_NAME silently swallowed in FUNCTION_NAME'}))
+else:
+    print(json.dumps({'status': 'unsat', 'counterexample': None,
+                      'explanation': 'FUNCTION_NAME signals EXCEPTION_NAME to caller — no silent swallow'}))
+"""
+
+
+def _error_contract(params: dict) -> str:
+    exception_name = params.get("exception_name", "Exception")
+    function_name = params.get("function_name", "function")
+    silent_on_exception = params.get("silent_on_exception", True)
+    script = _ERROR_CONTRACT_TEMPLATE
+    script = script.replace("EXCEPTION_NAME", exception_name)
+    script = script.replace("FUNCTION_NAME", function_name)
+    script = script.replace(
+        "SILENT_ON_EXCEPTION", "True" if silent_on_exception else "False"
+    )
+    return script
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -311,6 +370,7 @@ SUPPORTED_KINDS = {
     "subset_relation",
     "ordering",
     "resource_lifecycle",
+    "error_contract",
 }
 
 _RENDERERS = {
@@ -319,6 +379,7 @@ _RENDERERS = {
     "subset_relation": _subset_relation,
     "ordering": _ordering,
     "resource_lifecycle": _resource_lifecycle,
+    "error_contract": _error_contract,
 }
 
 

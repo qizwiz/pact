@@ -18,5 +18,6 @@ For "nullable_contract": {"field_name": "<name of the field or variable that can
 For "subset_relation": {"set_a": "<name of the required/expected set>", "set_b": "<name of the provided/actual set>"}
 For "ordering": {"first_op": "<name of operation that must run first>", "second_op": "<name of operation that depends on first>", "guard_exists": false}
 For "resource_lifecycle": {"resource": "<name of the resource (connection, file, handle, lock)>", "release_guaranteed": false}
+For "error_contract": {"exception_name": "<exception type(s) being caught, e.g. SyntaxError>", "function_name": "<name of function containing the handler>", "silent_on_exception": true}
 
 Return only JSON. No explanation.
