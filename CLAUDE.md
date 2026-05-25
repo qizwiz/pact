@@ -82,27 +82,29 @@ The violations in `intent_pact_self.json` ARE the improvement queue. This is sel
 
 ---
 
-## CURRENT GAP SUMMARY (as of 2026-05-24)
+## CURRENT GAP SUMMARY (as of 2026-05-25)
 
 Closed gaps:
 - `reduce.py`: NetworkX cut vertices now trigger intent analysis via `--intent-trigger` flag
 - `pipeline.py`: TLA+ specs now run TLC for real (all 4 templates verified, real verified/violated/unknown status)
 - `pipeline.py`: `heal` step now calls `heal_project()` for real CEGIS-verified patches
 - `heal.py`: oracle safety gap closed — `_autodetect_test_cmd` finds pytest/tox/make automatically; `oracle_warning` emitted when applying without oracle
+- `checker.py:599`: semgrep/mypy now run regardless of custom modes; de-duplication via seen set (commit 83b63af)
+- `sheaf_summary`: guard_deficit now uses call-graph β₁ (tda_beta1_max) not site-graph β₁ (always 0) (commit 83b63af)
+- `_improve_context_prompt`: RuntimeWarning now emitted regardless of verbose flag (commit 83b63af)
+- `z3_engine.py`: UNKNOWN fixedpoint result now emits RuntimeWarning instead of silent proved_safe (commit 330a757)
+- `extractor.py`: SyntaxError/OSError now emit RuntimeWarning instead of silent return (commit 330a757)
+- `cli.py`: bare except → specific exceptions + RuntimeWarning; RuntimeError → Exception in _spec_cmd (commit 330a757)
 
-Remaining gaps (Z3-confirmed via self-analysis 2026-05-24):
-- `checker.py:599`: semgrep and mypy detectors unconditionally silenced when custom modes used (Z3 SAT confirmed)
-- `_interproc_z3`: tainted_json IDB rule missing `not calls_sanitizer_G` check (Z3 SAT confirmed)
-- `sheaf_summary`: h1_topological always 0, guard_deficit never surfaces topological gaps (Z3 SAT confirmed)
-- `_improve_context_prompt`: silently drops prompt-rewrite failures when verbose=False (Z3 SAT confirmed)
+Remaining gaps:
+- `_interproc_z3`: tainted_json IDB rule missing `not calls_sanitizer_G` guard (Z3 SAT confirmed; needs sanitizer-function schema extension)
 - Hypothesis: present in test suite only, absent from user-code analysis pipeline
 - Graphify rationale nodes: extracted but never fed to intent layer
 
 **Priority order for next improvements:**
-1. NetworkX → intent trigger — when cut vertex found, automatically run intent on that file
-2. Graphify rationale → intent — feed rationale node text as declared intent layer
-3. `pact pipeline` TLC execution — add Java/TLC invocation to actually verify TLA+ specs (currently generates spec but doesn't run TLC)
-4. `pact pipeline --auto` flag — run pipeline automatically after `pact intent analyze` without separate invocation
+1. Graphify rationale → intent — feed rationale node text as declared intent layer
+2. `_interproc_z3` sanitizer guard — add `is_sanitizer` field to FuncFacts + propagation stop rule
+3. Hypothesis → user code — wire adversarial input generation to counterexamples from Z3
 
 ---
 
