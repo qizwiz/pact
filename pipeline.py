@@ -144,8 +144,8 @@ def _intent_summary(intent: dict) -> str:
         ]
         for inv in high_invs[:3]:
             lines.append(
-                f"intent_gap [{inv.get('id')}] confidence={inv.get('confidence')}: "
-                f"{inv.get('statement', '')[:200]}"
+                f"intent_gap  invariant_id={inv.get('id')}  confidence={inv.get('confidence')}"
+                f"\n  contract (copy verbatim): {inv.get('statement', '')[:200]}"
             )
 
         for v in violations[:4]:
@@ -191,7 +191,9 @@ def _execute_z3(
     from .contract_encoder import verify_contract
 
     contract = step.get("contract", "")
-    preencoded = (inv_z3_index or {}).get(contract)
+    inv_id = step.get("invariant_id", "")
+    index = inv_z3_index or {}
+    preencoded = index.get(contract) or index.get(inv_id)
     result = verify_contract(
         contract=contract,
         function_source=source,
@@ -625,14 +627,19 @@ def run_pipeline(
     intent = json.loads(intent_path.read_text())
     summary = _intent_summary(intent)
 
-    # Build invariant index: contract statement → pre-encoded Z3 script (from contract IR)
+    # Build invariant index keyed by both statement and invariant_id (from contract IR)
     inv_z3_index: dict[str, str] = {}
     for mod in intent.get("modules", []):
         for inv in mod.get("invariants", []):
             z3_enc = inv.get("z3_encoding", "")
+            if not z3_enc or "import z3" not in z3_enc:
+                continue
             stmt = inv.get("statement", "")
-            if z3_enc and stmt and "import z3" in z3_enc:
+            inv_id = inv.get("id", "")
+            if stmt:
                 inv_z3_index[stmt] = z3_enc
+            if inv_id:
+                inv_z3_index[inv_id] = z3_enc
 
     if verbose:
         print(f"pact pipeline: planning from {intent_path.name}")
