@@ -94,12 +94,27 @@ def check_codebase(
         models, functions, call_sites = extract_from_codebase(root)
 
     model_index: dict[str, ModelManifest] = {m.name: m for m in models}
-    # Exclude names defined more than once — multiple same-named closures in
-    # different scopes are indistinguishable without full scope analysis; using
-    # the wrong definition produces false positives (e.g. required_arg_missing).
+    # Exclude names defined more than once — multiple same-named functions in
+    # different files are indistinguishable at call sites without full scope
+    # analysis; picking the wrong definition would produce false positives for
+    # required_arg_missing and similar checks.
+    # Trade-off: false negative (missed violation) vs false positive.
+    # We warn so callers know these functions are excluded.
     _func_name_counts: dict[str, int] = {}
     for _f in functions:
         _func_name_counts[_f.name] = _func_name_counts.get(_f.name, 0) + 1
+    _duplicate_names = {name for name, count in _func_name_counts.items() if count > 1}
+    if _duplicate_names:
+        import warnings as _warnings
+
+        _warnings.warn(
+            f"checker: {len(_duplicate_names)} function name(s) appear in multiple "
+            "files and are excluded from call-site checks to avoid false positives "
+            f"(e.g. {sorted(_duplicate_names)[:3]}). "
+            "Violations in calls to these functions will not be reported.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
     func_index: dict[str, FunctionManifest] = {
         f.name: f for f in functions if _func_name_counts[f.name] == 1
     }
