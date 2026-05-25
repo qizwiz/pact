@@ -196,7 +196,13 @@ def _execute_z3(
     model: str,
     inv_z3_index: Optional[dict] = None,
 ) -> StepResult:
-    from .contract_encoder import verify_contract
+    import sys as _sys
+    import importlib as _il
+
+    _ce_mod = _sys.modules.get("pact.contract_encoder") or _il.import_module(
+        "pact.contract_encoder"
+    )
+    verify_contract = _ce_mod.verify_contract
 
     contract = step.get("contract", "")
     inv_id = step.get("invariant_id", "")
@@ -240,15 +246,27 @@ def _execute_z3(
     )
 
 
-def _execute_hypothesis(step: dict, source: str, key: str, model: str) -> StepResult:
-    from .hypothesis_generator import stress_contract
+def _execute_hypothesis(
+    step: dict,
+    source: str,
+    key: str,
+    model: str,
+    z3_counterexample: Optional[str] = None,
+) -> StepResult:
+    import sys as _sys
+    import importlib as _il
 
-    result = stress_contract(
+    _hg_mod = _sys.modules.get("pact.hypothesis_generator") or _il.import_module(
+        "pact.hypothesis_generator"
+    )
+
+    result = _hg_mod.stress_contract(
         contract=step.get("contract", ""),
         function_source=source,
         function_name=step.get("function_name") or "",
         api_key=key,
         model=model,
+        z3_counterexample=z3_counterexample,
     )
     status = (
         "violated"
@@ -647,7 +665,14 @@ def _execute_step(
                 print(f"  Z3: {icon} {r.status}{enc_note} — {r.summary[:80]}")
             return r
         elif tool == "hypothesis":
-            r = _execute_hypothesis(step, source, key, model)
+            # Seed with the Z3 counterexample from any violated dependency
+            z3_ce: Optional[str] = None
+            for dep in step.get("depends_on", []):
+                pr = prior_results.get(dep)
+                if pr and pr.tool == "z3" and pr.counterexample:
+                    z3_ce = pr.counterexample
+                    break
+            r = _execute_hypothesis(step, source, key, model, z3_counterexample=z3_ce)
             if verbose:
                 icon = {"verified": "✓", "violated": "✗", "unknown": "?"}.get(
                     r.status, "?"
@@ -773,6 +798,45 @@ def run_pipeline(
         )
         results.append(result)
         prior[result.step] = result
+
+    # Auto-inject Hypothesis for any Z3 violation not already covered by a planned step.
+    # This ensures Hypothesis always runs against user code when Z3 finds a bug,
+    # regardless of whether the LLM plan included a hypothesis step.
+    hypothesis_covered: set[int] = {
+        dep
+        for s in plan
+        if s.get("tool") == "hypothesis"
+        for dep in s.get("depends_on", [])
+    }
+    plan_by_step = {s["step"]: s for s in plan}
+    next_step = max((s["step"] for s in plan), default=0) + 1
+
+    for r in list(results):
+        if r.tool != "z3" or r.status != "violated":
+            continue
+        if r.step in hypothesis_covered:
+            continue
+        orig = plan_by_step.get(r.step, {})
+        contract = orig.get("contract") or r.summary
+        auto_step: dict = {
+            "step": next_step,
+            "tool": "hypothesis",
+            "module_path": r.module_path,
+            "function_name": orig.get("function_name") or "",
+            "contract": contract,
+            "depends_on": [r.step],
+        }
+        if verbose:
+            print(
+                f"  auto: Hypothesis step {next_step} → "
+                f"{Path(r.module_path).name} (Z3 violation at step {r.step})"
+            )
+        ar = _execute_step(
+            auto_step, prior, intent_path, key, model, verbose, inv_z3_index
+        )
+        results.append(ar)
+        prior[ar.step] = ar
+        next_step += 1
 
     return PipelineResult(
         intent_file=str(intent_path),

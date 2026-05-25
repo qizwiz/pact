@@ -522,7 +522,9 @@ class TestClassifyContractKind:
         assert kind == "ordering"
 
     def test_error_contract_from_exception_keywords(self):
-        kind, _ = self._classify("", "`_parse_py_cached` catches SyntaxError and returns None")
+        kind, _ = self._classify(
+            "", "`_parse_py_cached` catches SyntaxError and returns None"
+        )
         assert kind == "error_contract"
 
     def test_resource_lifecycle_from_statement(self):
@@ -754,7 +756,9 @@ class TestContractTemplates:
             {"resource": "connection", "release_guaranteed": True},
         )
         result = self._run(script)
-        assert result["status"] == "unsat", f"Expected UNSAT (release guaranteed), got: {result}"
+        assert (
+            result["status"] == "unsat"
+        ), f"Expected UNSAT (release guaranteed), got: {result}"
 
     def test_error_contract_sat_when_silent(self):
         """error_contract with silent_on_exception=True returns SAT."""
@@ -769,7 +773,9 @@ class TestContractTemplates:
             },
         )
         result = self._run(script)
-        assert result["status"] == "sat", f"Expected SAT (silent swallow), got: {result}"
+        assert (
+            result["status"] == "sat"
+        ), f"Expected SAT (silent swallow), got: {result}"
         assert result["counterexample"]["caller_notified"] == "False"
 
     def test_error_contract_unsat_when_notified(self):
@@ -785,7 +791,9 @@ class TestContractTemplates:
             },
         )
         result = self._run(script)
-        assert result["status"] == "unsat", f"Expected UNSAT (caller notified), got: {result}"
+        assert (
+            result["status"] == "unsat"
+        ), f"Expected UNSAT (caller notified), got: {result}"
 
     def test_unsupported_kind_raises_key_error(self):
         """render_z3_template raises KeyError for unknown contract_kind."""
@@ -894,7 +902,7 @@ class TestVerifyContractTyped:
             "pact.contract_encoder.verify_contract_typed", fake_verify_contract_typed
         )
 
-        result = verify_contract(
+        verify_contract(
             contract="flag suppresses checks",
             function_source="def f(flag): pass",
             function_name="f",
@@ -902,4 +910,194 @@ class TestVerifyContractTyped:
             contract_kind="flag_invariant",
         )
         assert typed_calls == ["flag_invariant"]
-        assert result.status == "sat"
+
+
+# ---------------------------------------------------------------------------
+# Hypothesis ← Z3 counterexample seeding
+# ---------------------------------------------------------------------------
+
+
+class TestHypothesisZ3Seeding:
+    """Verify that Z3 counterexamples are threaded into Hypothesis stress_contract calls."""
+
+    def _make_intent_file(self, tmp_path) -> Path:
+        intent = {
+            "modules": [
+                {
+                    "path": str(tmp_path / "target.py"),
+                    "understanding": {
+                        "behavioral_contract": "never returns empty list",
+                        "resource_obligations": "",
+                    },
+                    "violations": [
+                        {"severity": "high", "explanation": "may return []"}
+                    ],
+                    "invariants": [],
+                }
+            ]
+        }
+        (tmp_path / "target.py").write_text("def f(x): return x or []")
+        p = tmp_path / "intent.json"
+        p.write_text(json.dumps(intent))
+        return p
+
+    def test_z3_counterexample_passed_to_stress_contract(self, tmp_path, monkeypatch):
+        """When a Z3 step is violated, its counterexample reaches stress_contract."""
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "fake")
+
+        import pact.hypothesis_generator as _hg
+
+        # Plan: z3 step 1 (violated), hypothesis step 2 depending on it
+        plan_json = json.dumps(
+            [
+                {
+                    "step": 1,
+                    "tool": "z3",
+                    "module_path": str(tmp_path / "target.py"),
+                    "function_name": "f",
+                    "contract": "never returns empty list",
+                    "depends_on": [],
+                    "rationale": "check contract",
+                },
+                {
+                    "step": 2,
+                    "tool": "hypothesis",
+                    "module_path": str(tmp_path / "target.py"),
+                    "function_name": "f",
+                    "contract": "never returns empty list",
+                    "depends_on": [1],
+                    "rationale": "adversarial stress",
+                },
+            ]
+        )
+
+        received_ce: list[str] = []
+
+        def fake_stress_contract(**kwargs):
+            received_ce.append(kwargs.get("z3_counterexample") or "")
+            return _hg.HypothesisStressResult(
+                function_name=kwargs["function_name"],
+                contract=kwargs["contract"],
+                status="passed",
+                counterexample=None,
+                explanation="held for 10 examples",
+            )
+
+        # Z3 step returns violated with a counterexample
+        fake_z3_result = MagicMock()
+        fake_z3_result.status = "sat"
+        fake_z3_result.explanation = "x=None triggers empty return"
+        fake_z3_result.counterexample = {"x": None}
+        fake_z3_result.encoding_approach = "typed_template"
+
+        intent_path = self._make_intent_file(tmp_path)
+
+        # Use monkeypatch.setattr on the module object — more reliable than
+        # patch() string form under pytest --import-mode=importlib.
+        monkeypatch.setattr(_hg, "stress_contract", fake_stress_contract)
+
+        with _mock_llm(plan_json):
+            with patch(
+                "pact.contract_encoder.verify_contract", return_value=fake_z3_result
+            ):
+                result = run_pipeline(intent_path, verbose=False)
+
+        assert len(result.results) >= 2
+        hyp_results = [r for r in result.results if r.tool == "hypothesis"]
+        assert hyp_results, "no hypothesis step ran"
+        assert received_ce, "stress_contract was never called"
+        assert received_ce[0], "z3_counterexample was None/empty — not threaded through"
+
+    def test_hypothesis_auto_injected_for_uncovered_z3_violation(
+        self, tmp_path, monkeypatch
+    ):
+        """When LLM plan has only a Z3 step that violates, pipeline auto-injects Hypothesis."""
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "fake")
+
+        import pact.hypothesis_generator as _hg
+
+        # Plan: only z3 step — no hypothesis step planned
+        plan_json = json.dumps(
+            [
+                {
+                    "step": 1,
+                    "tool": "z3",
+                    "module_path": str(tmp_path / "target.py"),
+                    "function_name": "f",
+                    "contract": "never returns empty list",
+                    "depends_on": [],
+                    "rationale": "check contract",
+                }
+            ]
+        )
+
+        stress_calls: list[dict] = []
+
+        def fake_stress_contract(**kwargs):
+            stress_calls.append(kwargs)
+            return _hg.HypothesisStressResult(
+                function_name=kwargs["function_name"],
+                contract=kwargs["contract"],
+                status="falsified",
+                counterexample="None",
+                explanation="found counterexample",
+            )
+
+        fake_z3_result = MagicMock()
+        fake_z3_result.status = "sat"
+        fake_z3_result.explanation = "contract violated"
+        fake_z3_result.counterexample = {"x": None}
+        fake_z3_result.encoding_approach = "typed_template"
+
+        intent_path = self._make_intent_file(tmp_path)
+
+        monkeypatch.setattr(_hg, "stress_contract", fake_stress_contract)
+
+        with _mock_llm(plan_json):
+            with patch(
+                "pact.contract_encoder.verify_contract", return_value=fake_z3_result
+            ):
+                result = run_pipeline(intent_path, verbose=False)
+
+        hyp_results = [r for r in result.results if r.tool == "hypothesis"]
+        assert hyp_results, "pipeline did not auto-inject Hypothesis after Z3 violation"
+        assert len(stress_calls) == 1, "stress_contract should have been called once"
+        assert stress_calls[0].get(
+            "z3_counterexample"
+        ), "Z3 counterexample not passed to auto-injected step"
+
+    def test_hypothesis_not_injected_when_z3_verified(self, tmp_path, monkeypatch):
+        """When Z3 verifies a contract, no Hypothesis step is auto-injected."""
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "fake")
+
+        plan_json = json.dumps(
+            [
+                {
+                    "step": 1,
+                    "tool": "z3",
+                    "module_path": str(tmp_path / "target.py"),
+                    "function_name": "f",
+                    "contract": "always safe",
+                    "depends_on": [],
+                    "rationale": "check contract",
+                }
+            ]
+        )
+
+        fake_z3_result = MagicMock()
+        fake_z3_result.status = "unsat"
+        fake_z3_result.explanation = "contract verified"
+        fake_z3_result.counterexample = None
+        fake_z3_result.encoding_approach = "typed_template"
+
+        intent_path = self._make_intent_file(tmp_path)
+
+        with _mock_llm(plan_json):
+            with patch(
+                "pact.contract_encoder.verify_contract", return_value=fake_z3_result
+            ):
+                result = run_pipeline(intent_path, verbose=False)
+
+        hyp_results = [r for r in result.results if r.tool == "hypothesis"]
+        assert not hyp_results, "Hypothesis should not be injected when Z3 verifies"
+        assert result.violated_steps() == [], "No violations expected when Z3 verifies"

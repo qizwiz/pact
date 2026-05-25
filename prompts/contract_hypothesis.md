@@ -20,6 +20,7 @@ Contract: {{contract}}
 {{function_source}}
 ```
 
+{{z3_counterexample_section}}
 ---
 
 ## YOUR OUTPUT: a self-contained Python script

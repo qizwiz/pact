@@ -181,6 +181,7 @@ def stress_contract(
     api_key: Optional[str] = None,
     model: str = _DEFAULT_MODEL,
     max_examples: int = 500,
+    z3_counterexample: Optional[str] = None,
 ) -> HypothesisStressResult:
     """
     Stress-test a behavioral contract against a function using Hypothesis.
@@ -199,12 +200,29 @@ def stress_contract(
         LLM model for contract → Hypothesis translation.
     max_examples:
         Number of examples Hypothesis will try (default 500, more = more thorough).
+    z3_counterexample:
+        Optional Z3 counterexample (JSON string) from a prior verification step.
+        When provided, the LLM uses it to seed Hypothesis's search toward the
+        known-bad region rather than starting from scratch.
     """
     key = api_key or os.environ.get("ANTHROPIC_API_KEY", "")
     if not key:
         raise RuntimeError("ANTHROPIC_API_KEY not set")
 
     func_src = _extract_function_source(function_source, function_name)
+
+    # Build optional Z3 seed section for the prompt
+    if z3_counterexample:
+        z3_section = (
+            "\n## Z3 Counterexample (seed for Hypothesis search)\n\n"
+            "Z3 has already found a concrete witness that violates this contract:\n\n"
+            f"```\n{z3_counterexample}\n```\n\n"
+            "Use this to anchor your Hypothesis strategy: include the Z3 witness values "
+            "as an explicit example via `@example(...)` or `st.just(...) | st.integers(...)` "
+            "so Hypothesis always exercises the known-bad case and then explores around it.\n"
+        )
+    else:
+        z3_section = ""
 
     # Step 1: LLM translates contract → Hypothesis test
     try:
@@ -215,6 +233,7 @@ def stress_contract(
             contract=contract,
             function_source=func_src[:3000],
             max_examples=str(max_examples),
+            z3_counterexample_section=z3_section,
         )
         raw = _call_llm(prompt, model, key)
     except Exception as exc:

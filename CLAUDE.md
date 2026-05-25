@@ -106,14 +106,13 @@ Also closed (commits 0434e67, 570b57b, 6f1e663):
 - `_interproc_z3` call resolution: conservative name→list[func_id] mapping prevents missed taint edges (commit 0434e67)
 - `z3_engine.py` async LLM detection: _LLM_CALL_ATTRS expanded (acreate, agenerate, stream, __call__, etc.); await-unwrapping in visit_Assign for async assignments (commit 570b57b)
 - `checker.py` duplicate-name false negatives: RuntimeWarning emitted listing excluded function names (commit 6f1e663)
+- `pipeline.py` + `hypothesis_generator.py`: Hypothesis wired to user code — Z3 counterexample seeds Hypothesis search via `stress_contract(z3_counterexample=...)`; auto-injection ensures Hypothesis runs for every Z3 violation regardless of LLM plan; uses `sys.modules` lookup to avoid importlib module-identity split
 
 Remaining gaps:
-- Hypothesis: present in test suite only, absent from user-code analysis pipeline
 - `_interproc_z3`: call resolution still uses unqualified names — file-qualified resolution needs full import graph
 
 **Priority order for next improvements:**
-1. Hypothesis → user code — wire Hypothesis `st.from_type()` to contract types from Z3 counterexamples
-2. `_interproc_z3` qualified call resolution — use `file:func` keys when import graph available
+1. `_interproc_z3` qualified call resolution — use `file:func` keys when import graph available
 
 ---
 
