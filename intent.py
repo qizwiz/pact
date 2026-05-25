@@ -1452,6 +1452,21 @@ def _classify_contract_kind(
         return "accumulation", "accumulation"
     if any(
         k in text
+        for k in (
+            "catches",
+            "except ",
+            "silently return",
+            "swallow",
+            "returns none",
+            "error_contract",
+            "syntaxerror",
+            "oserror",
+            "valueerror",
+        )
+    ):
+        return "error_contract", "liveness"
+    if any(
+        k in text
         for k in ("flag", "boolean", "_has_", "enabled", "disabled", "silently")
     ):
         return "flag_invariant", "liveness"
