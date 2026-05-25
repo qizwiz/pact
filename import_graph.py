@@ -126,6 +126,8 @@ def main():
 
                 warnings.warn(f"Skipping malformed JSON line: {e}")
                 continue
+            if d.get("violation_type") != "llm_response_unguarded":
+                continue
             pairs[(d["repo"], d["file"])] = None
             all_repos.add(d["repo"])
 
