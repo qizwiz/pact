@@ -123,7 +123,7 @@ def _spec_cmd(argv) -> int:
     else:  # complete
         try:
             spec = spec_complete(src, out_path, model=args.model, api_key=args.api_key)
-        except RuntimeError as exc:
+        except Exception as exc:
             print(f"error: {exc}", file=sys.stderr)
             return 1
         if out_path:
@@ -397,8 +397,15 @@ def _show_cut_vertex_contracts(
     if intent_json_path:
         try:
             intent_data = json.loads(intent_json_path.read_text())
-        except Exception:
-            pass
+        except (json.JSONDecodeError, OSError) as exc:
+            import warnings
+
+            warnings.warn(
+                f"cli: could not load intent data from {intent_json_path} "
+                f"({type(exc).__name__}: {exc}); contract annotations will be absent",
+                RuntimeWarning,
+                stacklevel=2,
+            )
 
     # Build absolute-path + basename → (contract, gaps) lookup
     contracts: dict[str, tuple[str, list[str]]] = {}

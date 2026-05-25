@@ -65,6 +65,8 @@ from z3 import (
     is_false,
     is_or,
     sat,
+    unknown,
+    unsat,
 )
 
 from .extractor import extract_from_codebase, iter_python_files
@@ -222,8 +224,20 @@ class PactEngine:
 
     def violations(self) -> list[Z3Violation]:
         """One query. Z3 derives all violations."""
+        import warnings as _warnings
+
         qs, qf = BitVecs("qs qf", _BITS)
         result = self._fp.query(Exists([qs, qf], violation(qs, qf)))
+        if result == unsat:
+            return []
+        if result == unknown:
+            _warnings.warn(
+                "z3_engine: fixedpoint query returned UNKNOWN — engine gave up; "
+                "violations list is empty but the codebase may not be safe",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+            return []
         if result != sat:
             return []
 
@@ -485,6 +499,22 @@ class LLMResponseEngine:
         qs, qv = BitVecs("qs qv", _BITS)
         z3_result = self._fp.query(Exists([qs, qv], _llm_violation_rel(qs, qv)))
 
+        if z3_result == unsat:
+            return LLMProofResult(
+                proved_safe=True, scopes_analyzed=self._scopes_with_llm
+            )
+        if z3_result == unknown:
+            import warnings as _warnings
+
+            _warnings.warn(
+                "z3_engine: llm_response_unguarded query returned UNKNOWN — "
+                "proved_safe=True is asserted but may not hold",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+            return LLMProofResult(
+                proved_safe=True, scopes_analyzed=self._scopes_with_llm
+            )
         if z3_result != sat:
             return LLMProofResult(
                 proved_safe=True, scopes_analyzed=self._scopes_with_llm

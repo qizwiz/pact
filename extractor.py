@@ -652,7 +652,15 @@ def extract_from_file(
     try:
         source = path.read_text(encoding="utf-8", errors="replace")
         tree = ast.parse(source, filename=str(path))
-    except (SyntaxError, OSError):
+    except (SyntaxError, OSError) as exc:
+        import warnings
+
+        warnings.warn(
+            f"extractor: skipping {path} ({type(exc).__name__}: {exc}); "
+            "models, functions, and call sites from this file will be absent",
+            RuntimeWarning,
+            stacklevel=2,
+        )
         return [], [], []
 
     module_path = ".".join(path.with_suffix("").parts)
