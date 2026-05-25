@@ -173,6 +173,84 @@ def _run_z3_script(script: str) -> dict:
         Path(script_path).unlink(missing_ok=True)
 
 
+def verify_contract_typed(
+    contract: str,
+    function_source: str,
+    function_name: str,
+    contract_kind: str,
+    api_key: str,
+    model: str = _DEFAULT_MODEL,
+) -> ContractVerificationResult:
+    """
+    Verify a contract using a pre-built Z3 template for the given contract_kind.
+
+    1. Calls LLM with contract_params.md prompt to extract template parameters.
+    2. Calls render_z3_template(contract_kind, params) to get a runnable Z3 script.
+    3. Runs the Z3 script.
+    4. Returns a ContractVerificationResult.
+
+    Returns status="unknown" (not "encoding_failed") on LLM extraction failure so
+    the caller can fall through to the free-form path.
+    """
+    from .contract_templates import SUPPORTED_KINDS, render_z3_template
+
+    if contract_kind not in SUPPORTED_KINDS:
+        return ContractVerificationResult(
+            function_name=function_name,
+            contract=contract,
+            status="unknown",
+            explanation=f"contract_kind '{contract_kind}' not in SUPPORTED_KINDS",
+            encoding_approach="typed_template",
+        )
+
+    func_src = _extract_function_source(function_source, function_name)
+
+    # Step 1: extract template params from contract + source
+    try:
+        template = _load_prompt("contract_params")
+        prompt = _render(
+            template,
+            contract_kind=contract_kind,
+            contract=contract,
+            function_source=func_src[:3000],
+        )
+        params = _call_llm(prompt, model, api_key)
+    except Exception as exc:
+        return ContractVerificationResult(
+            function_name=function_name,
+            contract=contract,
+            status="unknown",
+            explanation=f"param extraction failed: {exc}",
+            encoding_approach="typed_template",
+            error=str(exc),
+        )
+
+    # Step 2: render template
+    try:
+        script = render_z3_template(contract_kind, params)
+    except Exception as exc:
+        return ContractVerificationResult(
+            function_name=function_name,
+            contract=contract,
+            status="unknown",
+            explanation=f"template render failed: {exc}",
+            encoding_approach="typed_template",
+            error=str(exc),
+        )
+
+    # Step 3: run Z3 script
+    z3_result = _run_z3_script(script)
+    return ContractVerificationResult(
+        function_name=function_name,
+        contract=contract,
+        status=z3_result.get("status", "unknown"),
+        counterexample=z3_result.get("counterexample"),
+        explanation=z3_result.get("explanation", ""),
+        z3_script=script,
+        encoding_approach=f"typed_template:{contract_kind}",
+    )
+
+
 def verify_contract(
     contract: str,
     function_source: str,
@@ -181,6 +259,7 @@ def verify_contract(
     model: str = _DEFAULT_MODEL,
     source_file: Optional[str] = None,
     preencoded_z3_script: Optional[str] = None,
+    contract_kind: str = "",
 ) -> ContractVerificationResult:
     """
     Verify a behavioral contract against a function using Z3.
@@ -203,6 +282,9 @@ def verify_contract(
     preencoded_z3_script:
         Pre-encoded Z3 script from the contract IR (populated during intent analysis).
         When provided, skips the LLM encoding round-trip entirely.
+    contract_kind:
+        When in SUPPORTED_KINDS, tries verify_contract_typed first before the
+        free-form LLM encoding path.
     """
     # Extract just the function if given a full file
     func_src = _extract_function_source(function_source, function_name)
@@ -223,6 +305,25 @@ def verify_contract(
     key = api_key or os.environ.get("ANTHROPIC_API_KEY", "")
     if not key:
         raise RuntimeError("ANTHROPIC_API_KEY not set")
+
+    # Typed-template short-circuit: when contract_kind is known, extract params
+    # via LLM and render a pre-built template instead of free-form Z3 generation.
+    # Falls through to the free-form path if typed result is "unknown".
+    if contract_kind:
+        from .contract_templates import SUPPORTED_KINDS
+
+        if contract_kind in SUPPORTED_KINDS:
+            typed_result = verify_contract_typed(
+                contract=contract,
+                function_source=function_source,
+                function_name=function_name,
+                contract_kind=contract_kind,
+                api_key=key,
+                model=model,
+            )
+            if typed_result.status != "unknown":
+                return typed_result
+            # "unknown" → fall through to free-form path
 
     # Step 1: LLM translates contract → Z3 script
     try:

@@ -1629,6 +1629,13 @@ def extract_project_intent(
                 improve=False,
                 verbose=verbose,
             )
+            # Classify contract_kind for all invariants so the pipeline can use
+            # typed templates even for non-intent_gap invariants.
+            for inv in module.invariants:
+                if not inv.contract_kind:
+                    kind, tla = _classify_contract_kind("", inv.statement)
+                    inv.contract_kind = kind
+                    inv.tla_template = tla
             intent.modules.append(module)
         except Exception as exc:
             import warnings

@@ -193,7 +193,17 @@ def _execute_z3(
     contract = step.get("contract", "")
     inv_id = step.get("invariant_id", "")
     index = inv_z3_index or {}
-    preencoded = index.get(contract) or index.get(inv_id)
+
+    # Look up entry — index values may be dicts (new) or plain strings (legacy/tests)
+    raw_entry = index.get(contract) or index.get(inv_id)
+    if isinstance(raw_entry, dict):
+        preencoded = raw_entry.get("z3_encoding", "") or None
+        contract_kind = raw_entry.get("contract_kind", "")
+    else:
+        # Legacy: plain string z3_encoding (e.g. from tests that predate this change)
+        preencoded = raw_entry or None
+        contract_kind = ""
+
     result = verify_contract(
         contract=contract,
         function_source=source,
@@ -202,6 +212,7 @@ def _execute_z3(
         model=model,
         source_file=step.get("module_path"),
         preencoded_z3_script=preencoded,
+        contract_kind=contract_kind,
     )
     status = (
         "verified"
@@ -660,18 +671,26 @@ def run_pipeline(
     summary = _intent_summary(intent)
 
     # Build invariant index keyed by both statement and invariant_id (from contract IR)
-    inv_z3_index: dict[str, str] = {}
+    # Each entry stores both z3_encoding (pre-built script) and contract_kind
+    # (for typed-template path in verify_contract).
+    inv_z3_index: dict[str, dict] = {}
     for mod in intent.get("modules", []):
         for inv in mod.get("invariants", []):
             z3_enc = inv.get("z3_encoding", "")
-            if not z3_enc or "import z3" not in z3_enc:
+            contract_kind = inv.get("contract_kind", "")
+            # Include entry if there's a preencoded script OR a known contract_kind
+            if (not z3_enc or "import z3" not in z3_enc) and not contract_kind:
                 continue
+            entry: dict = {
+                "z3_encoding": z3_enc if z3_enc and "import z3" in z3_enc else "",
+                "contract_kind": contract_kind,
+            }
             stmt = inv.get("statement", "")
             inv_id = inv.get("id", "")
             if stmt:
-                inv_z3_index[stmt] = z3_enc
+                inv_z3_index[stmt] = entry
             if inv_id:
-                inv_z3_index[inv_id] = z3_enc
+                inv_z3_index[inv_id] = entry
 
     if verbose:
         try:

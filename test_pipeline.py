@@ -1,5 +1,6 @@
 """Tests for pact pipeline orchestrator (pipeline.py)."""
 
+import importlib.util
 import json
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -594,3 +595,247 @@ class TestPreencodedZ3Script:
         except Exception:
             pass
         assert called  # LLM was called (preencoded rejected, fell through)
+
+
+# ---------------------------------------------------------------------------
+# Contract templates — unit tests for render_z3_template
+# ---------------------------------------------------------------------------
+
+_HAS_Z3 = importlib.util.find_spec("z3") is not None
+pytestmark_z3 = pytest.mark.skipif(not _HAS_Z3, reason="z3-solver not installed")
+
+
+@pytestmark_z3
+class TestContractTemplates:
+    """Tests that each template produces the expected SAT/UNSAT result when run directly."""
+
+    def _run(self, script: str) -> dict:
+        """Run a Z3 script string and return the parsed JSON result."""
+        import json
+        import subprocess
+        import sys
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".py", delete=False, encoding="utf-8"
+        ) as f:
+            f.write(script)
+            path = f.name
+        try:
+            result = subprocess.run(
+                [sys.executable, path],
+                capture_output=True,
+                text=True,
+                timeout=15,
+            )
+            for line in reversed(result.stdout.strip().splitlines()):
+                if line.strip().startswith("{"):
+                    return json.loads(line.strip())
+            raise AssertionError(
+                f"No JSON output from Z3 script.\nstdout: {result.stdout}\nstderr: {result.stderr}"
+            )
+        finally:
+            Path(path).unlink(missing_ok=True)
+
+    def test_flag_invariant_sat_when_silent_true(self):
+        """flag_invariant with silent_when_false=True returns SAT (bug: flag suppresses check)."""
+        from pact.contract_templates import render_z3_template
+
+        script = render_z3_template(
+            "flag_invariant",
+            {
+                "flag_name": "enabled",
+                "check_name": "constraint_check",
+                "silent_when_false": True,
+            },
+        )
+        result = self._run(script)
+        assert result["status"] == "sat", f"Expected SAT (bug), got: {result}"
+        assert result["counterexample"] is not None
+
+    def test_flag_invariant_unsat_when_silent_false(self):
+        """flag_invariant with silent_when_false=False returns UNSAT (fixed: guard always runs)."""
+        from pact.contract_templates import render_z3_template
+
+        script = render_z3_template(
+            "flag_invariant",
+            {
+                "flag_name": "enabled",
+                "check_name": "constraint_check",
+                "silent_when_false": False,
+            },
+        )
+        result = self._run(script)
+        assert result["status"] == "unsat", f"Expected UNSAT (fixed), got: {result}"
+
+    def test_subset_relation_sat_when_violated(self):
+        """subset_relation returns SAT when set_a is not a subset of set_b."""
+        from pact.contract_templates import render_z3_template
+
+        script = render_z3_template(
+            "subset_relation",
+            {"set_a": "required_args", "set_b": "provided_args"},
+        )
+        result = self._run(script)
+        assert (
+            result["status"] == "sat"
+        ), f"Expected SAT (subset violated), got: {result}"
+        assert result["counterexample"] is not None
+
+    def test_ordering_sat_when_no_guard(self):
+        """ordering with guard_exists=False returns SAT (second_op can be called first)."""
+        from pact.contract_templates import render_z3_template
+
+        script = render_z3_template(
+            "ordering",
+            {"first_op": "setup", "second_op": "run", "guard_exists": False},
+        )
+        result = self._run(script)
+        assert result["status"] == "sat", f"Expected SAT (no guard), got: {result}"
+        assert result["counterexample"] is not None
+
+    def test_ordering_unsat_when_guard_exists(self):
+        """ordering with guard_exists=True returns UNSAT (guard enforces order)."""
+        from pact.contract_templates import render_z3_template
+
+        script = render_z3_template(
+            "ordering",
+            {"first_op": "setup", "second_op": "run", "guard_exists": True},
+        )
+        result = self._run(script)
+        assert result["status"] == "unsat", f"Expected UNSAT (guarded), got: {result}"
+
+    def test_nullable_contract_sat_when_skips(self):
+        """nullable_contract with skips_on_none=True returns SAT (None skips check)."""
+        from pact.contract_templates import render_z3_template
+
+        script = render_z3_template(
+            "nullable_contract",
+            {
+                "field_name": "response",
+                "check_name": "validation",
+                "skips_on_none": True,
+            },
+        )
+        result = self._run(script)
+        assert (
+            result["status"] == "sat"
+        ), f"Expected SAT (None skips check), got: {result}"
+
+    def test_unsupported_kind_raises_key_error(self):
+        """render_z3_template raises KeyError for unknown contract_kind."""
+        from pact.contract_templates import render_z3_template
+
+        with pytest.raises(KeyError):
+            render_z3_template("nonexistent_kind", {})
+
+    def test_all_templates_contain_z3_import(self):
+        """Every template produces a script that contains 'import z3'."""
+        from pact.contract_templates import SUPPORTED_KINDS, render_z3_template
+
+        for kind in SUPPORTED_KINDS:
+            params: dict = {}
+            script = render_z3_template(kind, params)
+            assert "import z3" in script, f"Template '{kind}' missing 'import z3'"
+            assert "import json" in script, f"Template '{kind}' missing 'import json'"
+
+
+# ---------------------------------------------------------------------------
+# verify_contract_typed — uses template (mock LLM params call, Z3 runs directly)
+# ---------------------------------------------------------------------------
+
+
+@pytestmark_z3
+class TestVerifyContractTyped:
+    def test_uses_template_with_mocked_params(self, monkeypatch):
+        """verify_contract_typed uses the template when LLM returns valid params."""
+        from pact.contract_encoder import verify_contract_typed
+
+        # Mock _call_llm to return known params for flag_invariant
+        def fake_call_llm(prompt, model, key):
+            return {
+                "flag_name": "enabled",
+                "check_name": "constraint_check",
+                "silent_when_false": True,
+            }
+
+        monkeypatch.setattr("pact.contract_encoder._call_llm", fake_call_llm)
+
+        result = verify_contract_typed(
+            contract="enabled flag silently disables constraint checking when False",
+            function_source="def check(enabled, data): enabled and validate(data)",
+            function_name="check",
+            contract_kind="flag_invariant",
+            api_key="fake",
+        )
+        # SAT because silent_when_false=True in mock params
+        assert result.status == "sat"
+        assert "typed_template:flag_invariant" in result.encoding_approach
+        assert result.z3_script and "import z3" in result.z3_script
+
+    def test_unknown_kind_returns_unknown(self, monkeypatch):
+        """verify_contract_typed returns 'unknown' for unsupported kind."""
+        from pact.contract_encoder import verify_contract_typed
+
+        result = verify_contract_typed(
+            contract="some contract",
+            function_source="def f(): pass",
+            function_name="f",
+            contract_kind="completely_unknown_kind",
+            api_key="fake",
+        )
+        assert result.status == "unknown"
+
+    def test_llm_failure_returns_unknown_not_encoding_failed(self, monkeypatch):
+        """verify_contract_typed returns 'unknown' (not 'encoding_failed') on LLM error."""
+        from pact.contract_encoder import verify_contract_typed
+
+        def fake_call_llm(prompt, model, key):
+            raise RuntimeError("LLM unavailable")
+
+        monkeypatch.setattr("pact.contract_encoder._call_llm", fake_call_llm)
+
+        result = verify_contract_typed(
+            contract="flag silently suppresses checks",
+            function_source="def f(flag): flag and check()",
+            function_name="f",
+            contract_kind="flag_invariant",
+            api_key="fake",
+        )
+        assert result.status == "unknown"
+        assert "param extraction failed" in result.explanation
+
+    def test_verify_contract_uses_typed_path_when_kind_known(self, monkeypatch):
+        """verify_contract routes to typed path when contract_kind is in SUPPORTED_KINDS."""
+        from pact.contract_encoder import verify_contract
+
+        typed_calls = []
+
+        def fake_verify_contract_typed(
+            contract, function_source, function_name, contract_kind, api_key, model
+        ):
+            typed_calls.append(contract_kind)
+            from pact.contract_encoder import ContractVerificationResult
+
+            return ContractVerificationResult(
+                function_name=function_name,
+                contract=contract,
+                status="sat",
+                explanation="template found violation",
+                encoding_approach=f"typed_template:{contract_kind}",
+            )
+
+        monkeypatch.setattr(
+            "pact.contract_encoder.verify_contract_typed", fake_verify_contract_typed
+        )
+
+        result = verify_contract(
+            contract="flag suppresses checks",
+            function_source="def f(flag): pass",
+            function_name="f",
+            api_key="fake",
+            contract_kind="flag_invariant",
+        )
+        assert typed_calls == ["flag_invariant"]
+        assert result.status == "sat"
