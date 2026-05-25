@@ -101,15 +101,19 @@ Already closed (but not in list above):
 - `_interproc_z3` try_wraps guard: `Not(try_wraps_json_rel(_F))` added to tainted_json rule (commit 4146bd4)
 - `_interproc_z3` api_key_unchecked: full Z3 taint chain added (commit 4146bd4)
 
-Remaining gaps (from intent_pact_self.json inv_005, inv_006 — stale file, confirmed manually):
-- `_interproc_z3`: call resolution uses unqualified names only — cross-file calls may conflate same-named functions; calls to uncovered files silently dropped
-- `_interproc_z3`: `_BITS=16` caps analysis at 65536 functions — large codebases silently overflow via modular arithmetic with no error raised
+Also closed (commits 0434e67, 570b57b, 6f1e663):
+- `_interproc_z3` _BITS overflow: RuntimeWarning added when N > 65536 (commit 0434e67)
+- `_interproc_z3` call resolution: conservative name→list[func_id] mapping prevents missed taint edges (commit 0434e67)
+- `z3_engine.py` async LLM detection: _LLM_CALL_ATTRS expanded (acreate, agenerate, stream, __call__, etc.); await-unwrapping in visit_Assign for async assignments (commit 570b57b)
+- `checker.py` duplicate-name false negatives: RuntimeWarning emitted listing excluded function names (commit 6f1e663)
+
+Remaining gaps:
 - Hypothesis: present in test suite only, absent from user-code analysis pipeline
+- `_interproc_z3`: call resolution still uses unqualified names — file-qualified resolution needs full import graph
 
 **Priority order for next improvements:**
-1. `_interproc_z3` call resolution — use qualified names (file:func) to prevent cross-file false-positive taint edges
-2. `_interproc_z3` _BITS guard — add assertion/warn when N > 65536 and raise bits to 32
-3. Hypothesis → user code — wire adversarial input generation to counterexamples from Z3
+1. Hypothesis → user code — wire Hypothesis `st.from_type()` to contract types from Z3 counterexamples
+2. `_interproc_z3` qualified call resolution — use `file:func` keys when import graph available
 
 ---
 
