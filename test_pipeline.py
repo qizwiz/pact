@@ -401,6 +401,47 @@ class TestRunPipeline:
         assert r.details["violations_attempted"] == 0
         assert r.details["patches_accepted"] == 0
 
+    def test_execute_heal_detects_oracle_and_applies(self, tmp_path, monkeypatch):
+        """When project root has pytest markers, heal uses apply=True."""
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "fake")
+        (tmp_path / "pytest.ini").write_text("[pytest]\n")
+        (tmp_path / "target.py").write_text("def f(x): return x or None")
+        intent_path = tmp_path / "intent.json"
+        intent_path.write_text(json.dumps({"modules": []}))
+        step = {
+            "step": 1,
+            "tool": "heal",
+            "module_path": str(tmp_path / "target.py"),
+            "function_name": "f",
+            "violation_summary": "missing guard",
+            "depends_on": [],
+            "rationale": "fix violation",
+        }
+        r = _execute_heal(step, intent_path, "fake", "claude-sonnet-4-6", False)
+        assert r.details["oracle"] != "none"
+        assert r.details["applied"] is True
+        assert "oracle-verified" in r.summary
+
+    def test_execute_heal_no_oracle_stays_dry_run(self, tmp_path, monkeypatch):
+        """When no project markers found, heal stays dry-run."""
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "fake")
+        (tmp_path / "target.py").write_text("def f(x): return x or None")
+        intent_path = tmp_path / "intent.json"
+        intent_path.write_text(json.dumps({"modules": []}))
+        step = {
+            "step": 1,
+            "tool": "heal",
+            "module_path": str(tmp_path / "target.py"),
+            "function_name": "f",
+            "violation_summary": "missing guard",
+            "depends_on": [],
+            "rationale": "fix violation",
+        }
+        r = _execute_heal(step, intent_path, "fake", "claude-sonnet-4-6", False)
+        assert r.details["oracle"] == "none"
+        assert r.details["applied"] is False
+        assert "dry-run" in r.summary
+
     def test_missing_api_key_raises(self, tmp_path, monkeypatch):
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
         intent_path = self._make_intent_file(tmp_path)

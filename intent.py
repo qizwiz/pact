@@ -1554,17 +1554,19 @@ def extract_project_intent(
     output: Optional[Path] = None,
     improve: bool = False,
     verbose: bool = False,
-    max_files: int = 15,
+    max_files: int = 0,
 ) -> ProjectIntent:
     """
     Full pipeline: triage → understand each key module → (optionally) improve prompts.
+
+    max_files: cap on modules to analyze. 0 = unlimited (triage decides).
     """
     import datetime
 
     key = _get_key(api_key)
 
     intent = ProjectIntent(
-        project=root.name,
+        project=str(root.resolve()),
         generated_at=datetime.datetime.utcnow().isoformat() + "Z",
         source_model=model,
     )
@@ -1600,14 +1602,15 @@ def extract_project_intent(
                 [f for f in _iter_python_files(root) if f.stat().st_size > 500],
                 key=lambda f: f.stat().st_size,
                 reverse=True,
-            )[:max_files]
-        files = resolved[:max_files]
+            )
+        files = resolved[:max_files] if max_files > 0 else resolved
     else:
-        files = sorted(
+        all_py = sorted(
             [f for f in _iter_python_files(root) if f.stat().st_size > 500],
             key=lambda f: f.stat().st_size,
             reverse=True,
-        )[:max_files]
+        )
+        files = all_py[:max_files] if max_files > 0 else all_py
 
     # Step 2–4: understand each module (always without per-module improvement here)
     if verbose:
@@ -1691,7 +1694,13 @@ def main(argv=None):
     analyze.add_argument("path", help="Python file or project directory")
     analyze.add_argument("--out", metavar="PATH", help="write intent.json here")
     analyze.add_argument("--model", default=_DEFAULT_MODEL)
-    analyze.add_argument("--max-files", type=int, default=15, metavar="N")
+    analyze.add_argument(
+        "--max-files",
+        type=int,
+        default=0,
+        metavar="N",
+        help="max modules to analyze (0 = unlimited, triage decides)",
+    )
     analyze.add_argument(
         "--improve",
         action="store_true",

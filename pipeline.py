@@ -499,6 +499,27 @@ THEOREM Spec => [](TypeInvariant)
 """
 
 
+def _find_project_root(start: Path) -> Optional[Path]:
+    """Walk up from start looking for project markers (pyproject.toml, .git, pytest.ini...)."""
+    markers = {
+        "pyproject.toml",
+        "setup.py",
+        "setup.cfg",
+        "pytest.ini",
+        "tox.ini",
+        ".git",
+    }
+    p = start if start.is_dir() else start.parent
+    for _ in range(12):
+        if any((p / m).exists() for m in markers):
+            return p
+        parent = p.parent
+        if parent == p:
+            break
+        p = parent
+    return None
+
+
 def _load_source(module_path: str) -> str:
     try:
         return Path(module_path).read_text(encoding="utf-8", errors="replace")
@@ -513,21 +534,30 @@ def _execute_heal(
     model: str,
     verbose: bool,
 ) -> StepResult:
-    from .heal import heal_project
+    from .heal import _autodetect_test_cmd, heal_project
 
     module_path = step.get("module_path", "")
+    project_root = _find_project_root(Path(module_path)) if module_path else None
+    test_cmd = _autodetect_test_cmd(project_root) if project_root else None
+    apply = test_cmd is not None
+
     result = heal_project(
         violations_path=intent_path,
         model=model,
         api_key=key,
         severity_filter=["critical", "high", "medium"],
-        apply=False,
+        apply=apply,
         verbose=verbose,
-        project_root=Path(module_path).parent if module_path else None,
+        project_root=project_root,
     )
     accepted = result.patches_accepted
     attempted = result.violations_attempted
-    summary = f"{accepted}/{attempted} patch(es) verified (dry-run — use pact heal --apply to write)"
+    if apply:
+        summary = f"{accepted}/{attempted} patch(es) applied and oracle-verified (cmd: {test_cmd})"
+    else:
+        summary = (
+            f"{accepted}/{attempted} patch(es) verified (dry-run — no oracle detected)"
+        )
     return StepResult(
         step=step["step"],
         tool="heal",
@@ -538,6 +568,8 @@ def _execute_heal(
             "patches_accepted": accepted,
             "patches_rejected": result.patches_rejected,
             "violations_attempted": attempted,
+            "oracle": test_cmd or "none",
+            "applied": apply,
         },
     )
 
