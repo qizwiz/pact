@@ -48,6 +48,7 @@ from z3 import (
     ForAll,
     Function,
     Implies,
+    Not,
 )
 
 # ---------------------------------------------------------------------------
@@ -136,6 +137,7 @@ class FuncFacts:
     json_unguarded: bool = False
     subprocess_unchecked: bool = False
     api_key_unchecked: bool = False
+    try_wraps_json: bool = False  # function has try/except JSONDecodeError|ValueError
     calls: list[str] = None  # func_ids this function calls (within-codebase)
     is_public: bool = False
     line: int = 0
@@ -293,6 +295,32 @@ def extract_facts(file_path: Path) -> list[FuncFacts]:
         elif isinstance(func, ast.Attribute):
             fact.calls.append(func.attr)
 
+    # Mark functions that guard json exceptions — used as NOT guard in Z3 propagation
+    _json_exc = {"JSONDecodeError", "ValueError", "Exception"}
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Try):
+            continue
+        for handler in node.handlers:
+            catches_json = handler.type is None or any(
+                (isinstance(handler.type, ast.Name) and handler.type.id in _json_exc)
+                or (
+                    isinstance(handler.type, ast.Attribute)
+                    and handler.type.attr in _json_exc
+                )
+                or (
+                    isinstance(handler.type, ast.Tuple)
+                    and any(
+                        (isinstance(e, ast.Name) and e.id in _json_exc)
+                        or (isinstance(e, ast.Attribute) and e.attr in _json_exc)
+                        for e in handler.type.elts
+                    )
+                )
+                for _ in [None]
+            )
+            if catches_json:
+                enc = _enclosing_func(node, parents) or "<module>"
+                _get_or_create(enc).try_wraps_json = True
+
     return list(facts.values())
 
 
@@ -345,22 +373,30 @@ def _interproc_z3(all_facts: list[FuncFacts]) -> dict[str, list[str]]:
     # Declare relations
     json_ung = Function("json_unguarded", FuncSort, BoolSort())
     sub_unc = Function("subprocess_unchecked", FuncSort, BoolSort())
+    api_key_unc = Function("api_key_unchecked", FuncSort, BoolSort())
+    try_wraps_json_rel = Function("try_wraps_json", FuncSort, BoolSort())
     is_pub = Function("is_public", FuncSort, BoolSort())
     calls_rel = Function("calls", FuncSort, FuncSort, BoolSort())
     tainted_json = Function("tainted_json", FuncSort, BoolSort())
     tainted_sub = Function("tainted_sub", FuncSort, BoolSort())
+    tainted_api = Function("tainted_api", FuncSort, BoolSort())
     viol_json = Function("violation_json", FuncSort, BoolSort())
     viol_sub = Function("violation_sub", FuncSort, BoolSort())
+    viol_api = Function("violation_api_key", FuncSort, BoolSort())
 
     for rel in [
         json_ung,
         sub_unc,
+        api_key_unc,
+        try_wraps_json_rel,
         is_pub,
         calls_rel,
         tainted_json,
         tainted_sub,
+        tainted_api,
         viol_json,
         viol_sub,
+        viol_api,
     ]:
         fp.register_relation(rel)
 
@@ -373,6 +409,10 @@ def _interproc_z3(all_facts: list[FuncFacts]) -> dict[str, list[str]]:
             fp.add_rule(json_ung(idx))
         if f.subprocess_unchecked:
             fp.add_rule(sub_unc(idx))
+        if f.api_key_unchecked:
+            fp.add_rule(api_key_unc(idx))
+        if f.try_wraps_json:
+            fp.add_rule(try_wraps_json_rel(idx))
         if f.is_public:
             fp.add_rule(is_pub(idx))
         for callee_fid in f.calls:
@@ -384,11 +424,14 @@ def _interproc_z3(all_facts: list[FuncFacts]) -> dict[str, list[str]]:
 
     # tainted_json(F) :- json_unguarded(F)
     fp.add_rule(ForAll([_F], Implies(json_ung(_F), tainted_json(_F))))
-    # tainted_json(F) :- calls(F, G), tainted_json(G)
+    # tainted_json(F) :- calls(F, G), tainted_json(G), not try_wraps_json(F)
     fp.add_rule(
         ForAll(
             [_F, _G],
-            Implies(And(calls_rel(_F, _G), tainted_json(_G)), tainted_json(_F)),
+            Implies(
+                And(calls_rel(_F, _G), tainted_json(_G), Not(try_wraps_json_rel(_F))),
+                tainted_json(_F),
+            ),
         )
     )
     # violation_json(F) :- tainted_json(F), is_public(F)
@@ -405,12 +448,27 @@ def _interproc_z3(all_facts: list[FuncFacts]) -> dict[str, list[str]]:
     # violation_sub(F) :- tainted_sub(F), is_public(F)
     fp.add_rule(ForAll([_F], Implies(And(tainted_sub(_F), is_pub(_F)), viol_sub(_F))))
 
+    # tainted_api(F) :- api_key_unchecked(F)
+    fp.add_rule(ForAll([_F], Implies(api_key_unc(_F), tainted_api(_F))))
+    # tainted_api(F) :- calls(F, G), tainted_api(G)
+    fp.add_rule(
+        ForAll(
+            [_F, _G], Implies(And(calls_rel(_F, _G), tainted_api(_G)), tainted_api(_F))
+        )
+    )
+    # violation_api_key(F) :- tainted_api(F), is_public(F)
+    fp.add_rule(ForAll([_F], Implies(And(tainted_api(_F), is_pub(_F)), viol_api(_F))))
+
     # Query and extract results
     _Q = z3.BitVec("_Q", _BITS)
-    violations: dict[str, list[str]] = {"json": [], "subprocess": []}
+    violations: dict[str, list[str]] = {"json": [], "subprocess": [], "api_key": []}
     rev_map = {v: k for k, v in id_map.items()}
 
-    for viol_rel, key in [(viol_json, "json"), (viol_sub, "subprocess")]:
+    for viol_rel, key in [
+        (viol_json, "json"),
+        (viol_sub, "subprocess"),
+        (viol_api, "api_key"),
+    ]:
         result = fp.query(Exists([_Q], viol_rel(_Q)))
         if result == z3.sat:
             ans = fp.get_answer()

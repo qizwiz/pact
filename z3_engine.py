@@ -307,7 +307,15 @@ def _extract_llm_facts(
     try:
         source = _Path(path).read_text(encoding="utf-8", errors="replace")
         tree = _ast.parse(source, filename=path)
-    except (SyntaxError, OSError):
+    except (SyntaxError, OSError) as exc:
+        import warnings as _warnings
+
+        _warnings.warn(
+            f"z3_engine: skipping {path} ({type(exc).__name__}: {exc}); "
+            "UNSAT result will not cover this file",
+            RuntimeWarning,
+            stacklevel=2,
+        )
         return [], []
 
     llm_var_facts: list[tuple[int, int]] = []

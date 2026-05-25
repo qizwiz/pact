@@ -87,10 +87,18 @@ def _py_chain(path: Path, line: int) -> list[str]:
 @lru_cache(maxsize=256)
 def _parse_py_cached(path: Path) -> ast.Module | None:
     """Parse and cache a Python AST, attaching _parent refs to every node."""
+    import warnings as _warnings
+
     try:
         source = path.read_text(encoding="utf-8", errors="replace")
         tree = ast.parse(source, filename=str(path))
-    except (SyntaxError, OSError, ValueError):
+    except (SyntaxError, OSError, ValueError) as exc:
+        _warnings.warn(
+            f"ast_utils: skipping {path} ({type(exc).__name__}: {exc}); "
+            "enclosing-function lookup will return None for lines in this file",
+            RuntimeWarning,
+            stacklevel=2,
+        )
         return None
     _attach_parents(tree)
     return tree
@@ -167,19 +175,29 @@ def _parse_ts_cached(path: Path):
         return None
     try:
         source = path.read_bytes()
+    except OSError as exc:
+        import warnings
+
+        warnings.warn(
+            f"ast_utils: cannot read {path} ({exc}); TypeScript scope detection skipped",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+        return None
+    try:
         if path.suffix == ".tsx":
             lang = Language(tsts.language_tsx())
         else:
             lang = Language(tsts.language_typescript())
         parser = Parser(lang)
         return parser.parse(source)
-    except (OSError, Exception) as _ts_import_err:
+    except Exception as exc:
         import warnings
 
         warnings.warn(
-            f"tree-sitter or its TypeScript grammar is not available ({_ts_import_err!r}); "
-            "TypeScript function-scope detection will be skipped silently.",
-            ImportWarning,
+            f"ast_utils: tree-sitter parse failed for {path} ({type(exc).__name__}: {exc}); "
+            "TypeScript function-scope detection will be skipped",
+            RuntimeWarning,
             stacklevel=2,
         )
         return None

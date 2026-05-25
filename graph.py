@@ -6,6 +6,7 @@ edges are call relationships. Used to trace data flow across boundaries —
 e.g., to know whether a value that may be None can reach a NOT NULL field.
 """
 
+import warnings
 from dataclasses import dataclass
 
 from .extractor import CallSite, FunctionManifest
@@ -22,22 +23,42 @@ except ImportError:
 class CallGraph:
     _g: object  # networkx.DiGraph or None
 
+    def _require_graph(self) -> bool:
+        """Warn and return False when the graph layer is unavailable."""
+        if not _HAS_NX:
+            warnings.warn(
+                "CallGraph: networkx is not installed — graph queries return empty results; "
+                "install networkx to enable call-graph analysis",
+                RuntimeWarning,
+                stacklevel=3,
+            )
+            return False
+        if self._g is None:
+            warnings.warn(
+                "CallGraph: graph was never built — call build_call_graph() first; "
+                "returning empty results",
+                RuntimeWarning,
+                stacklevel=3,
+            )
+            return False
+        return True
+
     def reachable_from(self, func_name: str) -> list[str]:
-        if not _HAS_NX or self._g is None:
+        if not self._require_graph():
             return []
         if func_name not in self._g:
             return []
         return list(nx.descendants(self._g, func_name))
 
     def callers_of(self, func_name: str) -> list[str]:
-        if not _HAS_NX or self._g is None:
+        if not self._require_graph():
             return []
         if func_name not in self._g:
             return []
         return list(self._g.predecessors(func_name))
 
     def call_sites_to(self, func_name: str) -> list[CallSite]:
-        if not _HAS_NX or self._g is None:
+        if not self._require_graph():
             return []
         if func_name not in self._g:
             return []

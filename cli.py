@@ -938,7 +938,7 @@ def main(argv=None) -> int:
         print(diagram)
         print("```\n")
 
-    if args.pr_comment:
+    if args.pr_comment and not args.json_mode:
         print(format_pr_comment(suggestions, violations, functions, call_sites))
 
     if args.verify and not args.json_mode:
