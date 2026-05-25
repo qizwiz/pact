@@ -227,13 +227,19 @@ def check_codebase(
 
     # Semgrep — structural pattern detector.
     # Semgrep does not apply pact's semantic suppressions (guard functions,
-    # session injection, noqa), so it may flag sites the AST checker suppresses.
-    # We run it regardless of custom modes and de-duplicate via the `seen` set;
-    # the (file, line, context, call) key ensures AST-suppressed sites are never
-    # double-counted even when semgrep flags them independently.
+    # intra-scope dedup, noqa), so it may flag sites the AST checker suppresses.
+    # We run it regardless of custom modes and de-duplicate via the `seen` set.
+    # Extra layer: if AST already reported (file, context, call) at *any* line,
+    # skip semgrep's finding at a different line — it is an intra-scope duplicate
+    # that the AST intentionally coalesced (e.g. multiple choices[0] in one func).
+    _seen_call_no_line: set[tuple[str, str, str]] = {
+        (f, ctx, c) for f, _ln, ctx, c in seen
+    }
     try:
         _semgrep_results = _run_semgrep(root)
         for v in _semgrep_results:
+            if (v.file, v.context, v.call) in _seen_call_no_line:
+                continue  # AST already reported this call; skip line-level duplicate
             key = (v.file, v.line, v.context, v.call)
             if key not in seen:
                 seen.add(key)
@@ -357,6 +363,63 @@ def _run_semgrep(root: Path) -> list[Violation]:
                 return True
         return False
 
+    def _guard_func_called_before(path: str, line_1based: int, var_name: str) -> bool:
+        """Return True if a function that raises on empty choices was called with var_name.
+
+        Detects: `_require_choices(response)` before `response.choices[0]` where
+        `_require_choices` contains `if not resp.choices: raise ...`.
+        """
+        import ast as _a
+
+        lines = _file_lines.get(path, [])
+        if not lines:
+            return False
+        try:
+            tree = _a.parse("\n".join(lines), filename=path)
+        except SyntaxError:
+            return False
+        # Collect function names that raise when a param's attribute is falsy
+        guard_names: set[str] = set()
+        for fd in _a.walk(tree):
+            if not isinstance(fd, (_a.FunctionDef, _a.AsyncFunctionDef)):
+                continue
+            params = {
+                a.arg for a in fd.args.posonlyargs + fd.args.args + fd.args.kwonlyargs
+            }
+            if fd.args.vararg:
+                params.add(fd.args.vararg.arg)
+            for stmt in _a.walk(fd):
+                if not isinstance(stmt, _a.If):
+                    continue
+                test_names = {
+                    n.id for n in _a.walk(stmt.test) if isinstance(n, _a.Name)
+                }
+                if not (test_names & params):
+                    continue
+                if any(isinstance(s, _a.Raise) for s in stmt.body):
+                    guard_names.add(fd.name)
+                    break
+        if not guard_names:
+            return False
+        # Scan backward from the violation line for guard function calls
+        idx = line_1based - 1
+        if idx <= 0 or idx >= len(lines):
+            return False
+        target_indent = len(lines[idx]) - len(lines[idx].lstrip())
+        for i in range(idx - 1, max(idx - 30, -1), -1):
+            raw = lines[i]
+            stripped = raw.strip()
+            if not stripped:
+                continue
+            if len(raw) - len(raw.lstrip()) > target_indent:
+                continue
+            if stripped.startswith(("def ", "async def ", "class ")):
+                break
+            for name in guard_names:
+                if f"{name}({var_name}" in stripped:
+                    return True
+        return False
+
     def _is_bare_except_reraise(path: str, end_line_1based: int) -> bool:
         """Return True if the bare-except block ends with only a bare `raise`.
 
@@ -413,6 +476,8 @@ def _run_semgrep(root: Path) -> list[Violation]:
                 # semgrep OSS doesn't populate metavariables — extract from call text
                 var_name = call.split(".choices[0]")[0].strip().lstrip("(")
             if var_name and _sibling_guarded(path, line, var_name):
+                continue
+            if var_name and _guard_func_called_before(path, line, var_name):
                 continue
 
         # Suppress bare-except false positive: `except: raise` is a pure re-raise
