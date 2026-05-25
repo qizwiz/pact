@@ -350,6 +350,38 @@ def _func_at_line(source: str, line: int) -> str:
     return ""
 
 
+def _func_body_at_line(lines: list[str], line: int) -> tuple[str, int, int]:
+    """Return the full enclosing function body for `line` (1-indexed).
+
+    Falls back to the ±60 line window when AST parsing fails.
+    Injecting the full function body eliminates read_file tool calls for the
+    synthesizer — reduces "Tool loop exhausted" occurrences.
+    """
+    import ast as _ast
+
+    source = "".join(lines)
+    try:
+        tree = _ast.parse(source)
+        best: tuple[int, int] | None = None
+        for node in _ast.walk(tree):
+            if isinstance(node, (_ast.FunctionDef, _ast.AsyncFunctionDef)):
+                if node.lineno <= line <= node.end_lineno:
+                    # Pick the innermost (largest start line)
+                    if best is None or node.lineno > best[0]:
+                        best = (node.lineno, node.end_lineno)
+        if best is not None:
+            start, end = best
+            ctx = "".join(
+                f"{i + 1:4d}  {lines[i]}"
+                for i in range(start - 1, min(end, len(lines)))
+            )
+            return ctx, start, min(end, len(lines))
+    except SyntaxError:
+        pass
+    # Fallback: ±60 window
+    return _context_window(lines, line)
+
+
 def _z3_verify(
     result: "SynthesisResult",
     patched_source: str,
@@ -489,7 +521,7 @@ def _synthesize(
     feedback: str = "",
 ) -> Optional[SynthesisResult]:
     line = int(violation.get("line", 1))
-    ctx_text, ctx_start, ctx_end = _context_window(source_lines, line)
+    ctx_text, ctx_start, ctx_end = _func_body_at_line(source_lines, line)
     file_path = str(Path(violation.get("file", "?")).resolve())
 
     template = _load_prompt("heal")

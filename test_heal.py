@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from .heal import HealResult, _autodetect_test_cmd, heal_project
+from .heal import HealResult, _autodetect_test_cmd, _func_body_at_line, heal_project
 
 
 # ---------------------------------------------------------------------------
@@ -65,6 +65,33 @@ class TestAutodetectTestCmd:
 # ---------------------------------------------------------------------------
 # oracle_warning on HealResult
 # ---------------------------------------------------------------------------
+
+
+class TestFuncBodyAtLine:
+    def _lines(self, source: str) -> list[str]:
+        return [l + "\n" for l in source.splitlines()]
+
+    def test_returns_enclosing_function(self):
+        src = "def foo():\n    x = 1\n    return x\n\ndef bar():\n    y = 2\n"
+        lines = self._lines(src)
+        ctx, start, end = _func_body_at_line(lines, 2)
+        assert "def foo" in ctx
+        assert "def bar" not in ctx
+        assert start == 1
+        assert end == 3
+
+    def test_returns_innermost_when_nested(self):
+        src = "def outer():\n    def inner():\n        return 1\n    return inner\n"
+        lines = self._lines(src)
+        ctx, start, end = _func_body_at_line(lines, 3)
+        assert "def inner" in ctx
+        assert start == 2
+
+    def test_falls_back_on_syntax_error(self):
+        lines = ["def broken(:\n", "    pass\n"]
+        ctx, start, end = _func_body_at_line(lines, 1)
+        assert isinstance(ctx, str)
+        assert len(ctx) > 0
 
 
 class TestOracleWarning:
