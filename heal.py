@@ -1060,6 +1060,19 @@ def heal_project(
         if effective_test_cmd and verbose:
             print(f"[heal] auto-detected oracle: {effective_test_cmd!r}")
 
+    # Oracle sanity check: if the baseline (unpatched) test suite already fails,
+    # the oracle cannot gate patches meaningfully — disable it.
+    # This prevents false oracle rejections on external repos whose test suite
+    # is not runnable in the current environment (wrong venv, missing deps, etc.).
+    if effective_test_cmd and project_root:
+        baseline_ok, _ = _run_oracle(effective_test_cmd, project_root, verbose=False)
+        if not baseline_ok:
+            if verbose:
+                print(
+                    "[heal] oracle baseline FAILED — disabling oracle (patches will be Z3-verified only)"
+                )
+            effective_test_cmd = None
+
     if verbose:
         print(f"[heal] {len(to_heal)} violations to attempt ({', '.join(sev_set)})")
 
