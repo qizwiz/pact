@@ -631,7 +631,16 @@ def _execute_step(
                 print(f"  Z3: {icon} {r.status}{enc_note} — {r.summary[:80]}")
             return r
         elif tool == "hypothesis":
-            return _execute_hypothesis(step, source, key, model)
+            r = _execute_hypothesis(step, source, key, model)
+            if verbose:
+                icon = {"verified": "✓", "violated": "✗", "unknown": "?"}.get(
+                    r.status, "?"
+                )
+                ce_note = (
+                    f" — counterexample: {r.counterexample}" if r.counterexample else ""
+                )
+                print(f"  Hypothesis: {icon} {r.status} — {r.summary[:80]}{ce_note}")
+            return r
         elif tool == "tla":
             return _execute_tla(step, verbose)
         elif tool == "heal":
