@@ -674,7 +674,18 @@ def run_pipeline(
                 inv_z3_index[inv_id] = z3_enc
 
     if verbose:
-        print(f"pact pipeline: planning from {intent_path.name}")
+        try:
+            import subprocess as _sp
+
+            _sha = _sp.check_output(
+                ["git", "rev-parse", "--short", "HEAD"],
+                cwd=Path(__file__).parent,
+                stderr=_sp.DEVNULL,
+                text=True,
+            ).strip()
+        except Exception:
+            _sha = "unknown"
+        print(f"pact pipeline: planning from {intent_path.name}  [pact@{_sha}]")
         print(f"  actionable modules: {summary.count('###')}")
 
     # Generate plan
