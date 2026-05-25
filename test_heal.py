@@ -15,10 +15,13 @@ from .heal import HealResult, _autodetect_test_cmd, heal_project
 
 class TestAutodetectTestCmd:
     def test_pytest_ini_detected(self, tmp_path):
+        import sys
+
         (tmp_path / "pytest.ini").write_text("[pytest]\n")
         cmd = _autodetect_test_cmd(tmp_path)
         assert cmd is not None
         assert "pytest" in cmd
+        assert sys.executable in cmd  # must use venv python, not bare "python"
 
     def test_pyproject_toml_detected(self, tmp_path):
         (tmp_path / "pyproject.toml").write_text("[tool.poetry]\n")

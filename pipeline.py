@@ -621,7 +621,15 @@ def _execute_step(
 
     try:
         if tool == "z3":
-            return _execute_z3(step, source, key, model, inv_z3_index)
+            r = _execute_z3(step, source, key, model, inv_z3_index)
+            if verbose:
+                icon = {"verified": "✓", "violated": "✗", "unknown": "?"}.get(
+                    r.status, "?"
+                )
+                enc = (r.details or {}).get("encoding", "")
+                enc_note = f" [{enc}]" if enc else ""
+                print(f"  Z3: {icon} {r.status}{enc_note} — {r.summary[:80]}")
+            return r
         elif tool == "hypothesis":
             return _execute_hypothesis(step, source, key, model)
         elif tool == "tla":

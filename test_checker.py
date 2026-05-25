@@ -5046,6 +5046,41 @@ def test_callgraph_community_of_unknown_returns_none(tmp_path):
     assert g.community_label_for(999) == ""
 
 
+def test_graphify_rationale_wired_into_understand_prompt(tmp_path, monkeypatch):
+    """graphify_rationale is injected into the understand prompt when provided."""
+    from unittest.mock import patch
+
+    from pact.intent import _understand_module
+
+    captured = []
+
+    def fake_call(prompt, model, key, max_tokens=8192):
+        captured.append(prompt)
+        return {
+            "truncation_audit": {"last_complete_unit": "module", "truncated_units": []},
+            "understanding": {
+                "purpose": "x",
+                "design_intent": "",
+                "key_abstractions": "",
+                "behavioral_contract": "",
+                "failure_modes": "",
+            },
+            "invariants": [],
+            "violations": [],
+        }
+
+    py_file = tmp_path / "mod.py"
+    py_file.write_text("def foo(): pass\n")
+
+    with patch("pact.intent._call_with_tools", fake_call):
+        _understand_module(
+            py_file, "", "model", "key", False, graphify_rationale="auth layer"
+        )
+
+    assert captured, "prompt was never captured"
+    assert "auth layer" in captured[0]
+
+
 def _semgrep_available():
     import shutil
 

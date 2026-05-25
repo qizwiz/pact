@@ -24,231 +24,235 @@ falls outside the visible range. Do NOT read lines you can already see inline.
 
 ---
 
-## DECLARED INTENT (what the code was supposed to do — compare against implementation)
+## DECLARED INTENT
 
-### Git history (recent commits to this file — shows how intent evolved)
+### Git history
 ```
 {{git_log}}
 ```
 
-### Intent signals (module/function docstrings + TODO/FIXME/HACK/BUG comments)
+### Intent signals
 ```
 {{intent_signals}}
 ```
 
-**INTENT GAP PROTOCOL** — Before reading source details, scan the declared intent above:
-1. For each docstring claim: is it enforced by visible code? If NO → `intent_gap` invariant, confidence ≥ 0.90.
-2. For each TODO/FIXME/BUG still present in source: the code self-reports a deficiency → `intent_gap` invariant, confidence 0.95.
-3. For each git commit saying "fix X" or "ensure Y": is X/Y enforced in visible code? If NO → `intent_gap` invariant, confidence 0.85.
+{{graphify_rationale}}
 
-**GIT PATTERN SIGNALS** — the git log may contain pre-analysed patterns. Treat these as first-class intent evidence:
-- `REVERT (Nx)`: an intent was attempted and pulled back N times. Confidence 0.95.
-- `REPEATED FIXES (Nx)`: same area fixed 3+ times — structural instability. Confidence 0.85.
-- `UNVERIFIED ASSERTIONS`: commits say "ensure X" with no paired test/verify commit. Confidence 0.80.
-- `HIGH COMMIT DENSITY`: this file changes frequently — load-bearing or poorly bounded.
+**INTENT GAP PROTOCOL**:
+1. Each docstring claim not enforced by visible code → `intent_gap` invariant, confidence ≥ 0.90.
+2. Each TODO/FIXME/BUG still in source → `intent_gap` invariant, confidence 0.95.
+3. Each git commit "fix X" / "ensure Y" with no visible guard → `intent_gap` invariant, confidence 0.85.
+4. Source truncated mid-function body → `intent_gap` invariant at confidence 0.70, quoting the last visible line, stating what logic is unverifiable.
+5. If the last visible line is a bare `def` with no body at all → mandatory `intent_gap` invariant at confidence 0.70. The `truncation_audit.last_complete_unit` must be the previous complete unit, not this bare def.
 
-**NOT intent gaps**: uninitialised variables due to environment, heuristic constants, unreachable code paths in current runtime. These belong in `failure_modes` or `assumptions`.
-
-*(This protocol informs Part 2 invariants only — do not produce separate output here.)*
-
----
-
-## THE ONE UNRECOVERABLE FAILURE: FABRICATION
-
-The source block above may be truncated. **Writing anything about code you cannot see is the only unrecoverable failure.**
-
-**Before writing any claim, apply this two-part test:**
-1. Does the function/class/constant name appear as an actual `def`, `class`, or assignment in the source block?
-2. Can you quote the exact source line that supports the claim?
-
-If NO to either: write `[not visible in truncated source]`. Do NOT describe its behavior.
-
-**Four fabrication traps:**
-- **Docstring trap**: A name mentioned in a docstring is NOT defined. A `def` line must exist.
-- **Specificity trap**: Invented variable names, invented except clauses, invented thresholds are worse than nothing.
-- **Completion trap**: When source truncates mid-function, stop analysis at the truncation point.
-- **Inference trap**: Do NOT infer a function exists because a docstring or another function calls it. Only `def` lines create definitions.
-
-**FABRICATION SELF-CHECK — perform this before writing `key_abstractions`:**
-List every name you plan to mention. For each, write internally: "The `def`/`class`/assignment line is: [quote the exact line]." If you cannot complete that sentence, the name is fabricated. Remove it.
+**GIT PATTERN SIGNALS** — treat as first-class evidence:
+- `REVERT (Nx)`: confidence 0.95.
+- `REPEATED FIXES (Nx)`: structural instability, confidence 0.85.
+- `UNVERIFIED ASSERTIONS`: confidence 0.80.
 
 ---
 
-## SCHEMA LOCK — THE SECOND UNRECOVERABLE FAILURE
+## ██ HARD STOP — READ THIS BEFORE PRODUCING A SINGLE CHARACTER ██
 
-**Emitting a JSON object that does not contain all four top-level keys is a schema failure equal to fabrication.**
+The downstream parser accepts EXACTLY ONE opening: `{"truncation_audit":`
 
-The output JSON object has EXACTLY FOUR top-level keys, in this order:
+If your output begins with ANY other character — `{"path":`, `{"understanding":`, `{"file":`, a space, a newline, a markdown fence — the parser DISCARDS THE ENTIRE OUTPUT. There is no recovery. The run is lost.
+
+This is not a formatting preference. It is a binary parse gate.
+
+**Before you type anything**: say to yourself "My first characters will be: {"truncation_audit":" — then type exactly those characters.
+
+Do NOT type:
+- `{"path":` ← this is the most common failure mode. `path` is NEVER a top-level key.
+- `{"file":` ← also forbidden
+- `{"understanding":` ← also forbidden
+- Any markdown code fence
+- Any explanatory text
+
+---
+
+## ABSOLUTE RULE 1 — SCHEMA
+
+The output JSON has EXACTLY FOUR top-level keys in this order:
 1. `truncation_audit`
 2. `invariants`
 3. `violations`
 4. `understanding`
 
-**Extra top-level keys (`path`, `file`, `module`, anything else) are forbidden.** Their presence is a schema failure.
+Keys named `path`, `file`, `module`, or anything else are FORBIDDEN at the top level. Their presence is a schema failure equal to producing no output.
 
-**SCHEMA PRE-EMISSION GATE**: The very first characters you emit must be `{"truncation_audit":`. If you have written anything else as the first characters, stop and restart. Nothing may precede `truncation_audit`.
-
----
-
-## MANDATORY EXECUTION ORDER — READ THIS FIRST, FOLLOW IT EXACTLY
-
-Token budget exhaustion inside `understanding` has repeatedly caused `invariants` and `violations` to be silently dropped, producing broken JSON. Previous runs have also emitted forbidden top-level keys (`path`) and omitted required arrays entirely. The ONLY defence is this order:
-
-**PHASE A — Emit structural skeleton first:**
-
-Your output must begin EXACTLY as follows (copy this template character-for-character):
-```
-{"truncation_audit": { ... },
- "invariants": [],
- "violations": [],
- "understanding": {
-```
-
-Write `truncation_audit`, then write `"invariants": [],` and `"violations": [],` as literal placeholders BEFORE opening `understanding`. **If your next token after closing `truncation_audit` is not `"invariants"`, stop and restart.** These placeholders guarantee the keys exist even if you run out of tokens inside `understanding`.
-
-**PHASE B — Write `understanding` fields in this fixed order:** `purpose`, `design_intent`, `key_abstractions`, `behavioral_contract`, `failure_modes`, `assumptions`, `resource_obligations`.
-
-**PHASE B BUDGET CHECKPOINT**: After writing `design_intent`, pause and count how many fields remain (5). If you have already used more than 50% of your estimated token budget, switch immediately to one-sentence-per-field mode for all remaining fields. A one-sentence field that is closed is better than a detailed field that is truncated mid-sentence and breaks the JSON.
-
-Close each string before opening the next. If budget runs low, truncate with `[budget reached]"` and close the field immediately.
-
-**PHASE C — After closing `understanding`, replace the placeholder `[]` arrays with real invariants and violations.**
-
-**PHASE D — Emit closing `}`.**
-
-**NEVER open `understanding` before the placeholder lines exist in your output. This is the single most important rule.**
+**SCHEMA VERIFICATION**: After writing every closing `}` or `]`, ask yourself: "What top-level keys have I written so far?" If you see anything other than the four keys above, you have already failed.
 
 ---
 
-## PRE-FLIGHT BUDGET CALCULATION
+## ABSOLUTE RULE 2 — EMISSION ORDER WITH MANDATORY GATES
 
-Before writing a single character:
-1. Count names you will place in `visible_definitions`. Call this N.
-2. Word budget per `understanding` field: N≤5 → 120 words. N=6–12 → 70 words. N≥13 → 50 words.
-3. Character budget for `key_abstractions`: N×60 characters maximum. If you hit this limit mid-entry, write `[truncated]"` and close the field.
-4. Invariant budget: 2–4 invariants for truncated source; 2–8 for complete source.
+Follow these steps in exact order. Do not skip or reorder.
 
-**PRE-FLIGHT PATTERN COUNT** — before writing anything, count these patterns in the visible source:
+**Step 1**: Write ONLY these characters as your absolute first output: `{"truncation_audit":`
+Then fill in the truncation_audit object and close it with `}`.
+
+**Step 2**: Immediately after the `}` that closes truncation_audit, write: `,"invariants": []`
+This is a placeholder. Do NOT fill it yet. Write it literally as `[]`.
+
+**Step 3**: Immediately write: `,"violations": []`
+This is a placeholder. Do NOT fill it yet.
+
+**Step 4**: Immediately write: `,"understanding": {`
+Then fill all seven understanding fields and close with `}`.
+
+**Step 5**: Write the final `}` to close the outer object.
+
+**Step 6 — MANDATORY BACKFILL**: NOW go back and replace `"invariants": []` with real invariants and `"violations": []` with real violations. If your token budget is exhausted, write at minimum one invariant per non-zero pattern_count.
+
+**FAILURE PATTERN TO AVOID**: The most common failure is writing `{"path":` or `{"understanding":` first. If you catch yourself doing this, your entire output is already invalid. The only correct first token after `{` is `"truncation_audit"`.
+
+**BUDGET RULE**: After writing `design_intent`, count remaining fields. If you have used more than 40% of your estimated token budget, write ONE SENTENCE per remaining understanding field and close it. A closed one-sentence field is infinitely better than a truncated mid-sentence field that breaks JSON.
+
+**CRITICAL**: A string field that ends without a closing `"` breaks the entire JSON. If you are running low on budget inside any string field, write `(omitted for budget)"` and close the field immediately. Never let a string field truncate mid-word.
+
+---
+
+## ABSOLUTE RULE 3 — NO FABRICATION
+
+Before writing any claim:
+1. Does a `def`, `class`, or top-level assignment line for this name appear in the source block?
+2. Can you quote the exact source line?
+
+If NO to either: write `[not visible in truncated source]`.
+
+Four traps:
+- **Docstring trap**: a name in a docstring is not defined. Only `def` lines count.
+- **Specificity trap**: invented variable names or thresholds are worse than nothing.
+- **Completion trap**: when source truncates mid-function, stop at the truncation point.
+- **Inference trap**: do not infer a function exists because something calls it.
+
+---
+
+## PRE-FLIGHT PATTERN COUNT — MANDATORY AFTER WRITING `{"truncation_audit":` AND BEFORE FILLING IT
+
+Scan the visible source and record these counts:
+
 - `except` clauses: ___
-- `None` returns or checks: ___
-- `re.compile` or `re.match`/`re.search` calls: ___
-- `subprocess` calls: ___
-- Hard-coded numeric constants or string literals used as thresholds/limits: ___
 - `timeout=` parameters: ___
+- `re.compile`/`re.match`/`re.search` calls: ___
+- Hard-coded numeric constants used as thresholds: ___
+- `status_code` checks: ___
+- Functions whose body is truncated (def line visible, body cut off): ___
+- Bare `def` lines with NO body at all (source ends at the def): ___
+- `return None` / `return []` / `return "main"` on non-success paths: ___
 
-Write this count internally. If the total is > 0 and your invariants array is empty when you reach Phase C, you have failed the checklist. You must produce at least one invariant per visible `except` clause and one per `timeout=` parameter.
+These counts create MANDATORY INVARIANT SLOTS. Each non-zero count requires at least one invariant.
+
+Write these counts under `"pattern_counts"` inside `truncation_audit`.
+
+**INVARIANT DEBT RULE**: After writing understanding, before closing the document, count your invariants. If `invariants.length < number of non-zero pattern_counts`, you are missing required invariants. Add them before closing.
 
 ---
 
 ## PART 0 — TRUNCATION AUDIT
 
-JSON field: `truncation_audit`
-
-Answer exactly:
-1. **last_complete_unit**: The last syntactic unit (function, class, or statement) that is 100% complete in the source block. Quote its `def`, `class`, or assignment line verbatim.
-2. **cutoff_line**: The exact last line of the source block, quoted verbatim, character for character.
-3. **visible_definitions**: Every name that has an actual `def`, `class`, or top-level assignment in the source block. Include module-level constants. A function whose `def` line is visible but body is truncated: include in list, mark with `(truncated body)`.
-4. **docstring_only_names**: Names mentioned in docstrings, comments, or other functions' bodies that lack a `def`, `class`, or assignment line in the source block.
-
-**After `truncation_audit`, IMMEDIATELY emit `"invariants": [],` and `"violations": [],` before any other output.**
+Field: `truncation_audit`. Answer exactly:
+1. **last_complete_unit**: The last syntactic unit 100% complete in the source. Quote its `def`/`class`/assignment line verbatim. A bare `def` with no body is NOT a complete unit.
+2. **cutoff_line**: The exact last line of the source block, quoted verbatim.
+3. **visible_definitions**: Every name with an actual `def`, `class`, or top-level assignment. Mark truncated bodies with `(truncated body)`. Mark bare def lines with no body as `(no body visible)`.
+4. **docstring_only_names**: Names in docstrings/comments/call sites that lack a `def`/`class`/assignment in the source.
+5. **pattern_counts**: The counts from the pre-flight scan above.
 
 ---
 
-## PART 1 — UNDERSTAND
+## PART 1 — UNDERSTANDING
 
-**Gate check**: Every name in every sentence must be from `truncation_audit.visible_definitions`. If not, replace with `[not visible in truncated source]`.
+**Gate**: Every name in every sentence must appear in `truncation_audit.visible_definitions`. If not, write `[not visible in truncated source]`.
 
-**Sentence structure requirement**: Every sentence must contain at least one backtick-quoted code fragment that appears verbatim in the source block.
+**Sentence structure**: Every sentence must contain at least one backtick-quoted fragment that appears verbatim in the source.
 
-**FORBIDDEN preamble**: Do NOT begin `purpose` with a list of all visible names.
+**Dynamic word budget**:
+- N ≤ 5 visible definitions: 120 words per field.
+- N = 6–12: 70 words per field.
+- N ≥ 13: 50 words per field.
+
+**Character budget for `key_abstractions`**: N×60 characters. Stop at the limit, write `[truncated]"` and close the field.
+
+**STRING CLOSURE RULE**: Every understanding field is a JSON string. If you approach your token limit inside a string, STOP adding content and close the string with `"`. An empty or one-sentence closed string is valid JSON. A string that ends without `"` breaks the entire document.
 
 ### purpose
-What specific problem does THIS module solve, based ONLY on visible definitions? Name the visible functions/classes by role. Do not restate the module docstring — add specificity the docstring omits. Acknowledge truncation explicitly if source is cut off.
+What specific problem does THIS module solve, based ONLY on visible definitions? Name visible functions/classes by role. Do NOT restate the module docstring — add specificity it omits. Acknowledge truncation if source is cut off.
 
-GOOD: "`_run` wraps `subprocess.run` with `except Exception: return ''` — any subprocess failure, including git-binary-missing or timeout, silently returns empty string. All callers treat `''` as 'no data found' with no way to distinguish failure from genuine absence."
+FORBIDDEN: Generic phrases like "handles errors gracefully", "processes data", "provides utilities".
 
-BAD: "The module extracts violation signals from git history" — restates the docstring without code-specific detail.
+REQUIRED: Quote a specific construct and explain its consequence.
+
+GOOD: "`fetch_file_head` returns `lines[:n_lines]` with a hard `timeout=10`, but no except clause wraps the `session.get` call, so any `requests.Timeout` propagates to the caller uncaught — callers that do not handle it will abort the entire corpus scan."
+
+BAD: "The module builds an import graph and provides analysis utilities."
 
 ### design_intent
-Name exactly 2 specific visible design decisions. For each: state the exact construct (quote it), the choice made, the alternative that was rejected, and the consequence if the alternative were used.
+Name exactly 2 specific visible design decisions. For each: quote the exact construct, state the choice made, name the rejected alternative, and explain the consequence if the alternative were used.
 
-GOOD: "`_FIX_PATTERN` includes `\\b(handle|check|ensure)\\b` — these are implementation verbs, not fix signals. The choice to include them over-broadens commit matching: a commit saying 'handle auth flow' matches and inflates the fix-signal count, diluting the prior with non-failure data. The alternative (only matching 'fix|bug|crash') would miss informal fix language but reduce noise."
+FORBIDDEN: "Uses optional dependency pattern" — states a fact without tradeoffs.
 
-BAD: "Uses regex for pattern matching" — states a fact, not a design decision with consequences.
+GOOD: "`get_default_branch` ends with bare `return \"main\"` on any non-200 response rather than raising or returning `None`. The rejected alternative — raising on 401/403 and sleeping on 429 — would surface credential problems early. The chosen approach means a rate-limited or unauthorized scan silently treats every repo as being on branch `main`, producing systematic 404s in all subsequent `fetch_file_head` calls without any error signal."
 
 ### key_abstractions
-**This field must NOT be empty if any visible definitions exist.**
+**MUST NOT be empty if any visible definitions exist.**
 
 **CHARACTER BUDGET: N×60 characters. Stop at the limit, write `[truncated]"`, close the field.**
 
 For every name in `visible_definitions` (and ONLY those names):
 - Constants: type, value, role, any inline comments.
-- Booleans set by try/except: what they gate, what happens when False.
-- Functions: signature, key branches visible in source body. For truncated bodies, quote the last visible line and note truncation.
-- **For every `except` clause in a function body: quote it verbatim and state the return value.**
-- **For every `timeout=` parameter: quote it verbatim and state what exception propagates when it fires.**
-- **For every non-200 HTTP status check: quote the branch verbatim and state the fallback return value.**
+- Functions: signature, key branches visible in body. For truncated bodies, quote the last visible line and note truncation.
+- **For every `except` clause: quote it verbatim and state the return value or side effect.**
+- **For every `timeout=`: quote it verbatim and state what exception propagates if it fires.**
+- **For every non-200 HTTP status check: quote the branch verbatim and state the fallback.**
+- **For every bare `def` with no visible body: note it explicitly as `(body not visible — source ends at def line)`.**
 
-Do NOT mention names from `docstring_only_names` in this field.
+Do NOT mention names from `docstring_only_names`.
 
 ### behavioral_contract
-Quote ONLY exact lines from the visible source that create guarantees.
+Quote ONLY exact lines from visible source that create guarantees.
+
+**HARD RULE**: Do not end this field mid-sentence. If you are running out of budget, write `(remaining contracts omitted for budget)` and close the string with `"`. A closed shorter field is valid. A truncated field breaks JSON and is invalid.
+
+**TRUNCATION DETECTION**: If you are more than 60% through your estimated token budget when writing this field, write two sentences maximum then close.
 
 **SWALLOWED-EXCEPTION RULE**: For every `except Exception:` or bare `except:` that does not log or re-raise, state ALL FIVE:
 1. The function/scope containing it.
 2. The exact except clause verbatim.
 3. What upstream trigger causes it to fire.
-4. What the caller receives instead (the return value).
-5. What the user-visible symptom is — specifically, how does this hide a real failure?
-
-GOOD: "`_run`: `except Exception: return ''` — fires on subprocess.TimeoutExpired (a subclass of Exception) in addition to all other errors. Caller receives `''`, which `_git_log` interprets as empty history and returns `'(no git history)'`. User sees an empty prior JSON identical to a legitimately-analyzed file with no fix history."
-
-BAD: "The function returns empty string on error" — does not explain the user-visible symptom.
-
-**HTTP SILENT-FALLBACK RULE**: For every function that checks `r.status_code` and returns a fallback on non-200 WITHOUT raising or logging, apply the same five-point analysis:
-1. The function name.
-2. The exact status check line verbatim.
-3. What HTTP condition triggers the fallback.
 4. What the caller receives.
-5. How this masks a real failure (rate-limit hit, private repo, wrong token, etc.).
+5. The user-visible symptom.
 
-**SYSTEMIC PATTERN RULE**: If three or more functions share the same silent-failure contract (e.g., all return neutral/zero values on exception), name this as a systemic property and explain what a plausible-looking aggregate output means when all sub-components fail simultaneously.
+**THREE-CONDITIONS-ONE-RETURN RULE**: If three or more distinct runtime conditions all produce the same return value (e.g., `None`, `[]`, `"main"`), name each condition explicitly and state that they are indistinguishable to callers.
+
+**UNCAUGHT-EXCEPTION RULE**: For every `timeout=` parameter with no surrounding `try/except`, state: "The `timeout=N` in `X` has no except clause; `requests.Timeout` (and network errors) propagate to the caller uncaught."
 
 ### failure_modes
-Quote each try/except block verbatim from the VISIBLE source. If none visible, say so.
+**BUDGET RULE**: If near token limit, write one sentence per failure mode and close the field. Do NOT leave this field truncated.
 
-For each swallowed exception (no log, no re-raise): explain what distinguishable information is lost. Ask: "What two different real-world conditions produce the same return value?" Answer that question explicitly.
+For each try/except block: quote it verbatim from visible source.
 
-GOOD: "`_run`'s `except Exception: return ''` conflates: (a) git binary not installed, (b) repository not initialized, (c) 30-second timeout on large repo, (d) file never committed. All four return `''`. Downstream code cannot distinguish them."
+For each `return None` / `return "main"` / `return []` on a non-success path: state what two distinct real-world conditions produce the same return value.
 
-**TIMEOUT FAILURE MODE**: For every `timeout=N` in a `requests.get` or `subprocess.run` call, state: (a) what exception fires at N seconds, (b) whether an `except` clause catches it, (c) if not caught, what propagates to the caller, (d) what the user-visible symptom is.
+**TRUNCATION FAILURE MODE**: If any function body is truncated, explicitly state: "The body of `X` is truncated at `[last visible line]`; logic after that point cannot be audited."
 
-**HTTP FAILURE MODE**: For every `session.get(...)` call, state what happens on: (a) network unreachable, (b) 401/403 (bad token), (c) 429 (rate limited), (d) 404 (repo not found). If all four map to the same return value, name this as a conflation failure.
+**BARE-DEF FAILURE MODE**: If any definition ends at the `def` line with no visible body, state: "The function `X` has no visible body; its entire contract is unverifiable."
 
-**AGGREGATE FAILURE MODE**: If multiple sub-functions each have independent silent-failure returns, state what the top-level aggregation function (e.g., Counter, ranking) returns if ALL sub-functions fail simultaneously. Is that output distinguishable from a legitimately computed result?
+**UNCAUGHT TIMEOUT**: If `timeout=` appears without an enclosing try/except, state: "A network timeout in `X` propagates uncaught; a single slow GitHub response aborts the entire caller."
 
 ### assumptions
 List implicit assumptions embedded in VISIBLE code only. For each, quote the exact expression and explain what breaks if violated.
 
-MOST VALUABLE ASSUMPTIONS for a GitHub-crawling/corpus-analysis module:
-- **Line-count adequacy**: hard-coded `n_lines=60` — breaks if imports appear after line 60.
-- **Branch-name fallback**: `return "main"` — breaks if the default branch is `master` or `trunk` and GitHub returns non-200.
-- **Token availability**: any `f"Bearer {token}"` — breaks silently if token is empty string or expired.
-- **Session retry behaviour**: if `session` has no retry adapter, a single 429 aborts the crawl.
-- **Regex completeness**: `re.match(r"^import\s+...")` — breaks for `import (foo)` multi-line imports or `__import__` calls.
-- **Heuristic transform completeness**: any fixed `transforms` list — breaks when pip package name differs from repo name by a pattern not in the list.
-- **Cache key stability**: any `{cache_key}.json` — breaks if the key construction changes between runs, causing stale cache hits.
+HIGH-VALUE ASSUMPTIONS:
+- **Silent branch fallback**: `return "main"` on non-200 — breaks if GitHub returns 429; all subsequent fetches use wrong branch.
+- **Fixed line window**: `lines[:n_lines]` with `n_lines=60` — breaks if imports appear below line 60 (common in large files with module docstrings).
+- **Top-level imports only**: `re.match(r"^import\s+...", line)` with `^` anchor after `.strip()` — breaks for indented or conditional imports.
+- **Single-segment package name**: `.split(".")[0]` — correct for `foo.bar` but also strips subpackage specificity silently.
 
 ### resource_obligations
-Look for these patterns in visible code:
-- **HTTP session lifecycle**: is `session` created with a context manager? What happens if it is never closed?
-- **Timeout coverage**: `timeout=10` in `requests.get` — does an `except` catch `requests.Timeout`? If not, the exception propagates uncaught.
-- **Cache file writes**: any `json.dump` to disk — is there an `except` for disk-full or permission errors?
-- **Rate-limit handling**: any `time.sleep` or retry logic visible? If not, rapid sequential calls risk 429.
-- **Missing timeout coverage**: `requests.get` with `timeout=10` but no `except requests.Timeout` — net effect: timeout aborts the entire run.
-- **Global/module-level mutable state**: any `_cache = {}` or `Counter()` modified inside functions.
+Look for: HTTP session lifecycle, `timeout=` coverage, cache file writes, rate-limit handling, global mutable state.
 
-If none visible, write: `"(none detected in visible source)"`
+If none visible, write `"(none detected in visible source)"`.
 
 ---
 
@@ -256,121 +260,128 @@ If none visible, write: `"(none detected in visible source)"`
 
 Based ONLY on `visible_definitions`. Every invariant must pass: can you quote the exact source line in `derived_from`? If not, do not list it.
 
-**MANDATORY INVARIANT SOURCES** — if you see these and produce no invariant, that is a checklist failure:
-1. **`except Exception:` or bare `except:`** that does not re-raise → `error_contract` invariant.
-2. **`re.compile(...)` or `re.match/re.search` with documented over-breadth or exclusion comments** → `data_flow` invariant about what import patterns are missed.
-3. **Hard-coded numeric limit (e.g., `n_lines=60`)** → `assumption` invariant about what is silently truncated.
-4. **`timeout=N` in `session.get` or `subprocess.run`** → `error_contract` invariant about what exception fires and whether it is caught.
-5. **HTTP status check that falls through to a default** → `error_contract` invariant about conflated HTTP failure conditions.
-6. **Boolean flag set by import try/except** → `guard_requirement` invariant.
-7. **TODO/FIXME/BUG/HACK comment** → `intent_gap` invariant, confidence 0.95.
-8. **Docstring claim not enforced by visible code** → `intent_gap` invariant, confidence 0.90–0.95.
-9. **Git commit says "fix X" but no guard visible** → `intent_gap` invariant, confidence 0.85.
-10. **Multiple functions sharing the same silent-failure return pattern** → `error_contract` invariant describing the systemic aggregate effect.
-11. **Heuristic transform list applied to repo names** → `assumption` invariant about false negatives when repo naming deviates from the pattern.
-12. **Hard-coded normalisation ceiling (e.g., `/ 50.0`)** → `assumption` invariant describing what happens when real values exceed the ceiling.
+**MANDATORY SOURCES** — missing any of these when the pattern is visible is a checklist failure:
+1. `except Exception:` or bare `except:` not re-raised → `error_contract`.
+2. `re.compile`/`re.match`/`re.search` → `data_flow` about what is missed.
+3. Hard-coded numeric limit → `assumption` about silent truncation.
+4. `timeout=N` with no enclosing try/except → `error_contract` about uncaught propagation.
+5. HTTP status check with silent fallback → `error_contract` about conflated conditions.
+6. Boolean flag set by import try/except → `guard_requirement`.
+7. TODO/FIXME/BUG comment → `intent_gap`, confidence 0.95.
+8. Docstring claim absent from visible code → `intent_gap`, confidence 0.90–0.95.
+9. Git commit "fix X" with no visible guard → `intent_gap`, confidence 0.85.
+10. Multiple conditions returning identical value → `error_contract` about indistinguishability.
+11. Source truncated mid-function body → `intent_gap` at confidence 0.70, quoting last visible line.
+12. Bare `def` with no visible body → `intent_gap` at confidence 0.70, stating entire contract is unverifiable.
+13. `return "main"` / `return None` / `return []` as fallback for all error conditions → `error_contract`.
+14. `re.match` with `^` on stripped line that misses indented imports → `data_flow`.
 
-**CALIBRATION REQUIREMENT**: Confidence scores MUST span at least 0.25 of range. Structurally-visible lines → 0.90–0.97. One-inferential-step patterns → 0.70–0.89. Plausible-but-not-directly-quoted → 0.60–0.69. Do not list below 0.60. All scores within 0.10 of each other = calibration failure — rewrite before emitting.
+**CALIBRATION**: Confidence scores MUST span ≥ 0.25. Directly quoted lines → 0.90–0.97. One-inferential-step → 0.70–0.89. Plausible but indirect → 0.60–0.69. All scores within 0.10 of each other = calibration failure.
 
-**INVARIANT QUALITY TEST**: Could this invariant have been written from a description of the module, without reading the actual code? If yes, rewrite it to reference a specific line, threshold, or structural choice.
+**INVARIANT QUALITY TEST**: Could this have been written from a description of the module without reading the code? If yes, rewrite it to reference a specific line, threshold, or structural choice.
+
+**BACKFILL REMINDER**: You wrote `"invariants": []` as a placeholder. You MUST now replace that `[]` with real content. An empty invariants array when pattern_counts has non-zero entries is a hard failure. The invariants you identified in the understanding prose MUST be formalized here.
+
+For each invariant:
+- **id**: inv_NNN
+- **type**: nullable_contract | async_contract | error_contract | guard_requirement | data_flow | uniqueness | cache_contract | intent_gap | other
+- **statement**: must reference a specific constant, line, or structural choice
+- **applies_to**: names verbatim from `visible_definitions` ONLY
+- **formal**: semi-formal (∀ / always: / never:)
+- **derived_from**: QUOTE the exact line from visible source. No quote = no invariant.
+- **confidence**: 0.0–1.0
 
 GOOD:
 ```json
 {
   "id": "inv_001",
   "type": "error_contract",
-  "statement": "`fetch_file_head`'s `timeout=10` fires `requests.Timeout` (a subclass of `OSError`). No `except` clause is visible in the function body. The exception propagates uncaught to the caller. If `main()` does not catch it, a single slow GitHub response aborts the entire corpus scan.",
-  "applies_to": ["fetch_file_head"],
-  "formal": "always: fetch_file_head with slow host → uncaught requests.Timeout → corpus scan aborted",
-  "derived_from": "r = session.get(url, headers={\"Authorization\": f\"Bearer {token}\"}, timeout=10)",
-  "confidence": 0.92
+  "statement": "`get_default_branch` returns the string literal \"main\" for ALL non-200 HTTP responses — 401, 403, 404, 429, 500 are indistinguishable to callers. A rate-limited token produces the same return value as a valid repo on main branch.",
+  "applies_to": ["get_default_branch"],
+  "formal": "always: get_default_branch(status != 200) → \"main\" with no distinguishing signal",
+  "derived_from": "return \"main\"",
+  "confidence": 0.95
 }
 ```
 
-BAD:
+BAD (generic):
 ```json
 {
-  "statement": "The module swallows HTTP errors",
-  "derived_from": "fetch_file_head function"
+  "statement": "Functions should document their error return values."
 }
 ```
 
-For each invariant:
-- **id**: inv_NNN
-- **type**: nullable_contract | async_contract | error_contract | guard_requirement | data_flow | uniqueness | cache_contract | intent_gap | other
-- **statement**: what must always be true — must reference a specific constant, line, or structural choice
-- **applies_to**: names verbatim from `visible_definitions` ONLY
-- **formal**: semi-formal (∀ / always: / never:)
-- **derived_from**: QUOTE the exact line from visible source. No quote = no invariant.
-- **confidence**: 0.0–1.0
+Count rules: 2–8 invariants. Heavily truncated source: 2–4 maximum.
 
-**Count rules**: 2–8 invariants. Heavily truncated source: 2–4 maximum.
-
-**EMPTY INVARIANTS ARRAY SELF-CHECK**: Before finalising, scan your source block for: `except`, `None` check, guard, `frozenset` constant, bounded numeric type, `re.compile`, `re.match`, `re.search`, hard-coded model name, hard-coded threshold, hard-coded normalisation divisor, `timeout=`, or `status_code` check. If ANY of these are present and `invariants` is `[]`, that is a checklist failure. You must produce at least one invariant.
+**EMPTY INVARIANTS SELF-CHECK**: Before finalising, check your pattern_counts. For each non-zero count, confirm a corresponding invariant exists. If any non-zero count has no invariant, add one before closing.
 
 ---
 
 ## PART 3 — VIOLATIONS
 
-**CONTRACT-FIRST GATE**: A violation is only valid if it contradicts a specific claim in `behavioral_contract` or `purpose`. Before writing a violation, state internally: *"The behavioral_contract says [X]. The code fails to deliver [X] because [Y]."* If you cannot complete that sentence from visible code, do not emit a violation.
+**CONTRACT-FIRST GATE**: A violation is only valid if it contradicts a specific claim in `behavioral_contract` or `purpose`. Before writing a violation, state internally: "The behavioral_contract says [X]. The code fails to deliver [X] because [Y]." If you cannot complete that sentence from visible code, do not emit the violation.
 
-**LINTER BOUNDARY** — NOT violations:
-- A variable conditionally populated based on environment.
-- A heuristic constant that might produce false positives.
-- Two constants that might drift out of sync with no enforcement.
-
-**WHAT IS A VIOLATION**: Evidence that the module fails to deliver its stated purpose — a docstring makes a claim the code does not honour, a git commit says "ensure X" but X is absent, a TODO names a missing capability, or a function makes an implicit promise ("fetches" = succeeds) that the visible code can silently break.
+**BACKFILL REMINDER**: You wrote `"violations": []` as a placeholder. You MUST now replace that `[]` with real content — OR, if no violations apply, replace it with a list of explanation strings (one per invariant, each explaining why no violation applies).
 
 For each violation:
 - **invariant_id**: which invariant.
 - **line**: exact line number.
 - **evidence**: quote the specific code verbatim.
 - **severity**: critical | high | medium | low.
-- **explanation**: answer three questions explicitly:
+- **explanation**: answer three questions:
   1. Which function/caller is affected?
   2. What does the caller receive when the invariant is violated?
-  3. What is the user-visible symptom — specifically, how does this contradict what the module claims to do?
-  If you cannot answer all three from visible code, say so and do not emit the violation.
+  3. What is the user-visible symptom — how does this contradict what the module claims to do?
+
+If you cannot answer all three from visible code, do not emit the violation.
 
 GOOD:
 ```json
 {
-  "invariant_id": "inv_001",
-  "line": 37,
-  "evidence": "r = session.get(url, headers={\"Authorization\": f\"Bearer {token}\"}, timeout=10)",
+  "invariant_id": "inv_002",
+  "line": 35,
+  "evidence": "if r.status_code != 200:\n        return None",
   "severity": "high",
-  "explanation": "(1) `main()` calls `fetch_file_head` for every corpus file. (2) On timeout, `requests.Timeout` propagates uncaught, aborting the entire scan. (3) The module docstring claims to rank packages across the full corpus — a single slow GitHub server response silently produces a partial ranking with no indication of how many files were skipped."
+  "explanation": "(1) `fetch_file_head` and every caller that aggregates its results is affected. (2) A 429 rate-limit response returns `None` identically to a 404 file-not-found. (3) The module claims to rank packages by downstream exposure across the corpus; when rate-limiting silently returns None for some files, those files are excluded from the package counter with no warning, producing a systematically incomplete ranking that appears legitimate."
 }
 ```
 
-**SYSTEMIC VIOLATION RULE**: If the module docstring claims to compute a ranking or exposure metric, and multiple sub-components of that metric have independent silent-failure returns, this constitutes a single high-severity violation: the claimed metric can be indistinguishable from a fully-failed measurement. Emit this as one violation citing all affected functions.
+**SYSTEMIC VIOLATION RULE**: If multiple functions share a silent-failure return, emit one high-severity violation citing all affected functions.
 
 **Truncation rule**: Do NOT report violations in code you cannot see.
 
+**VIOLATIONS FORCING RULE — HARD**: If `invariants` is non-empty and `violations` is `[]`, you MUST for each invariant either:
+(a) emit a violation object, OR
+(b) write a one-sentence string explaining why no violation applies: e.g., `"inv_001: no violation — the fallback is documented in the module docstring."`
+
+Do NOT silently leave `violations` as `[]` when invariants are non-empty. That is a hard failure.
+
 ---
 
-## FINAL SELF-CHECK (20 items — verify ALL before emitting closing `}`)
+## FINAL SELF-CHECK (verify ALL before emitting closing `}`)
 
-1. The first characters emitted are `{"truncation_audit":` — no other key precedes it.
-2. `truncation_audit` is present and closed.
-3. `invariants` array is present and closed — even if empty.
-4. `violations` array is present and closed — even if empty.
-5. `understanding` has all seven fields, each a closed string: `purpose`, `design_intent`, `key_abstractions`, `behavioral_contract`, `failure_modes`, `assumptions`, `resource_obligations`.
-6. `key_abstractions` is NOT an empty string.
-7. The outer `}` closes the entire object.
-8. No field references a name absent from `truncation_audit.visible_definitions`.
-9. Every `derived_from` is a verbatim quote from the source block.
-10. Confidence scores span at least 0.25 of range (if invariants non-empty).
+1. **FIRST CHARACTERS CHECK**: Are the literal first characters of your output `{"truncation_audit":`? If you wrote `{"path":` or anything else first, your output is invalid and cannot be salvaged.
+2. `truncation_audit` contains `pattern_counts`.
+3. `"invariants":` key appears immediately after `truncation_audit` closes — NOT `"understanding":`.
+4. `"violations":` key appears before `"understanding":`.
+5. `understanding` has all seven fields, each a properly closed string — no field ends mid-sentence or mid-word.
+6. `key_abstractions` is NOT empty.
+7. Outer `}` closes the entire object.
+8. No field references a name absent from `visible_definitions`.
+9. Every `derived_from` is a verbatim quote from the source.
+10. Confidence scores span ≥ 0.25 (if invariants non-empty).
 11. No `understanding` field exceeds its dynamic word limit.
 12. `purpose` does NOT open with a list of all visible definition names.
-13. No extra top-level keys — exactly four: `truncation_audit`, `invariants`, `violations`, `understanding`. Keys named `path`, `file`, `module` are forbidden.
-14. `assumptions` field string is CLOSED.
-15. No invariant or violation references a function not in `visible_definitions`.
-16. Every name in `key_abstractions` has a corresponding `def`/`class`/assignment line in the source block — names from `docstring_only_names` are ABSENT from `key_abstractions`.
-17. `invariants` array is non-empty if ANY of these are visible: `except`, `None` check, guard, `re.match`, `re.search`, `re.compile`, hard-coded threshold, `timeout=`, or `status_code` check. An empty invariants array when such patterns exist is a checklist failure.
-18. If multiple functions share the same silent-failure return contract AND the module claims to compute an aggregate metric from them, a systemic `error_contract` invariant and a corresponding violation exist.
-19. Every `except` clause visible in the source has a corresponding `error_contract` invariant quoting it verbatim.
-20. Every `timeout=` parameter visible in the source has a corresponding `error_contract` invariant stating what exception fires and whether it is caught.
+13. Exactly four top-level keys: `truncation_audit`, `invariants`, `violations`, `understanding`. No `path`, `file`, `module`.
+14. For each non-zero pattern_count, a corresponding invariant exists.
+15. No invariant/violation references a function not in `visible_definitions`.
+16. Every `timeout=` has an `error_contract` invariant about uncaught propagation.
+17. Every bare `def` with no body has an `intent_gap` invariant at confidence 0.70.
+18. If `violations` is `[]` and `invariants` is non-empty, each invariant has an explicit reason string.
+19. No `understanding` field is truncated mid-sentence.
+20. `behavioral_contract` does not end mid-sentence; if budget ran out, it ends with a closing clause like `(omitted for budget)`.
+21. **BACKFILL CHECK**: Neither `invariants` nor `violations` is still the placeholder `[]`. If either is still `[]` and the module has code, that is a hard failure.
+22. **NO PATH KEY**: The string `"path":` does not appear as a top-level key anywhere in your output.
 
 ---
 
@@ -381,7 +392,17 @@ Return JSON only — no markdown fences, no explanation outside the JSON:
     "last_complete_unit": "...",
     "cutoff_line": "exact last line quoted verbatim",
     "visible_definitions": ["..."],
-    "docstring_only_names": ["..."]
+    "docstring_only_names": ["..."],
+    "pattern_counts": {
+      "except_clauses": 0,
+      "timeout_params": 0,
+      "regex_calls": 0,
+      "numeric_thresholds": 0,
+      "status_code_checks": 0,
+      "truncated_bodies": 0,
+      "bare_def_no_body": 0,
+      "silent_fallback_returns": 0
+    }
   },
   "invariants": [],
   "violations": [],

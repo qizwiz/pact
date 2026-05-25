@@ -271,11 +271,13 @@ def _autodetect_test_cmd(project_root: Path) -> Optional[str]:
     """Detect the test runner for a project from common marker files.
 
     Checked in priority order:
-      pytest markers → python -m pytest
+      pytest markers → <sys.executable> -m pytest
       tox.ini        → tox
       Makefile test  → make test
     Returns None when no runner is detected.
     """
+    import sys as _sys
+
     root = project_root.resolve()
     # pytest: any of these files signal a pytest project
     pytest_markers = [
@@ -285,7 +287,7 @@ def _autodetect_test_cmd(project_root: Path) -> Optional[str]:
         "conftest.py",
     ]
     if any((root / m).exists() for m in pytest_markers):
-        return "python -m pytest -q --tb=short"
+        return f"{_sys.executable} -m pytest -q --tb=short"
     if (root / "tox.ini").exists():
         return "tox"
     if (root / "Makefile").exists():
@@ -325,7 +327,7 @@ def _run_oracle(test_cmd: str, cwd: Path, verbose: bool) -> tuple[bool, str]:
 
 
 def _context_window(
-    lines: list[str], line: int, radius: int = 15
+    lines: list[str], line: int, radius: int = 60
 ) -> tuple[str, int, int]:
     start = max(0, line - radius - 1)
     end = min(len(lines), line + radius)

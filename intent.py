@@ -746,6 +746,7 @@ def _understand_module(
     model: str,
     key: str,
     verbose: bool,
+    graphify_rationale: str = "",
 ) -> ModuleIntent:
     raw_bytes = path.read_bytes()
     full_source = raw_bytes.decode("utf-8", errors="replace")
@@ -779,6 +780,11 @@ def _understand_module(
     intent_signals = _extract_intent_signals(full_source)
 
     template = _load_prompt("understand")
+    graphify_section = (
+        f"### Graphify community rationale\n{graphify_rationale}\n"
+        if graphify_rationale
+        else ""
+    )
     prompt = _render(
         template,
         project_essence=project_essence,
@@ -788,6 +794,7 @@ def _understand_module(
         truncation_note=trunc_note,
         git_log=git_log,
         intent_signals=intent_signals,
+        graphify_rationale=graphify_section,
     )
 
     # Use tool-enabled call — model reads specific function bodies on demand
@@ -1383,12 +1390,15 @@ def extract_file_intent(
     api_key: Optional[str] = None,
     improve: bool = False,
     verbose: bool = False,
+    graphify_rationale: str = "",
 ) -> ModuleIntent:
     """Extract world model + invariants + violations from one Python file."""
     key = _get_key(api_key)
     source, _ = _read_truncated(path)
 
-    module = _understand_module(path, project_essence, model, key, verbose)
+    module = _understand_module(
+        path, project_essence, model, key, verbose, graphify_rationale
+    )
 
     if improve:
         score = _improve_prompt(
@@ -1616,11 +1626,27 @@ def extract_project_intent(
     if verbose:
         print(f"[intent] step 2-4: understanding {len(files)} modules...")
 
+    # Load Graphify call graph for rationale enrichment (optional — silently absent)
+    try:
+        from .graphify_graph import CallGraph as _CG
+
+        _call_graph = _CG.load(root)
+    except Exception:
+        _call_graph = None
+
     module_sources: dict[str, str] = {}
     for f in files:
         try:
             src, _ = _read_truncated(f)
             module_sources[str(f)] = src
+
+            # Pull Graphify community rationale for this file (if available)
+            rat = ""
+            if _call_graph is not None:
+                comm_id = _call_graph.community_of(func_name="", source_file=f.name)
+                if comm_id is not None:
+                    rat = _call_graph.community_label_for(comm_id)
+
             module = extract_file_intent(
                 f,
                 project_essence=essence,
@@ -1628,6 +1654,7 @@ def extract_project_intent(
                 api_key=key,
                 improve=False,
                 verbose=verbose,
+                graphify_rationale=rat,
             )
             # Classify contract_kind for all invariants so the pipeline can use
             # typed templates even for non-intent_gap invariants.
