@@ -1421,7 +1421,19 @@ def _classify_contract_kind(
     """Map Z3 encoding description to (contract_kind, tla_template)."""
     text = (encoding_approach + " " + statement).lower()
     if any(
-        k in text for k in ("order", "before", "after", "sequence", "precede", "phase")
+        k in text
+        for k in (
+            "order",
+            "before",
+            "after",
+            "sequence",
+            "precede",
+            "phase",
+            "guard",
+            "gated on",
+            "must be checked",
+            "guard_requirement",
+        )
     ):
         return "ordering", "ordering"
     if any(

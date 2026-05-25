@@ -515,6 +515,16 @@ class TestClassifyContractKind:
         assert kind == "ordering"
         assert tla == "ordering"
 
+    def test_guard_requirement_maps_to_ordering(self):
+        kind, tla = self._classify(
+            "", "TypeScript dispatch is gated on path.suffix in _TS_SUFFIXES"
+        )
+        assert kind == "ordering"
+
+    def test_error_contract_from_exception_keywords(self):
+        kind, _ = self._classify("", "`_parse_py_cached` catches SyntaxError and returns None")
+        assert kind == "error_contract"
+
     def test_resource_lifecycle_from_statement(self):
         kind, tla = self._classify("", "open file handle must be closed when done")
         assert kind == "resource_lifecycle"
