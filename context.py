@@ -11,7 +11,6 @@ Usage:
 from __future__ import annotations
 
 import json
-import os
 import re
 import subprocess
 import textwrap
@@ -125,9 +124,9 @@ def _parse(text: str) -> dict:
 
 
 def _call(prompt: str, model: str, key: str) -> dict:
-    import anthropic
+    from .llm import make_client
 
-    client = anthropic.Anthropic(api_key=key)
+    client = make_client(key)
     response = client.messages.create(
         model=model,
         max_tokens=4096,
@@ -216,9 +215,9 @@ def extract_context(
     verbose: bool = False,
     improve: bool = False,
 ) -> dict:
-    key = api_key or os.environ.get("ANTHROPIC_API_KEY", "")
-    if not key:
-        raise RuntimeError("ANTHROPIC_API_KEY not set")
+    from .llm import resolve_key
+
+    key = resolve_key(api_key)
 
     if repo_root is None:
         repo_root = file_path.parent

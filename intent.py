@@ -23,7 +23,6 @@ from __future__ import annotations
 
 import ast
 import json
-import os
 import re
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -270,18 +269,9 @@ _SYSTEM = (
 
 
 def _get_key(api_key: Optional[str] = None) -> str:
-    key = (
-        api_key
-        or os.environ.get("ANTHROPIC_API_KEY")
-        or os.environ.get("PACT_ANTHROPIC_API_KEY")
-    )
-    if not key:
-        raise RuntimeError(
-            "ANTHROPIC_API_KEY not set.\n"
-            "  export ANTHROPIC_API_KEY=sk-ant-...   then re-run.\n"
-            "  Or pass --api-key <key>."
-        )
-    return key
+    from .llm import resolve_key
+
+    return resolve_key(api_key)
 
 
 _READ_FILE_TOOL = {
@@ -356,9 +346,9 @@ def _parse_text(text: str) -> dict:
 
 
 def _call(prompt: str, model: str, key: str, max_tokens: int = 4096) -> dict:
-    import anthropic
+    from .llm import make_client
 
-    client = anthropic.Anthropic(api_key=key)
+    client = make_client(key)
     response = client.messages.create(
         model=model,
         max_tokens=max_tokens,
@@ -378,9 +368,9 @@ def _call_with_tools(
     max_tool_rounds: int = 6,
 ) -> dict:
     """Call with read_file_lines tool — model reads source on demand, no truncation."""
-    import anthropic
+    from .llm import make_client
 
-    client = anthropic.Anthropic(api_key=key)
+    client = make_client(key)
     messages: list[dict] = [{"role": "user", "content": prompt}]
 
     for _ in range(max_tool_rounds):

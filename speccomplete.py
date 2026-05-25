@@ -11,7 +11,6 @@ The result is a spec that's ready for TLC model checking.
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 from typing import Optional
 
@@ -67,20 +66,10 @@ def spec_complete(
     module_name = "".join(w.capitalize() for w in path.stem.split("_"))
     skeleton = _spec_synthesize(source, module_name)
 
-    key = (
-        api_key
-        or os.environ.get("ANTHROPIC_API_KEY")
-        or os.environ.get("PACT_ANTHROPIC_API_KEY")
-    )
-    if not key:
-        raise RuntimeError(
-            "ANTHROPIC_API_KEY not set. "
-            "Export it or pass --api-key to `pact spec complete`."
-        )
+    from .llm import make_client, resolve_key
 
-    import anthropic
-
-    client = anthropic.Anthropic(api_key=key)
+    key = resolve_key(api_key)
+    client = make_client(key)
 
     user_msg = _build_user_msg(
         filename=path.name,

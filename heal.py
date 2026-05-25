@@ -20,7 +20,6 @@ Usage:
 from __future__ import annotations
 
 import json
-import os
 import tempfile
 import textwrap
 from dataclasses import dataclass, field
@@ -55,10 +54,9 @@ def _render(template: str, **kwargs) -> str:
 
 
 def _get_key(api_key: Optional[str]) -> str:
-    key = api_key or os.environ.get("ANTHROPIC_API_KEY", "")
-    if not key:
-        raise RuntimeError("ANTHROPIC_API_KEY not set")
-    return key
+    from .llm import resolve_key
+
+    return resolve_key(api_key)
 
 
 _READ_FILE_TOOL = {
@@ -134,9 +132,9 @@ def _parse_response_text(text: str) -> dict:
 
 
 def _call(prompt: str, model: str, key: str, max_tokens: int = 8192) -> dict:
-    import anthropic
+    from .llm import make_client
 
-    client = anthropic.Anthropic(api_key=key)
+    client = make_client(key)
     response = client.messages.create(
         model=model,
         max_tokens=max_tokens,
@@ -160,9 +158,9 @@ def _call_with_tools(
     Call the model with a read_file_lines tool. The model can read any source
     file on demand — no source injection, no truncation.
     """
-    import anthropic
+    from .llm import make_client
 
-    client = anthropic.Anthropic(api_key=key)
+    client = make_client(key)
     messages: list[dict] = [{"role": "user", "content": prompt}]
 
     for _ in range(max_tool_rounds):

@@ -32,7 +32,6 @@ from __future__ import annotations
 
 import ast
 import json
-import os
 import subprocess
 import sys
 import tempfile
@@ -92,9 +91,9 @@ def _parse_json(text: str) -> dict:
 
 
 def _call_llm(prompt: str, model: str, key: str) -> dict:
-    import anthropic
+    from .llm import make_client
 
-    client = anthropic.Anthropic(api_key=key)
+    client = make_client(key)
     response = client.messages.create(
         model=model,
         max_tokens=4096,
@@ -205,9 +204,9 @@ def stress_contract(
         When provided, the LLM uses it to seed Hypothesis's search toward the
         known-bad region rather than starting from scratch.
     """
-    key = api_key or os.environ.get("ANTHROPIC_API_KEY", "")
-    if not key:
-        raise RuntimeError("ANTHROPIC_API_KEY not set")
+    from .llm import resolve_key
+
+    key = resolve_key(api_key)
 
     func_src = _extract_function_source(function_source, function_name)
 

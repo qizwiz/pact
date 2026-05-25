@@ -19,7 +19,6 @@ Usage:
 from __future__ import annotations
 
 import json
-import os
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -88,9 +87,9 @@ class SpecGapRecord:
 
 
 def _call(prompt: str, model: str, key: str) -> dict:
-    import anthropic
+    from .llm import make_client
 
-    client = anthropic.Anthropic(api_key=key)
+    client = make_client(key)
     response = client.messages.create(
         model=model,
         max_tokens=8192,
@@ -573,7 +572,12 @@ def main(argv=None) -> int:
     sub.add_parser("improve", help="Trigger prompt self-improvement")
 
     args = parser.parse_args(argv)
-    key = os.environ.get("ANTHROPIC_API_KEY", "")
+    from .llm import resolve_key
+
+    try:
+        key = resolve_key()
+    except RuntimeError:
+        key = ""
 
     if args.cmd == "record":
         tla_path = Path(args.tla)
