@@ -17,5 +17,6 @@ For "flag_invariant": {"flag_name": "<variable name of the boolean flag>", "chec
 For "nullable_contract": {"field_name": "<name of the field or variable that can be None>", "check_name": "<description of what check is skipped when the field is None>", "skips_on_none": true}
 For "subset_relation": {"set_a": "<name of the required/expected set>", "set_b": "<name of the provided/actual set>"}
 For "ordering": {"first_op": "<name of operation that must run first>", "second_op": "<name of operation that depends on first>", "guard_exists": false}
+For "resource_lifecycle": {"resource": "<name of the resource (connection, file, handle, lock)>", "release_guaranteed": false}
 
 Return only JSON. No explanation.

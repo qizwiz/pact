@@ -243,16 +243,82 @@ def _ordering(params: dict) -> str:
 
 
 # ---------------------------------------------------------------------------
+# resource_lifecycle
+# ---------------------------------------------------------------------------
+# RESOURCE must be released after acquisition.
+# SAT when release_guaranteed=False → acquire path exists without release (bug)
+# UNSAT when release_guaranteed=True → every acquire is paired with release (fixed)
+# ---------------------------------------------------------------------------
+
+_RESOURCE_LIFECYCLE_TEMPLATE = """\
+import z3
+import json
+
+s = z3.Solver()
+
+acquired = z3.Bool('RESOURCE_acquired')
+released = z3.Bool('RESOURCE_released')
+exception_path = z3.Bool('exception_path')
+
+if RELEASE_GUARANTEED:
+    # Fixed: release always happens — either normally or via finally/context manager
+    # UNSAT: cannot have acquired=True AND released=False
+    s.add(z3.Implies(acquired, released))
+    s.add(acquired)
+    s.add(z3.Not(released))
+else:
+    # Bug: exception path skips release — acquire without release possible
+    # SAT witness: acquired=True AND exception_path=True AND released=False
+    s.add(acquired)
+    s.add(exception_path)
+    s.add(z3.Implies(exception_path, z3.Not(released)))
+
+result = s.check()
+if str(result) == 'sat':
+    m = s.model()
+    ce = {
+        'RESOURCE_acquired': str(m[acquired]),
+        'RESOURCE_released': str(m[released]),
+        'exception_path': str(m[exception_path]),
+        'explanation': 'RESOURCE acquired but not released on exception path'
+    }
+    print(json.dumps({'status': 'sat', 'counterexample': ce,
+                      'explanation': 'RESOURCE lifecycle violated — acquire without release'}))
+else:
+    print(json.dumps({'status': 'unsat', 'counterexample': None,
+                      'explanation': 'RESOURCE always released after acquire — lifecycle holds'}))
+"""
+
+
+def _resource_lifecycle(params: dict) -> str:
+    resource = params.get("resource", "resource")
+    release_guaranteed = params.get("release_guaranteed", False)
+    script = _RESOURCE_LIFECYCLE_TEMPLATE
+    script = script.replace("RESOURCE", resource)
+    script = script.replace(
+        "RELEASE_GUARANTEED", "True" if release_guaranteed else "False"
+    )
+    return script
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
-SUPPORTED_KINDS = {"flag_invariant", "nullable_contract", "subset_relation", "ordering"}
+SUPPORTED_KINDS = {
+    "flag_invariant",
+    "nullable_contract",
+    "subset_relation",
+    "ordering",
+    "resource_lifecycle",
+}
 
 _RENDERERS = {
     "flag_invariant": _flag_invariant,
     "nullable_contract": _nullable_contract,
     "subset_relation": _subset_relation,
     "ordering": _ordering,
+    "resource_lifecycle": _resource_lifecycle,
 }
 
 

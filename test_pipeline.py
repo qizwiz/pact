@@ -723,6 +723,29 @@ class TestContractTemplates:
             result["status"] == "sat"
         ), f"Expected SAT (None skips check), got: {result}"
 
+    def test_resource_lifecycle_sat_when_no_release(self):
+        """resource_lifecycle with release_guaranteed=False returns SAT (acquire without release)."""
+        from pact.contract_templates import render_z3_template
+
+        script = render_z3_template(
+            "resource_lifecycle",
+            {"resource": "connection", "release_guaranteed": False},
+        )
+        result = self._run(script)
+        assert result["status"] == "sat", f"Expected SAT (no release), got: {result}"
+        assert "connection" in str(result.get("counterexample", ""))
+
+    def test_resource_lifecycle_unsat_when_release_guaranteed(self):
+        """resource_lifecycle with release_guaranteed=True returns UNSAT."""
+        from pact.contract_templates import render_z3_template
+
+        script = render_z3_template(
+            "resource_lifecycle",
+            {"resource": "connection", "release_guaranteed": True},
+        )
+        result = self._run(script)
+        assert result["status"] == "unsat", f"Expected UNSAT (release guaranteed), got: {result}"
+
     def test_unsupported_kind_raises_key_error(self):
         """render_z3_template raises KeyError for unknown contract_kind."""
         from pact.contract_templates import render_z3_template
