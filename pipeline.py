@@ -10,9 +10,9 @@ plan via LLM, then executes it deterministically:
       ↓
   execute steps in dependency order:
     z3         → verify_contract()       (single-call behavioral contracts)
-    tla        → generate_tla_spec()     (cross-call temporal obligations)
+    tla        → _execute_tla()          (cross-call temporal obligations)
     hypothesis → stress_contract()       (adversarial inputs from contract)
-    heal       → heal_project()           (minimal structural fix, CEGIS-verified)
+    heal       → heal_project()          (minimal structural fix, CEGIS-verified)
 
 Usage:
     pact pipeline <intent_json>
@@ -113,7 +113,15 @@ def _call_llm(prompt: str, model: str, key: str) -> list[dict]:
     try:
         result = json.loads(text)
         return result if isinstance(result, list) else []
-    except json.JSONDecodeError:
+    except json.JSONDecodeError as exc:
+        import warnings
+
+        warnings.warn(
+            f"pipeline: LLM returned malformed JSON — plan will be empty "
+            f"({exc}); raw response: {text[:200]!r}",
+            RuntimeWarning,
+            stacklevel=2,
+        )
         return []
 
 
@@ -534,7 +542,15 @@ def _find_project_root(start: Path) -> Optional[Path]:
 def _load_source(module_path: str) -> str:
     try:
         return Path(module_path).read_text(encoding="utf-8", errors="replace")
-    except OSError:
+    except OSError as exc:
+        import warnings
+
+        warnings.warn(
+            f"pipeline: cannot read source for {module_path} ({exc}); "
+            "Z3/Hypothesis steps will run without function source context",
+            RuntimeWarning,
+            stacklevel=2,
+        )
         return ""
 
 

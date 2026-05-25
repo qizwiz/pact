@@ -564,7 +564,14 @@ def check_ts_file(path: str) -> list:
     p = Path(path)
     try:
         src = p.read_bytes()
-    except OSError:
+    except OSError as exc:
+        import warnings
+
+        warnings.warn(
+            f"ts_checker: cannot read {p} ({exc}); file will not be scanned",
+            RuntimeWarning,
+            stacklevel=2,
+        )
         return []
 
     tree = parser.parse(src)
@@ -635,6 +642,15 @@ def check_ts_file(path: str) -> list:
 def check_ts_files(root: Path) -> list:
     """Scan all TS/TSX/JS/JSX files under root. Returns list of Violation objects."""
     if not _HAS_TS and not _HAS_JS:
+        import warnings
+
+        warnings.warn(
+            "ts_checker: tree-sitter TypeScript/JavaScript wheels not installed; "
+            "TS/JS structural checks are skipped — pip install tree-sitter-typescript "
+            "tree-sitter-javascript to enable",
+            RuntimeWarning,
+            stacklevel=2,
+        )
         return []
     violations = []
     for path in _iter_ts_files(root):
