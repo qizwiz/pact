@@ -22,7 +22,6 @@ Usage:
 from __future__ import annotations
 
 import json
-import os
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Optional
@@ -97,9 +96,9 @@ def _render(template: str, **kwargs: Any) -> str:
 
 
 def _call_llm(prompt: str, model: str, key: str) -> list[dict]:
-    import anthropic
+    from .llm import make_client
 
-    client = anthropic.Anthropic(api_key=key)
+    client = make_client(key)
     msg = client.messages.create(
         model=model,
         max_tokens=2048,
@@ -721,9 +720,9 @@ def run_pipeline(
     Generates a plan via LLM then executes Z3, TLA+, and Hypothesis steps
     in dependency order. Returns structured results for all steps.
     """
-    key = api_key or os.environ.get("ANTHROPIC_API_KEY", "")
-    if not key:
-        raise RuntimeError("ANTHROPIC_API_KEY not set")
+    from .llm import resolve_key
+
+    key = resolve_key(api_key)
 
     intent = json.loads(intent_path.read_text())
     summary = _intent_summary(intent)

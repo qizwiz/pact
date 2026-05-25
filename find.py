@@ -13,7 +13,6 @@ Usage:
 from __future__ import annotations
 
 import json
-import os
 import textwrap
 from pathlib import Path
 from typing import Optional
@@ -72,9 +71,9 @@ def _parse(text: str) -> dict:
 
 
 def _call_with_tools(prompt: str, model: str, key: str, max_rounds: int = 8) -> dict:
-    import anthropic
+    from .llm import make_client
 
-    client = anthropic.Anthropic(api_key=key)
+    client = make_client(key)
     messages: list[dict] = [{"role": "user", "content": prompt}]
 
     for _ in range(max_rounds):
@@ -190,9 +189,9 @@ def find_violations(
     use_context: bool = True,
     improve: bool = False,
 ) -> dict:
-    key = api_key or os.environ.get("ANTHROPIC_API_KEY", "")
-    if not key:
-        raise RuntimeError("ANTHROPIC_API_KEY not set")
+    from .llm import resolve_key
+
+    key = resolve_key(api_key)
 
     template = (_PROMPT_DIR / "find.md").read_text(encoding="utf-8")
 
@@ -396,9 +395,9 @@ def _improve_find_prompt(
             .replace("{{failure_modes}}", "\n".join(failure_modes) or "none")
         )
 
-        import anthropic
+        from .llm import make_client
 
-        client = anthropic.Anthropic(api_key=key)
+        client = make_client(key)
         response = client.messages.create(
             model=model,
             max_tokens=8192,

@@ -92,9 +92,9 @@ def _parse_json(text: str) -> dict:
 
 
 def _call_llm(prompt: str, model: str, key: str) -> dict:
-    import anthropic
+    from .llm import make_client
 
-    client = anthropic.Anthropic(api_key=key)
+    client = make_client(key)
     response = client.messages.create(
         model=model,
         max_tokens=4096,
@@ -302,9 +302,9 @@ def verify_contract(
             encoding_approach="preencoded",
         )
 
-    key = api_key or os.environ.get("ANTHROPIC_API_KEY", "")
-    if not key:
-        raise RuntimeError("ANTHROPIC_API_KEY not set")
+    from .llm import resolve_key
+
+    key = resolve_key(api_key)
 
     # Typed-template short-circuit: when contract_kind is known, extract params
     # via LLM and render a pre-built template instead of free-form Z3 generation.
