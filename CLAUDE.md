@@ -96,14 +96,19 @@ Closed gaps:
 - `extractor.py`: SyntaxError/OSError now emit RuntimeWarning instead of silent return (commit 330a757)
 - `cli.py`: bare except → specific exceptions + RuntimeWarning; RuntimeError → Exception in _spec_cmd (commit 330a757)
 
-Remaining gaps:
-- `_interproc_z3`: tainted_json IDB rule missing `not calls_sanitizer_G` guard (Z3 SAT confirmed; needs sanitizer-function schema extension)
+Already closed (but not in list above):
+- Graphify rationale → intent: rationale nodes wired into intent layer prompt (commit 4ee9393)
+- `_interproc_z3` try_wraps guard: `Not(try_wraps_json_rel(_F))` added to tainted_json rule (commit 4146bd4)
+- `_interproc_z3` api_key_unchecked: full Z3 taint chain added (commit 4146bd4)
+
+Remaining gaps (from intent_pact_self.json inv_005, inv_006 — stale file, confirmed manually):
+- `_interproc_z3`: call resolution uses unqualified names only — cross-file calls may conflate same-named functions; calls to uncovered files silently dropped
+- `_interproc_z3`: `_BITS=16` caps analysis at 65536 functions — large codebases silently overflow via modular arithmetic with no error raised
 - Hypothesis: present in test suite only, absent from user-code analysis pipeline
-- Graphify rationale nodes: extracted but never fed to intent layer
 
 **Priority order for next improvements:**
-1. Graphify rationale → intent — feed rationale node text as declared intent layer
-2. `_interproc_z3` sanitizer guard — add `is_sanitizer` field to FuncFacts + propagation stop rule
+1. `_interproc_z3` call resolution — use qualified names (file:func) to prevent cross-file false-positive taint edges
+2. `_interproc_z3` _BITS guard — add assertion/warn when N > 65536 and raise bits to 32
 3. Hypothesis → user code — wire adversarial input generation to counterexamples from Z3
 
 ---

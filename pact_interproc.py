@@ -337,20 +337,21 @@ def _interproc_z3(all_facts: list[FuncFacts]) -> dict[str, list[str]]:
     # Assign integer IDs to func_ids
     func_ids = [f.func_id for f in all_facts]
     # Also add callee names that might not be in all_facts
-    callee_names: set[str] = set()
+    # Build name → list[func_id] for within-codebase call resolution.
+    # Multiple functions may share the same unqualified name (across files or
+    # different scopes). We keep ALL candidates so call resolution is a
+    # conservative overapproximation: a taint flow is never missed because of
+    # name collision, though it may generate extra edges for ambiguous names.
+    name_to_fids: dict[str, list[str]] = {}
     for f in all_facts:
-        callee_names.update(f.calls)
-    # Build name→func_id mapping for within-codebase call resolution
-    name_to_fid: dict[str, str] = {}
-    for f in all_facts:
-        name_to_fid[f.func_name] = f.func_id
+        name_to_fids.setdefault(f.func_name, []).append(f.func_id)
 
     # Resolve call names to func_ids
     for f in all_facts:
         resolved = []
         for callee_name in f.calls:
-            if callee_name in name_to_fid:
-                resolved.append(name_to_fid[callee_name])
+            for fid in name_to_fids.get(callee_name, []):
+                resolved.append(fid)
         f.calls = list(set(resolved))  # deduplicate
 
     # Enumerate all func_ids
@@ -362,6 +363,17 @@ def _interproc_z3(all_facts: list[FuncFacts]) -> dict[str, list[str]]:
         return {}
 
     _BITS = 16  # supports up to 65536 functions
+    _MAX_FUNCS = 1 << _BITS
+    if N > _MAX_FUNCS:
+        import warnings
+
+        warnings.warn(
+            f"pact_interproc: {N} functions exceed _BITS={_BITS} capacity "
+            f"({_MAX_FUNCS}); IDs will wrap via modular arithmetic and "
+            "taint analysis results may be incorrect — raise _BITS to fix",
+            RuntimeWarning,
+            stacklevel=2,
+        )
     FuncSort = BitVecSort(_BITS)
 
     def bv(i: int) -> z3.BitVecRef:

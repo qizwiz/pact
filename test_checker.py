@@ -5349,3 +5349,73 @@ def test_semgrep_dict_get_with_default_not_flagged(tmp_path):
     results = _run_semgrep(tmp_path)
     od = [r for r in results if r.context == "optional_dereference"]
     assert not od, f"d.get(key, default).upper() must not be flagged; got {od}"
+
+
+# ---------------------------------------------------------------------------
+# pact_interproc: analyze_codebase
+# ---------------------------------------------------------------------------
+
+
+def test_interproc_taint_propagates_through_call(tmp_path):
+    """JSON taint propagates from callee to caller when caller lacks guard."""
+    from .pact_interproc import analyze_codebase
+
+    (tmp_path / "a.py").write_text(
+        "import json\n"
+        "def parse(data):\n"
+        "    return json.loads(data)\n"
+        "def process(data):\n"
+        "    return parse(data)\n"
+    )
+    viols = analyze_codebase(tmp_path)
+    func_ids = {v.func_id for v in viols}
+    assert any("parse" in fid for fid in func_ids), f"parse must be tainted; got {func_ids}"
+    assert any(
+        "process" in fid for fid in func_ids
+    ), f"process must inherit taint from parse; got {func_ids}"
+
+
+def test_interproc_try_wraps_stops_propagation(tmp_path):
+    """Caller that wraps the tainted call in try/except is NOT tainted."""
+    from .pact_interproc import analyze_codebase
+
+    (tmp_path / "a.py").write_text(
+        "import json\n"
+        "def parse(data):\n"
+        "    return json.loads(data)\n"
+        "def safe_process(data):\n"
+        "    try:\n"
+        "        return parse(data)\n"
+        "    except ValueError:\n"
+        "        return {}\n"
+    )
+    viols = analyze_codebase(tmp_path)
+    func_ids = {v.func_id for v in viols}
+    assert any("parse" in fid for fid in func_ids), f"parse must be tainted; got {func_ids}"
+    assert not any(
+        "safe_process" in fid for fid in func_ids
+    ), f"safe_process wraps parse in try/except — must NOT be tainted; got {func_ids}"
+
+
+def test_interproc_same_name_across_files_no_false_negative(tmp_path):
+    """Taint must propagate even when callee name matches same name in another file."""
+    from .pact_interproc import analyze_codebase
+
+    (tmp_path / "a.py").write_text(
+        "import json\n"
+        "def parse(data):\n"
+        "    return json.loads(data)\n"
+        "def process():\n"
+        "    return parse('{}')\n"
+    )
+    # b.py has a function also named 'process' but it's clean
+    (tmp_path / "b.py").write_text(
+        "def process():\n"
+        "    return 42\n"
+    )
+    viols = analyze_codebase(tmp_path)
+    func_ids = {v.func_id for v in viols}
+    # a::process must still be flagged (calls tainted a::parse)
+    assert any(
+        "process" in fid and fid.startswith("a") for fid in func_ids
+    ), f"a::process must be tainted even with b::process present; got {func_ids}"
