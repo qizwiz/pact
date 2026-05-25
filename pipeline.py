@@ -181,16 +181,25 @@ def _topo_sort(steps: list[dict]) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 
-def _execute_z3(step: dict, source: str, key: str, model: str) -> StepResult:
+def _execute_z3(
+    step: dict,
+    source: str,
+    key: str,
+    model: str,
+    inv_z3_index: Optional[dict] = None,
+) -> StepResult:
     from .contract_encoder import verify_contract
 
+    contract = step.get("contract", "")
+    preencoded = (inv_z3_index or {}).get(contract)
     result = verify_contract(
-        contract=step.get("contract", ""),
+        contract=contract,
         function_source=source,
         function_name=step.get("function_name") or "",
         api_key=key,
         model=model,
         source_file=step.get("module_path"),
+        preencoded_z3_script=preencoded,
     )
     status = (
         "verified"
@@ -538,6 +547,7 @@ def _execute_step(
     key: str,
     model: str,
     verbose: bool,
+    inv_z3_index: Optional[dict] = None,
 ) -> StepResult:
     tool = step.get("tool", "")
     module_path = step.get("module_path", "")
@@ -566,7 +576,7 @@ def _execute_step(
 
     try:
         if tool == "z3":
-            return _execute_z3(step, source, key, model)
+            return _execute_z3(step, source, key, model, inv_z3_index)
         elif tool == "hypothesis":
             return _execute_hypothesis(step, source, key, model)
         elif tool == "tla":
@@ -615,6 +625,15 @@ def run_pipeline(
     intent = json.loads(intent_path.read_text())
     summary = _intent_summary(intent)
 
+    # Build invariant index: contract statement → pre-encoded Z3 script (from contract IR)
+    inv_z3_index: dict[str, str] = {}
+    for mod in intent.get("modules", []):
+        for inv in mod.get("invariants", []):
+            z3_enc = inv.get("z3_encoding", "")
+            stmt = inv.get("statement", "")
+            if z3_enc and stmt and "import z3" in z3_enc:
+                inv_z3_index[stmt] = z3_enc
+
     if verbose:
         print(f"pact pipeline: planning from {intent_path.name}")
         print(f"  actionable modules: {summary.count('###')}")
@@ -647,7 +666,9 @@ def run_pipeline(
     prior: dict[int, StepResult] = {}
 
     for step in ordered:
-        result = _execute_step(step, prior, intent_path, key, model, verbose)
+        result = _execute_step(
+            step, prior, intent_path, key, model, verbose, inv_z3_index
+        )
         results.append(result)
         prior[result.step] = result
 

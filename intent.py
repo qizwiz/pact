@@ -84,6 +84,13 @@ class Invariant:
     formal: str
     derived_from: str
     confidence: float
+    # Contract IR — populated by Z3 oracle during intent analysis.
+    # Consumed by the pipeline to skip LLM re-encoding at verification time.
+    contract_kind: str = (
+        ""  # "ordering"|"resource_lifecycle"|"accumulation"|"flag_invariant"|"subset_relation"|"behavioral"
+    )
+    z3_encoding: str = ""  # z3_script that confirmed/refuted this invariant
+    tla_template: str = ""  # TLA+ template name matching this kind
 
 
 @dataclass
@@ -1397,6 +1404,52 @@ def extract_file_intent(
     return module
 
 
+def _classify_contract_kind(
+    encoding_approach: str,
+    statement: str,
+) -> tuple[str, str]:
+    """Map Z3 encoding description to (contract_kind, tla_template)."""
+    text = (encoding_approach + " " + statement).lower()
+    if any(
+        k in text for k in ("order", "before", "after", "sequence", "precede", "phase")
+    ):
+        return "ordering", "ordering"
+    if any(
+        k in text
+        for k in (
+            "resource",
+            "lifecycle",
+            "open",
+            "close",
+            "acquire",
+            "release",
+            "allocat",
+            "free",
+        )
+    ):
+        return "resource_lifecycle", "resource_lifecycle"
+    if any(
+        k in text
+        for k in (
+            "accumulate",
+            "grow",
+            "unbounded",
+            "leak",
+            "never clear",
+            "state size",
+        )
+    ):
+        return "accumulation", "accumulation"
+    if any(
+        k in text
+        for k in ("flag", "boolean", "_has_", "enabled", "disabled", "silently")
+    ):
+        return "flag_invariant", "liveness"
+    if any(k in text for k in ("subset", "must include", "required_args", "missing")):
+        return "subset_relation", "liveness"
+    return "behavioral", "liveness"
+
+
 def _verify_intent_gaps(
     intent: "ProjectIntent",
     module_sources: dict[str, str],
@@ -1445,6 +1498,15 @@ def _verify_intent_gaps(
                 )
             except Exception:
                 continue
+
+            # Populate contract IR fields — pipeline reuses these to skip LLM re-encoding
+            if result.z3_script:
+                kind, tla = _classify_contract_kind(
+                    result.encoding_approach, inv.statement
+                )
+                inv.contract_kind = kind
+                inv.z3_encoding = result.z3_script
+                inv.tla_template = tla
 
             if result.status == "unsat":
                 # Claim IS formally enforced — LLM was wrong, this is a false positive

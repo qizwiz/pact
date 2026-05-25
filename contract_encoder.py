@@ -180,6 +180,7 @@ def verify_contract(
     api_key: Optional[str] = None,
     model: str = _DEFAULT_MODEL,
     source_file: Optional[str] = None,
+    preencoded_z3_script: Optional[str] = None,
 ) -> ContractVerificationResult:
     """
     Verify a behavioral contract against a function using Z3.
@@ -199,13 +200,29 @@ def verify_contract(
         LLM model for contract → Z3 translation.
     source_file:
         Optional path hint for error messages.
+    preencoded_z3_script:
+        Pre-encoded Z3 script from the contract IR (populated during intent analysis).
+        When provided, skips the LLM encoding round-trip entirely.
     """
+    # Extract just the function if given a full file
+    func_src = _extract_function_source(function_source, function_name)
+
+    # Short-circuit: reuse pre-encoded Z3 script from contract IR
+    if preencoded_z3_script and "import z3" in preencoded_z3_script:
+        z3_result = _run_z3_script(preencoded_z3_script)
+        return ContractVerificationResult(
+            function_name=function_name,
+            contract=contract,
+            status=z3_result.get("status", "unknown"),
+            counterexample=z3_result.get("counterexample"),
+            explanation=z3_result.get("explanation", ""),
+            z3_script=preencoded_z3_script,
+            encoding_approach="preencoded",
+        )
+
     key = api_key or os.environ.get("ANTHROPIC_API_KEY", "")
     if not key:
         raise RuntimeError("ANTHROPIC_API_KEY not set")
-
-    # Extract just the function if given a full file
-    func_src = _extract_function_source(function_source, function_name)
 
     # Step 1: LLM translates contract → Z3 script
     try:

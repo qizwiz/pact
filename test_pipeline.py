@@ -406,3 +406,150 @@ class TestRunPipeline:
         intent_path = self._make_intent_file(tmp_path)
         with pytest.raises(RuntimeError, match="ANTHROPIC_API_KEY"):
             run_pipeline(intent_path, api_key=None)
+
+    def test_inv_z3_index_built_from_intent(self, tmp_path, monkeypatch):
+        """Pipeline builds invariant index from z3_encoding fields in intent JSON."""
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "fake")
+        z3_script = 'import z3\nprint(\'{"status": "unsat"}\')'
+        intent = {
+            "modules": [
+                {
+                    "path": str(tmp_path / "target.py"),
+                    "understanding": {
+                        "behavioral_contract": "never raises",
+                        "resource_obligations": "none",
+                    },
+                    "violations": [{"severity": "high", "explanation": "gap"}],
+                    "invariants": [
+                        {
+                            "statement": "never raises KeyError",
+                            "z3_encoding": z3_script,
+                            "contract_kind": "behavioral",
+                            "tla_template": "liveness",
+                        }
+                    ],
+                }
+            ]
+        }
+        (tmp_path / "target.py").write_text("def f(x): return x")
+        p = tmp_path / "intent.json"
+        p.write_text(json.dumps(intent))
+
+        plan_json = json.dumps(
+            [
+                {
+                    "step": 1,
+                    "tool": "z3",
+                    "module_path": str(tmp_path / "target.py"),
+                    "function_name": "f",
+                    "contract": "never raises KeyError",
+                    "rationale": "test IR",
+                    "depends_on": [],
+                }
+            ]
+        )
+        with _mock_llm(plan_json):
+            result = run_pipeline(p, api_key="fake")
+
+        # "preencoded" encoding_approach means verify_contract used the IR script,
+        # not the LLM round-trip.
+        assert result.results[0].details.get("encoding") == "preencoded"
+        assert result.results[0].status == "verified"
+
+
+# ---------------------------------------------------------------------------
+# Contract IR — _classify_contract_kind
+# ---------------------------------------------------------------------------
+
+
+class TestClassifyContractKind:
+    def _classify(self, encoding_approach: str, statement: str = ""):
+        from pact.intent import _classify_contract_kind
+
+        return _classify_contract_kind(encoding_approach, statement)
+
+    def test_ordering_from_encoding_approach(self):
+        kind, tla = self._classify("models ordering constraint between phases")
+        assert kind == "ordering"
+        assert tla == "ordering"
+
+    def test_resource_lifecycle_from_statement(self):
+        kind, tla = self._classify("", "open file handle must be closed when done")
+        assert kind == "resource_lifecycle"
+        assert tla == "resource_lifecycle"
+
+    def test_accumulation_from_encoding(self):
+        kind, tla = self._classify("models unbounded state accumulation")
+        assert kind == "accumulation"
+        assert tla == "accumulation"
+
+    def test_flag_invariant(self):
+        kind, tla = self._classify("", "_HAS_Z3 flag silently disables checks")
+        assert kind == "flag_invariant"
+        assert tla == "liveness"
+
+    def test_subset_relation(self):
+        kind, tla = self._classify("", "required_args must be subset of provided args")
+        assert kind == "subset_relation"
+        assert tla == "liveness"
+
+    def test_behavioral_default(self):
+        kind, tla = self._classify(
+            "models function return value", "returns correct result"
+        )
+        assert kind == "behavioral"
+        assert tla == "liveness"
+
+
+# ---------------------------------------------------------------------------
+# Contract IR — preencoded_z3_script in verify_contract
+# ---------------------------------------------------------------------------
+
+
+class TestPreencodedZ3Script:
+    def test_preencoded_skips_llm(self, monkeypatch):
+        """verify_contract uses preencoded script without calling the LLM."""
+        from pact.contract_encoder import verify_contract
+
+        z3_script = 'import z3\nprint(\'{"status": "unsat", "counterexample": null, "explanation": "holds"}\')'
+
+        called = []
+
+        def fake_call_llm(prompt, model, key):
+            called.append(prompt)
+            return {}
+
+        monkeypatch.setattr("pact.contract_encoder._call_llm", fake_call_llm)
+        result = verify_contract(
+            contract="always returns non-None",
+            function_source="def f(x): return x or 1",
+            function_name="f",
+            api_key="fake",
+            preencoded_z3_script=z3_script,
+        )
+        assert called == []  # LLM not called
+        assert result.status == "unsat"
+        assert result.encoding_approach == "preencoded"
+
+    def test_invalid_preencoded_falls_through_to_llm(self, monkeypatch):
+        """Script without 'import z3' is treated as invalid — falls through to LLM."""
+        from pact.contract_encoder import verify_contract
+
+        called = []
+
+        def fake_call_llm(prompt, model, key):
+            called.append(True)
+            raise RuntimeError("no key")
+
+        monkeypatch.setattr("pact.contract_encoder._call_llm", fake_call_llm)
+        try:
+            verify_contract(
+                contract="test",
+                function_source="def f(): pass",
+                function_name="f",
+                api_key="fake",
+                preencoded_z3_script="print('no z3 import here')",
+            )
+        except Exception:
+            pass
+        assert called  # LLM was called (preencoded rejected, fell through)
