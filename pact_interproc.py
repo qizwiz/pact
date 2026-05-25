@@ -129,6 +129,39 @@ def _enclosing_func(node: ast.AST, parents: dict[ast.AST, ast.AST]) -> Optional[
     return None  # module-level code → use "<module>"
 
 
+def _file_import_map(file_path: Path, codebase_stems: set[str]) -> dict[str, str]:
+    """
+    Parse file_path's imports and return {local_name: source_stem} for names
+    imported from other files that are in the codebase.
+
+    Handles:
+      from .module import name          → {name: module}
+      from .module import name as alias → {alias: module}
+      from module import name           → {name: module}  (if module in codebase)
+    """
+    try:
+        source = file_path.read_text(encoding="utf-8", errors="replace")
+        tree = ast.parse(source, filename=str(file_path))
+    except SyntaxError:
+        return {}
+
+    result: dict[str, str] = {}
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.ImportFrom):
+            continue
+        if node.module is None:
+            continue
+        # For relative imports, the module is relative to the current package.
+        # We take just the last component as the stem to match filenames.
+        module_stem = node.module.split(".")[-1]
+        if module_stem not in codebase_stems:
+            continue
+        for alias in node.names:
+            local = alias.asname if alias.asname else alias.name
+            result[local] = module_stem
+    return result
+
+
 @dataclass
 class FuncFacts:
     func_id: str
@@ -334,22 +367,48 @@ def _interproc_z3(all_facts: list[FuncFacts]) -> dict[str, list[str]]:
     Use Z3 Fixedpoint to derive which public functions are transitively tainted.
     Returns dict: violation_type -> list[func_id]
     """
-    # Assign integer IDs to func_ids
-    func_ids = [f.func_id for f in all_facts]
-    # Also add callee names that might not be in all_facts
     # Build name → list[func_id] for within-codebase call resolution.
-    # Multiple functions may share the same unqualified name (across files or
-    # different scopes). We keep ALL candidates so call resolution is a
-    # conservative overapproximation: a taint flow is never missed because of
-    # name collision, though it may generate extra edges for ambiguous names.
+    # Multiple functions may share the same unqualified name across files.
+    # We keep ALL candidates as a conservative fallback so taint is never missed.
+    func_ids = [f.func_id for f in all_facts]
     name_to_fids: dict[str, list[str]] = {}
     for f in all_facts:
         name_to_fids.setdefault(f.func_name, []).append(f.func_id)
 
-    # Resolve call names to func_ids
+    # Build per-file import maps when multiple files are present.
+    # When a file explicitly imports a name from another codebase file, we can
+    # resolve that call to the specific source file rather than all candidates,
+    # eliminating false-positive taint edges to unrelated same-named functions.
+    codebase_stems = {Path(f.file).stem for f in all_facts}
+    file_import_maps: dict[str, dict[str, str]] = {}
+    if len({f.file for f in all_facts}) > 1:
+        for fp_str in {f.file for f in all_facts}:
+            file_import_maps[fp_str] = _file_import_map(Path(fp_str), codebase_stems)
+
+    # Resolve call names to func_ids.
+    # Priority:
+    #   1. Explicit cross-file import → resolve to that specific file's function
+    #   2. Same-file definition (no import) → resolve to caller's own file
+    #   3. Neither → conservative fallback to all same-named candidates
+    all_fids_set = set(func_ids)
     for f in all_facts:
         resolved = []
+        imports = file_import_maps.get(f.file, {})
+        caller_stem = Path(f.file).stem
         for callee_name in f.calls:
+            # Priority 1: explicit import from another codebase file
+            source_stem = imports.get(callee_name)
+            if source_stem:
+                qualified = f"{source_stem}::{callee_name}"
+                if qualified in all_fids_set:
+                    resolved.append(qualified)
+                    continue
+            # Priority 2: callee defined in the same file (no import needed)
+            same_file_fid = f"{caller_stem}::{callee_name}"
+            if same_file_fid in all_fids_set:
+                resolved.append(same_file_fid)
+                continue
+            # Priority 3: conservative — all candidates (may be external or unknown)
             for fid in name_to_fids.get(callee_name, []):
                 resolved.append(fid)
         f.calls = list(set(resolved))  # deduplicate

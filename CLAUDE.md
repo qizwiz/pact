@@ -107,12 +107,10 @@ Also closed (commits 0434e67, 570b57b, 6f1e663):
 - `z3_engine.py` async LLM detection: _LLM_CALL_ATTRS expanded (acreate, agenerate, stream, __call__, etc.); await-unwrapping in visit_Assign for async assignments (commit 570b57b)
 - `checker.py` duplicate-name false negatives: RuntimeWarning emitted listing excluded function names (commit 6f1e663)
 - `pipeline.py` + `hypothesis_generator.py`: Hypothesis wired to user code — Z3 counterexample seeds Hypothesis search via `stress_contract(z3_counterexample=...)`; auto-injection ensures Hypothesis runs for every Z3 violation regardless of LLM plan; uses `sys.modules` lookup to avoid importlib module-identity split
+- `pact_interproc.py`: `_interproc_z3` call resolution upgraded to file-qualified `stem::func` keys — explicit imports resolve to the specific source file; same-file definitions preferred over cross-file; conservative fallback preserved. Eliminates false-positive taint edges when unrelated same-named functions exist in other files.
 
 Remaining gaps:
-- `_interproc_z3`: call resolution still uses unqualified names — file-qualified resolution needs full import graph
-
-**Priority order for next improvements:**
-1. `_interproc_z3` qualified call resolution — use `file:func` keys when import graph available
+- No known structural gaps in the connected pipeline. Run `pact intent analyze . --out intent_pact_self.json --improve -v` for the current dogfood queue.
 
 ---
 

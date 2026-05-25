@@ -5369,7 +5369,9 @@ def test_interproc_taint_propagates_through_call(tmp_path):
     )
     viols = analyze_codebase(tmp_path)
     func_ids = {v.func_id for v in viols}
-    assert any("parse" in fid for fid in func_ids), f"parse must be tainted; got {func_ids}"
+    assert any(
+        "parse" in fid for fid in func_ids
+    ), f"parse must be tainted; got {func_ids}"
     assert any(
         "process" in fid for fid in func_ids
     ), f"process must inherit taint from parse; got {func_ids}"
@@ -5391,7 +5393,9 @@ def test_interproc_try_wraps_stops_propagation(tmp_path):
     )
     viols = analyze_codebase(tmp_path)
     func_ids = {v.func_id for v in viols}
-    assert any("parse" in fid for fid in func_ids), f"parse must be tainted; got {func_ids}"
+    assert any(
+        "parse" in fid for fid in func_ids
+    ), f"parse must be tainted; got {func_ids}"
     assert not any(
         "safe_process" in fid for fid in func_ids
     ), f"safe_process wraps parse in try/except — must NOT be tainted; got {func_ids}"
@@ -5409,13 +5413,41 @@ def test_interproc_same_name_across_files_no_false_negative(tmp_path):
         "    return parse('{}')\n"
     )
     # b.py has a function also named 'process' but it's clean
-    (tmp_path / "b.py").write_text(
-        "def process():\n"
-        "    return 42\n"
-    )
+    (tmp_path / "b.py").write_text("def process():\n" "    return 42\n")
     viols = analyze_codebase(tmp_path)
     func_ids = {v.func_id for v in viols}
     # a::process must still be flagged (calls tainted a::parse)
     assert any(
         "process" in fid and fid.startswith("a") for fid in func_ids
     ), f"a::process must be tainted even with b::process present; got {func_ids}"
+
+
+def test_interproc_import_qualified_resolution_no_false_positive(tmp_path):
+    """Import-qualified resolution: clean function not falsely tainted when caller imports tainted from other file."""
+    from .pact_interproc import analyze_codebase
+
+    # a.py has tainted parse; b.py explicitly imports parse from a.py
+    (tmp_path / "a.py").write_text(
+        "import json\n" "def parse(data):\n" "    return json.loads(data)\n"
+    )
+    # b.py imports parse from a, calls it — b::fetch IS tainted (cross-file propagation)
+    (tmp_path / "b.py").write_text(
+        "from a import parse\n" "def fetch(data):\n" "    return parse(data)\n"
+    )
+    # c.py has a clean function also named 'parse' — never imported or called by b
+    (tmp_path / "c.py").write_text(
+        "def parse(data):\n"
+        "    return data.strip()\n"
+        "def helper():\n"
+        "    return parse('ok')\n"
+    )
+    viols = analyze_codebase(tmp_path)
+    func_ids = {v.func_id for v in viols}
+    # b::fetch must be tainted (calls imported a::parse which is tainted)
+    assert any(
+        "fetch" in fid for fid in func_ids
+    ), f"b::fetch must be tainted via imported a::parse; got {func_ids}"
+    # c::helper must NOT be tainted (calls c::parse, which is clean)
+    assert not any(
+        "helper" in fid for fid in func_ids
+    ), f"c::helper must NOT be tainted — c::parse is clean; got {func_ids}"
