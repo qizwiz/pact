@@ -10,7 +10,7 @@ DEFAULT_MODEL = "claude-sonnet-4-6"
 _KEY_HELP = (
     "No LLM API key configured.\n"
     "  Anthropic direct:  export ANTHROPIC_API_KEY=sk-ant-...\n"
-    "  OpenRouter:        export PACT_LLM_BASE_URL=https://openrouter.ai/api/v1 "
+    "  OpenRouter:        export PACT_LLM_BASE_URL=https://openrouter.ai/api "
     "PACT_LLM_API_KEY=sk-or-...\n"
     "  Bonsai proxy:      export ANTHROPIC_BASE_URL=https://go.trybons.ai "
     "ANTHROPIC_AUTH_TOKEN=sk_cr_..."
