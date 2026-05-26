@@ -145,6 +145,8 @@ class GithubContext:
     prs: list[PrEntry]
     spec_docs: list[tuple[str, str]]  # [(branch/path, content)]
     adr_docs: list[tuple[str, str]]  # [(path, content)]
+    # file path fragment → list of (adr_ref, adr_title) covering that file
+    adr_coverage: dict[str, list[tuple[str, str]]] = field(default_factory=dict)
 
 
 @dataclass
@@ -188,7 +190,36 @@ def gather_github(
     spec_docs, adr_docs = _fetch_spec_branches(root)
     if not (issues or prs or spec_docs or adr_docs):
         return None
-    return GithubContext(issues=issues, prs=prs, spec_docs=spec_docs, adr_docs=adr_docs)
+    coverage = _build_adr_coverage(adr_docs)
+    return GithubContext(
+        issues=issues,
+        prs=prs,
+        spec_docs=spec_docs,
+        adr_docs=adr_docs,
+        adr_coverage=coverage,
+    )
+
+
+def get_file_adr_coverage(ctx: GithubContext, file_path: str) -> list[tuple[str, str]]:
+    """Return list of (adr_ref, adr_title) whose Evidence lines cite this file.
+
+    Uses the longest matching path fragment to avoid false positives when two
+    files with the same basename exist (e.g. evaluations/engine/registry.py vs
+    tfc/temporal/common/registry.py — only the former has ADR coverage).
+    """
+    results: list[tuple[str, str]] = []
+    parts = Path(file_path).parts
+    # Try suffixes from longest to shortest, stopping at the first match.
+    # Require at least 2 components (dir/file.py) to avoid basename collisions
+    # when multiple files share the same name (e.g. two different registry.py).
+    for i in range(max(0, len(parts) - 6), len(parts) - 1):
+        fragment = "/".join(parts[i:])
+        if fragment in ctx.adr_coverage:
+            for entry in ctx.adr_coverage[fragment]:
+                if entry not in results:
+                    results.append(entry)
+            return results  # stop at the most-specific match
+    return results
 
 
 def render_project_context(ctx: IntentContext, char_budget: int = 10_000) -> str:
@@ -272,7 +303,8 @@ def render_file_context(
 ) -> str:
     """
     Render file-specific intent context for the understand LLM prompt.
-    Returns commit bodies (the WHY) for this specific file.
+    Returns ADR coverage (explicit intent), then commit bodies (the WHY).
+    Files with no ADR coverage are flagged so the LLM knows intent is inferred.
     """
     # Normalise path — try both absolute-relative and basename matches
     commits = ctx.file_commits.get(file_path) or ctx.file_commits.get(
@@ -281,6 +313,21 @@ def render_file_context(
     churn = ctx.churn_map.get(file_path, 0)
 
     parts: list[str] = []
+
+    # --- ADR coverage signal (explicit intent vs inferred) ---
+    if ctx.github:
+        adr_hits = get_file_adr_coverage(ctx.github, file_path)
+        if adr_hits:
+            adr_lines = [f"- [{title}]({ref})" for ref, title in adr_hits]
+            parts.append(
+                "**ADR coverage (explicit architectural intent):**\n"
+                + "\n".join(adr_lines)
+            )
+        else:
+            parts.append(
+                "**No ADR coverage** — invariants for this file are inferred "
+                "from commit history and docstrings only; treat with lower confidence."
+            )
 
     if churn:
         label = ""
@@ -444,6 +491,39 @@ def _fetch_commit_metadata(root: Path, max_commits: int) -> list[CommitEntry]:
 # ---------------------------------------------------------------------------
 # GitHub enrichment
 # ---------------------------------------------------------------------------
+
+
+_EVIDENCE_RE = re.compile(r"`([^`]*\.py[^`]*)`", re.IGNORECASE)
+_ADR_TITLE_RE = re.compile(r"^#\s+ADR\s+\d+\s*[—\-–]\s*(.+)", re.MULTILINE)
+
+
+def _build_adr_coverage(
+    adr_docs: list[tuple[str, str]],
+) -> dict[str, list[tuple[str, str]]]:
+    """
+    Parse Evidence lines in ADR docs to build a file → [(adr_ref, title)] map.
+    ADRs use "**Evidence**: `path:line`" conventions.
+    Coverage is partial — only files Jonathan wrote ADRs for are covered.
+    """
+    coverage: dict[str, list[tuple[str, str]]] = {}
+    for ref_key, content in adr_docs:
+        title_m = _ADR_TITLE_RE.search(content)
+        title = title_m.group(1).strip() if title_m else Path(ref_key).stem
+        for match in _EVIDENCE_RE.finditer(content):
+            raw = match.group(1).strip()
+            # strip line numbers (e.g. "runner.py:71-74" → "runner.py")
+            path_part = raw.split(":")[0].strip()
+            if not path_part.endswith(".py"):
+                continue
+            # index by progressively shorter suffixes for flexible lookup
+            parts = Path(path_part).parts
+            for i in range(len(parts)):
+                fragment = "/".join(parts[i:])
+                coverage.setdefault(fragment, [])
+                entry = (ref_key, title)
+                if entry not in coverage[fragment]:
+                    coverage[fragment].append(entry)
+    return coverage
 
 
 def _gh_available(root: Path) -> bool:
