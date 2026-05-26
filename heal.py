@@ -334,7 +334,7 @@ def _run_oracle(test_cmd: str, cwd: Path, verbose: bool) -> tuple[bool, str]:
             cwd=str(cwd),
             capture_output=True,
             text=True,
-            timeout=180,
+            timeout=900,
         )
         out = (r.stdout + r.stderr)[-2000:]
         passed = r.returncode == 0
@@ -1218,16 +1218,38 @@ def heal_project(
 
     # Oracle sanity check: if the baseline (unpatched) test suite already fails,
     # the oracle cannot gate patches meaningfully — disable it.
-    # This prevents false oracle rejections on external repos whose test suite
-    # is not runnable in the current environment (wrong venv, missing deps, etc.).
+    # Cache result in .pact_oracle_baseline (30-min TTL) to avoid re-running a
+    # slow test suite on every heal invocation.
     if effective_test_cmd and project_root:
-        baseline_ok, _ = _run_oracle(effective_test_cmd, project_root, verbose=False)
-        if not baseline_ok:
+        import time as _time
+
+        _cache_path = project_root / ".pact_oracle_baseline"
+        _baseline_ok: Optional[bool] = None
+        if _cache_path.exists():
+            try:
+                _cached = json.loads(_cache_path.read_text())
+                if _time.time() - _cached.get("ts", 0) < 1800:
+                    _baseline_ok = _cached.get("ok")
+            except Exception:
+                pass
+        if _baseline_ok is None:
+            _baseline_ok, _ = _run_oracle(
+                effective_test_cmd, project_root, verbose=False
+            )
+            try:
+                _cache_path.write_text(
+                    json.dumps({"ok": _baseline_ok, "ts": _time.time()})
+                )
+            except Exception:
+                pass
+        if not _baseline_ok:
             if verbose:
                 print(
                     "[heal] oracle baseline FAILED — disabling oracle (patches will be Z3-verified only)"
                 )
             effective_test_cmd = None
+        elif verbose:
+            print("[heal] oracle baseline: PASS")
 
     # Pre-compute checker baseline for the auto-apply oracle (condition 4).
     _baseline_checker_count: Optional[int] = None

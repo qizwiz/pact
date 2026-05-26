@@ -14,6 +14,7 @@ docs/tla/generated/
 
 # Loop runtime state and artifacts
 .pact_loop/
+.pact_oracle_baseline
 heal_*.json
 intent*.json
 !intent_pact_self.json
