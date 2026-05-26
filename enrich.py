@@ -31,6 +31,13 @@ try:
 except ImportError:
     _NX_AVAILABLE = False
 
+try:
+    from pydriller import Repository as _PyDrillerRepo
+
+    _PYDRILLER_AVAILABLE = True
+except ImportError:
+    _PYDRILLER_AVAILABLE = False
+
 # ---------------------------------------------------------------------------
 # Data structures
 # ---------------------------------------------------------------------------
@@ -192,17 +199,99 @@ class GithubContext:
 
 
 @dataclass
+class TemporalCoupling:
+    """Two files that change together more often than chance — hidden logical dependency."""
+
+    file_a: str
+    file_b: str
+    co_changes: int
+    strength: float  # max(pct_a, pct_b): fraction of A's commits where B also changed
+
+    def render(self) -> str:
+        return (
+            f"`{Path(self.file_a).name}` ↔ `{Path(self.file_b).name}` "
+            f"({self.co_changes}× together, {self.strength:.0%} coupling)"
+        )
+
+
+@dataclass
+class Hotspot:
+    """Tornhill hotspot: high churn × high complexity = structural risk."""
+
+    file: str
+    churn: int
+    complexity: int
+    score: float  # churn × complexity
+
+    def render(self) -> str:
+        name = "/".join(Path(self.file).parts[-3:])
+        return f"`{name}` — score {self.score:.0f} (churn={self.churn}, cx={self.complexity})"
+
+
+@dataclass
+class KnowledgeSilo:
+    """File with high churn but very few authors — orphaned knowledge risk."""
+
+    file: str
+    churn: int
+    n_authors: int
+    authors: list[str]
+
+    def render(self) -> str:
+        name = "/".join(Path(self.file).parts[-3:])
+        return f"`{name}` — {self.churn} commits, {self.n_authors} author(s)"
+
+
+@dataclass
+class TornhillMetrics:
+    """Tornhill-style git archaeology metrics for a repository."""
+
+    hotspots: list[Hotspot]
+    temporal_coupling: list[TemporalCoupling]
+    knowledge_silos: list[KnowledgeSilo]
+
+
+@dataclass
 class IntentContext:
     project_docs: list[tuple[str, str]]  # [(rel_path, content)]
     commit_log: list[CommitEntry]  # all fetched commits, newest first
     churn_map: dict[str, int]  # file → commit count
     file_commits: dict[str, list[CommitEntry]]  # file → commits touching it
     github: Optional[GithubContext] = None
+    tornhill: Optional[TornhillMetrics] = None  # hotspots, coupling, silos
 
 
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
+
+
+def mine_tornhill(
+    root: Path,
+    max_commits: int = 400,
+    coupling_min_pct: float = 0.30,
+    coupling_min_cochanges: int = 3,
+    silo_max_authors: int = 2,
+    silo_min_churn: int = 4,
+) -> Optional[TornhillMetrics]:
+    """
+    Mine Tornhill-style signals from git history via PyDriller.
+    Returns None if PyDriller is not installed.
+
+    - Hotspots: churn × complexity (files that are both complex AND frequently changed)
+    - Temporal coupling: files that change together (hidden logical dependencies)
+    - Knowledge silos: high-churn files with very few authors (orphaned knowledge risk)
+    """
+    if not _PYDRILLER_AVAILABLE:
+        return None
+    return _mine_pydriller(
+        root,
+        max_commits=max_commits,
+        coupling_min_pct=coupling_min_pct,
+        coupling_min_cochanges=coupling_min_cochanges,
+        silo_max_authors=silo_max_authors,
+        silo_min_churn=silo_min_churn,
+    )
 
 
 def gather(root: Path, max_commits: int = 400, github: bool = True) -> IntentContext:
@@ -214,12 +303,17 @@ def gather(root: Path, max_commits: int = 400, github: bool = True) -> IntentCon
     commits, file_commits = _gather_commits(root, max_commits)
     churn = {f: len(cs) for f, cs in file_commits.items()}
     gh_ctx = gather_github(root) if github else None
+    tornhill = mine_tornhill(root, max_commits=max_commits)
+    # Rebuild intent graph with temporal coupling edges now that tornhill is available
+    if gh_ctx is not None and tornhill is not None:
+        gh_ctx.intent_graph = build_intent_graph(gh_ctx, tornhill=tornhill)
     return IntentContext(
         project_docs=docs,
         commit_log=commits,
         churn_map=churn,
         file_commits=file_commits,
         github=gh_ctx,
+        tornhill=tornhill,
     )
 
 
@@ -240,7 +334,7 @@ def gather_github(
         adr_docs=adr_docs,
         adr_coverage=coverage,
     )
-    gh_ctx.intent_graph = build_intent_graph(gh_ctx)
+    gh_ctx.intent_graph = build_intent_graph(gh_ctx)  # tornhill added after gather()
     return gh_ctx
 
 
@@ -333,6 +427,31 @@ def render_project_context(ctx: IntentContext, char_budget: int = 10_000) -> str
 
         sections.append("## Git History\n\n" + "\n\n".join(parts))
 
+    # --- Tornhill signals ---
+    if ctx.tornhill and remaining > 500:
+        t = ctx.tornhill
+        parts: list[str] = []
+        if t.hotspots:
+            hs_lines = [h.render() for h in t.hotspots[:8]]
+            parts.append(
+                "### Hotspots (churn × complexity — structural risk)\n\n"
+                + "\n".join(f"- {line}" for line in hs_lines)
+            )
+        if t.temporal_coupling:
+            tc_lines = [tc.render() for tc in t.temporal_coupling[:10]]
+            parts.append(
+                "### Temporal coupling (hidden logical dependencies)\n\n"
+                + "\n".join(f"- {line}" for line in tc_lines)
+            )
+        if t.knowledge_silos:
+            silo_lines = [s.render() for s in t.knowledge_silos[:6]]
+            parts.append(
+                "### Knowledge silos (orphaned knowledge risk)\n\n"
+                + "\n".join(f"- {line}" for line in silo_lines)
+            )
+        if parts:
+            sections.append("## Structural Risk (Tornhill)\n\n" + "\n\n".join(parts))
+
     # --- GitHub context ---
     if ctx.github:
         gh_block = render_github_context(ctx.github, char_budget=min(5_000, remaining))
@@ -365,6 +484,46 @@ def render_file_context(
         if coverage.level == 0 and churn > 0:
             coverage.level = 1
         parts.append(coverage.render())
+
+    # --- Tornhill signals for this file ---
+    if ctx.tornhill:
+        basename = Path(file_path).name
+        file_parts = Path(file_path).parts
+
+        # Hotspot?
+        for h in ctx.tornhill.hotspots[:20]:
+            if Path(h.file).name == basename or any(
+                h.file.endswith("/".join(file_parts[i:]))
+                for i in range(max(0, len(file_parts) - 3), len(file_parts) - 1)
+            ):
+                parts.append(
+                    f"**Hotspot score: {h.score:.0f}** (churn={h.churn}, "
+                    f"complexity={h.complexity}) — high structural risk"
+                )
+                break
+
+        # Temporal coupling partners?
+        coupled: list[TemporalCoupling] = []
+        for tc in ctx.tornhill.temporal_coupling:
+            a_match = Path(tc.file_a).name == basename
+            b_match = Path(tc.file_b).name == basename
+            if a_match or b_match:
+                coupled.append(tc)
+        if coupled:
+            coupled_lines = [tc.render() for tc in coupled[:5]]
+            parts.append(
+                "**Temporally coupled** (changes together with — hidden logical dependencies):\n"
+                + "\n".join(f"- {line}" for line in coupled_lines)
+            )
+
+        # Knowledge silo?
+        for s in ctx.tornhill.knowledge_silos:
+            if Path(s.file).name == basename:
+                parts.append(
+                    f"**Knowledge silo**: {s.n_authors} author(s) across {s.churn} commits — "
+                    "changes here carry orphaned-knowledge risk"
+                )
+                break
 
     if churn:
         label = ""
@@ -530,6 +689,82 @@ def _fetch_commit_metadata(root: Path, max_commits: int) -> list[CommitEntry]:
 # ---------------------------------------------------------------------------
 
 
+def _mine_pydriller(
+    root: Path,
+    max_commits: int,
+    coupling_min_pct: float,
+    coupling_min_cochanges: int,
+    silo_max_authors: int,
+    silo_min_churn: int,
+) -> TornhillMetrics:
+    """PyDriller-based git archaeology — hotspots, temporal coupling, knowledge silos."""
+    from collections import Counter, defaultdict
+    from itertools import combinations
+
+    churn: dict[str, int] = defaultdict(int)
+    complexity_max: dict[str, int] = defaultdict(int)
+    co_changes: Counter = Counter()
+    authors: dict[str, set] = defaultdict(set)
+
+    for commit in _PyDrillerRepo(str(root), num_workers=4).traverse_commits():
+        py_files = [
+            f
+            for f in commit.modified_files
+            if f.new_path and f.new_path.endswith(".py")
+        ]
+        paths = [f.new_path for f in py_files]
+        for f in py_files:
+            p = f.new_path
+            churn[p] += 1
+            authors[p].add(commit.author.email)
+            if f.complexity and f.complexity > complexity_max[p]:
+                complexity_max[p] = f.complexity
+        for a, b in combinations(sorted(paths), 2):
+            co_changes[(a, b)] += 1
+
+    # Hotspots
+    hotspots: list[Hotspot] = []
+    for f, cx in complexity_max.items():
+        if cx > 0:
+            ch = churn[f]
+            hotspots.append(
+                Hotspot(file=f, churn=ch, complexity=cx, score=float(ch * cx))
+            )
+    hotspots.sort(key=lambda h: -h.score)
+
+    # Temporal coupling — percentage-based to handle small repos
+    coupling: list[TemporalCoupling] = []
+    for (a, b), cnt in co_changes.items():
+        if cnt < coupling_min_cochanges:
+            continue
+        pct_a = cnt / churn[a] if churn[a] else 0.0
+        pct_b = cnt / churn[b] if churn[b] else 0.0
+        strength = max(pct_a, pct_b)
+        if strength >= coupling_min_pct:
+            coupling.append(
+                TemporalCoupling(file_a=a, file_b=b, co_changes=cnt, strength=strength)
+            )
+    coupling.sort(key=lambda c: -c.strength)
+
+    # Knowledge silos
+    silos: list[KnowledgeSilo] = []
+    for f, auth_set in authors.items():
+        if churn[f] >= silo_min_churn and len(auth_set) <= silo_max_authors:
+            silos.append(
+                KnowledgeSilo(
+                    file=f,
+                    churn=churn[f],
+                    n_authors=len(auth_set),
+                    authors=list(auth_set),
+                )
+            )
+    silos.sort(key=lambda s: (-s.churn, s.n_authors))
+
+    return TornhillMetrics(
+        hotspots=hotspots, temporal_coupling=coupling, knowledge_silos=silos
+    )
+
+
 _EVIDENCE_RE = re.compile(r"`([^`]*\.py[^`]*)`", re.IGNORECASE)
 # Matches "# ADR N — title" headings
 _ADR_TITLE_RE = re.compile(r"^#\s+ADR\s+\d+\s*[—\-–]\s*(.+)", re.MULTILINE)
@@ -543,7 +778,9 @@ _FILE_REF_RE = re.compile(r"\b([\w/.-]+\.py)(?::\d+)?", re.IGNORECASE)
 _ISSUE_REF_RE = re.compile(r"#(\d+)")
 
 
-def build_intent_graph(ctx: GithubContext) -> "object | None":
+def build_intent_graph(
+    ctx: GithubContext, tornhill: Optional[TornhillMetrics] = None
+) -> "object | None":
     """
     Build a NetworkX DiGraph of the intent layer.
 
@@ -588,6 +825,27 @@ def build_intent_graph(ctx: GithubContext) -> "object | None":
         # PR → issue references
         for m in _ISSUE_REF_RE.finditer(pr.body or ""):
             G.add_edge(pr_node, f"issue:{m.group(1)}", rel="REFERENCES")
+
+    # --- Temporal coupling edges (from Tornhill mining) ---
+    # These are hidden logical dependencies not visible in import graphs
+    if tornhill:
+        for tc in tornhill.temporal_coupling:
+            for path in (tc.file_a, tc.file_b):
+                G.add_node(f"file:{path}", kind="file")
+            G.add_edge(
+                f"file:{tc.file_a}",
+                f"file:{tc.file_b}",
+                rel="COUPLED_WITH",
+                strength=tc.strength,
+                co_changes=tc.co_changes,
+            )
+            G.add_edge(
+                f"file:{tc.file_b}",
+                f"file:{tc.file_a}",
+                rel="COUPLED_WITH",
+                strength=tc.strength,
+                co_changes=tc.co_changes,
+            )
 
     # --- Issue → file edges (from file mentions in body) ---
     for issue in ctx.issues:

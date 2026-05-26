@@ -25,6 +25,7 @@ classifiers = [
 dependencies = [
     "z3-solver>=4.12",
     "python-dotenv>=1.0",
+    "pydriller>=2.5",
 ]
 
 [project.optional-dependencies]
