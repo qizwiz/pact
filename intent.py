@@ -164,6 +164,92 @@ class ProjectIntent:
     def to_json(self, indent: int = 2) -> str:
         return json.dumps(asdict(self), indent=indent)
 
+    def to_markdown(self) -> str:
+        """
+        Render the full intent analysis as a markdown document for LLM consumption.
+        This is a first-class artifact, not a pretty-print of the JSON.
+        It tells a story: what was intended, what was found, what needs attention.
+        """
+        lines: list[str] = []
+        ts = self.generated_at[:10] if self.generated_at else "unknown"
+        lines += [
+            f"# Structural Intent Analysis: `{Path(self.project).name}`",
+            "",
+            f"**Generated:** {ts}  **Model:** {self.source_model}  "
+            f"**Modules:** {len(self.modules)}",
+            "",
+        ]
+
+        if self.project_summary:
+            lines += ["## Project Summary", "", self.project_summary, ""]
+
+        # Violation summary by severity
+        by_sev = self.violations_by_severity()
+        total = sum(len(v) for v in by_sev.values())
+        if total:
+            crit = len(by_sev.get("critical", []))
+            high = len(by_sev.get("high", []))
+            med = len(by_sev.get("medium", []))
+            low = len(by_sev.get("low", []))
+            sev_parts = []
+            if crit:
+                sev_parts.append(f"🔴 {crit} critical")
+            if high:
+                sev_parts.append(f"🟠 {high} high")
+            if med:
+                sev_parts.append(f"🟡 {med} medium")
+            if low:
+                sev_parts.append(f"⚪ {low} low")
+            lines += [
+                "## Violations",
+                "",
+                f"**{total} total** — " + ", ".join(sev_parts),
+                "",
+            ]
+
+        # Per-module sections — only modules with violations
+        for m in self.modules:
+            if not m.violations:
+                continue
+            mod_name = Path(m.path).name if m.path else "unknown"
+            lines += [f"### `{mod_name}`", ""]
+
+            # Module understanding
+            u = m.understanding
+            if hasattr(u, "purpose") and u.purpose:
+                lines += [f"**Purpose:** {u.purpose}", ""]
+
+            # Build invariant lookup
+            inv_map = {i.id: i for i in m.invariants}
+
+            for v in sorted(
+                m.violations,
+                key=lambda x: (
+                    {"critical": 0, "high": 1, "medium": 2, "low": 3}.get(x.severity, 9)
+                ),
+            ):
+                inv = inv_map.get(v.invariant_id)
+                sev_icon = {
+                    "critical": "🔴",
+                    "high": "🟠",
+                    "medium": "🟡",
+                    "low": "⚪",
+                }.get(v.severity, "•")
+                file_ref = f"`{Path(v.file).name}:{v.line}`" if v.file else ""
+                lines += [f"#### {sev_icon} {file_ref}"]
+
+                if inv:
+                    lines += [f"> {inv.statement}", ""]
+
+                if v.explanation:
+                    lines += [v.explanation, ""]
+
+                if v.evidence and v.evidence.strip():
+                    snippet = v.evidence.strip()[:400]
+                    lines += ["```python", snippet, "```", ""]
+
+        return "\n".join(lines)
+
     def violations_by_severity(self) -> dict[str, list[dict]]:
         out: dict[str, list] = {"critical": [], "high": [], "medium": [], "low": []}
         for m in self.modules:
@@ -1772,6 +1858,17 @@ def main(argv=None):
     )
     analyze.add_argument("path", help="Python file or project directory")
     analyze.add_argument("--out", metavar="PATH", help="write intent.json here")
+    analyze.add_argument(
+        "--md-out",
+        metavar="PATH",
+        help="write intent.md here (LLM-consumable narrative)",
+    )
+    analyze.add_argument(
+        "--format",
+        choices=["json", "markdown", "both"],
+        default="json",
+        help="stdout format when --out not given (default: json)",
+    )
     analyze.add_argument("--model", default=_DEFAULT_MODEL)
     analyze.add_argument(
         "--max-files",
@@ -1829,6 +1926,12 @@ def main(argv=None):
     # analyze subcommand (or backward compat)
     target = Path(args.path).expanduser().resolve()
     out = Path(args.out).expanduser().resolve() if args.out else None
+    md_out = (
+        Path(args.md_out).expanduser().resolve()
+        if getattr(args, "md_out", None)
+        else None
+    )
+    fmt = getattr(args, "format", "json")
 
     if target.is_file():
         result = extract_file_intent(
@@ -1849,8 +1952,28 @@ def main(argv=None):
             verbose=True,
             max_files=args.max_files,
         )
+        # Always write markdown alongside JSON when --out is given
+        if out and isinstance(result, ProjectIntent):
+            md_path = md_out or out.with_suffix(".md")
+            md_path.write_text(result.to_markdown(), encoding="utf-8")
+            if getattr(args, "verbose", False):
+                print(f"[intent] wrote {md_path}")
+        elif md_out and isinstance(result, ProjectIntent):
+            md_out.write_text(result.to_markdown(), encoding="utf-8")
+        # stdout: honour --format
         if not out:
-            print(result.to_json())
+            if fmt == "markdown":
+                print(
+                    result.to_markdown()
+                    if isinstance(result, ProjectIntent)
+                    else result.to_json()
+                )
+            elif fmt == "both":
+                print(result.to_markdown() if isinstance(result, ProjectIntent) else "")
+                print("\n---\n")
+                print(result.to_json() if isinstance(result, ProjectIntent) else "")
+            else:
+                print(result.to_json() if isinstance(result, ProjectIntent) else result)
 
 
 if __name__ == "__main__":
