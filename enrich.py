@@ -772,7 +772,13 @@ def _mine_pydriller(
     commit_index = 0
     all_commits_ordered: list[object] = []  # store for SZZ pass
 
-    for commit in _PyDrillerRepo(str(root), num_workers=4).traverse_commits():
+    try:
+        _commits_iter = _PyDrillerRepo(str(root), num_workers=4).traverse_commits()
+    except Exception:
+        # Not a git repository (e.g. installed package directory) — return empty metrics.
+        return TornhillMetrics(hotspots=[], temporal_coupling=[], knowledge_silos=[])
+
+    for commit in _commits_iter:
         py_files = [
             f
             for f in commit.modified_files
