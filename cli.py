@@ -5,6 +5,8 @@ import json
 import sys
 from pathlib import Path
 
+from dotenv import load_dotenv
+
 from .checker import check_codebase, check_codebase_incremental
 from .extractor import extract_from_codebase
 from .reduce import (
@@ -507,6 +509,7 @@ def _show_cut_vertex_contracts(
 
 
 def main(argv=None) -> int:
+    load_dotenv(Path(__file__).parent / ".env", override=False)
     # Top-level: if first arg is "spec", "fix", "preflight", or "intent", delegate
     if argv is None:
         argv = sys.argv[1:]

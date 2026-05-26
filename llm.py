@@ -3,12 +3,7 @@
 from __future__ import annotations
 
 import os
-from pathlib import Path
 from typing import Optional
-
-from dotenv import load_dotenv
-
-load_dotenv(Path(__file__).parent / ".env", override=False)
 
 DEFAULT_MODEL = "claude-sonnet-4-6"
 
