@@ -12,6 +12,45 @@ The mental model: "which configuration of popsicle sticks makes the strongest br
 
 ---
 
+## THE DEEPER THESIS
+
+There is a tension between real engineering (bridges, circuits — systems with formal structural constraints and failure modes) and software engineering (which historically lacks the same discipline).
+
+**Graph theory + TDA + formal verification + intent gap analysis are the bridge between them.**
+
+In the AI-writes-all-code era: AI produces locally-correct but globally-incoherent code. A human can no longer review every line. What they *can* do is verify structural integrity:
+- **Graph theory**: find load-bearing joints, cut vertices, connectivity
+- **TDA** (β₁, persistent homology): find topological invariants in call graphs and dependency structures
+- **Formal verification** (Z3, TLA+): prove the contracts at critical joints hold
+- **Intent gap analysis**: verify the built system matches stated intent
+
+Together these are a civil engineer's structural review, applied to software.
+pact is the tool for that review.
+
+---
+
+## INTENT IS STRUCTURAL TOO
+
+The intent layer (`enrich.py`) follows the same structural principle as the code layer.
+
+Issues, PRs, ADRs, commits, and files are not text blobs — they are **nodes in a graph**.
+Edges connect them: a PR *modifies* a file, an issue *references* a module, an ADR *covers* a contract, a commit *explains* a change.
+
+**The structural position of a file in the intent graph determines its coverage level:**
+- High degree (many intent edges) = well-understood, violations are high-confidence
+- Low degree (intent-isolated) = inferred-only, violations need more scrutiny
+- Cut vertex in the intent graph = bridges multiple intent threads; changes here are high-risk
+
+This means:
+- Use **NetworkX** to build the intent graph, not lookup tables
+- Use **Graphify** to serialize it so the knowledge graph is queryable
+- Coverage is not binary (ADR or nothing) — it is a structural property of the graph
+- A file with 3 open issues and 5 PR reviews has explicit intent even without ADRs
+
+The spectrum: ADR (L3) → issue/PR mentions (L2) → commit bodies (L1) → inferred (L0)
+
+---
+
 ## ANTI-DRIFT CHECK (run before every improvement)
 
 Before implementing anything, ask: **"Could a linter do this?"**
