@@ -335,16 +335,35 @@ def mine_tornhill(
     )
 
 
+def _is_git_root(root: Path) -> bool:
+    """Return True only if root itself is inside a git repo that considers root its worktree."""
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode != 0:
+            return False
+        toplevel = Path(result.stdout.strip()).resolve()
+        return toplevel == root.resolve() or root.resolve().is_relative_to(toplevel)
+    except Exception:
+        return False
+
+
 def gather(root: Path, max_commits: int = 400, github: bool = True) -> IntentContext:
     """
     Gather all available stated-intent context for a project.
     Single entry point — call once at the start of intent analysis.
     """
     docs = _gather_docs(root)
-    commits, file_commits = _gather_commits(root, max_commits)
+    _has_git = _is_git_root(root)
+    commits, file_commits = _gather_commits(root, max_commits) if _has_git else ([], {})
     churn = {f: len(cs) for f, cs in file_commits.items()}
-    gh_ctx = gather_github(root) if github else None
-    tornhill = mine_tornhill(root, max_commits=max_commits)
+    gh_ctx = gather_github(root) if (github and _has_git) else None
+    tornhill = mine_tornhill(root, max_commits=max_commits) if _has_git else None
     # Rebuild intent graph with temporal coupling edges now that tornhill is available
     if gh_ctx is not None and tornhill is not None:
         gh_ctx.intent_graph = build_intent_graph(gh_ctx, tornhill=tornhill)
