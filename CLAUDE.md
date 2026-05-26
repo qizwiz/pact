@@ -12,6 +12,36 @@ The mental model: "which configuration of popsicle sticks makes the strongest br
 
 ---
 
+## DUAL OUTPUT: JSON + MARKDOWN EVERYWHERE
+
+Every stage of the pipeline produces **two artifacts**:
+
+- **JSON** — machine-readable, composable, pipes to the next stage, feeds programmatic tools
+- **Markdown** — LLM-readable narrative, first-class artifact, not a pretty-print of the JSON
+
+Markdown is not a view over JSON. It tells a story. JSON carries structure. Both are required.
+
+**Why:** The pipeline must be LLM-drivable end-to-end. An LLM orchestrator reading
+`pact enrich . --format markdown` should get everything it needs to reason about the codebase.
+An LLM reading `pact intent analyze . --format markdown` should get a violation narrative it
+can act on directly. Markdown is the language LLMs operate in natively.
+
+**Implementation rule:** Every command accepts `--format json|markdown|both` (default: json).
+Every data structure that has a `.render()` method produces its markdown artifact.
+The JSON schema always includes a `"narrative"` or `"summary"` field with the markdown form
+so downstream LLM tools don't need a separate call.
+
+**The pipeline as LLM score:**
+```
+pact enrich . --format markdown          → context document for LLM
+pact intent analyze - --format markdown  → violation narrative for LLM
+pact z3 - --format markdown              → formal proof / counterexample narrative
+pact adrs - --format markdown            → draft ADR documents
+pact heal - --format markdown            → patch explanation + rationale
+```
+
+---
+
 ## THE DEEPER THESIS
 
 There is a tension between real engineering (bridges, circuits — systems with formal structural constraints and failure modes) and software engineering (which historically lacks the same discipline).
