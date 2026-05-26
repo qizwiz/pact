@@ -24,6 +24,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
+try:
+    import networkx as nx
+
+    _NX_AVAILABLE = True
+except ImportError:
+    _NX_AVAILABLE = False
+
 # ---------------------------------------------------------------------------
 # Data structures
 # ---------------------------------------------------------------------------
@@ -140,6 +147,39 @@ class PrEntry:
 
 
 @dataclass
+class IntentCoverage:
+    """Structural coverage of a file in the intent graph."""
+
+    level: int  # 0=inferred, 1=commit bodies, 2=issue/PR, 3=ADR
+    adrs: list[tuple[str, str]] = field(default_factory=list)  # (ref, title)
+    issues: list[tuple[int, str]] = field(default_factory=list)  # (number, title)
+    prs: list[tuple[int, str]] = field(default_factory=list)  # (number, title)
+
+    def label(self) -> str:
+        if self.level == 3:
+            return "ADR-backed"
+        if self.level == 2:
+            return "issue/PR-referenced"
+        if self.level == 1:
+            return "commit-body-only"
+        return "inferred"
+
+    def render(self) -> str:
+        lines: list[str] = [f"**Intent coverage: {self.label()} (L{self.level})**"]
+        for ref, title in self.adrs[:4]:
+            lines.append(f"  ADR: {title} ({ref.split(':')[0]})")
+        for num, title in self.issues[:4]:
+            lines.append(f"  Issue #{num}: {title}")
+        for num, title in self.prs[:3]:
+            lines.append(f"  PR #{num}: {title}")
+        if self.level == 0:
+            lines.append(
+                "  No stated intent found — invariants are inferred from code structure only."
+            )
+        return "\n".join(lines)
+
+
+@dataclass
 class GithubContext:
     issues: list[IssueEntry]
     prs: list[PrEntry]
@@ -147,6 +187,8 @@ class GithubContext:
     adr_docs: list[tuple[str, str]]  # [(path, content)]
     # file path fragment → list of (adr_ref, adr_title) covering that file
     adr_coverage: dict[str, list[tuple[str, str]]] = field(default_factory=dict)
+    # NetworkX intent graph (file/issue/pr/adr nodes + edges), None if nx unavailable
+    intent_graph: Optional[object] = field(default=None, repr=False)
 
 
 @dataclass
@@ -190,14 +232,16 @@ def gather_github(
     spec_docs, adr_docs = _fetch_spec_branches(root)
     if not (issues or prs or spec_docs or adr_docs):
         return None
-    coverage = _build_adr_coverage(adr_docs)
-    return GithubContext(
+    coverage = _build_adr_coverage(adr_docs, root=root)
+    gh_ctx = GithubContext(
         issues=issues,
         prs=prs,
         spec_docs=spec_docs,
         adr_docs=adr_docs,
         adr_coverage=coverage,
     )
+    gh_ctx.intent_graph = build_intent_graph(gh_ctx)
+    return gh_ctx
 
 
 def get_file_adr_coverage(ctx: GithubContext, file_path: str) -> list[tuple[str, str]]:
@@ -314,20 +358,13 @@ def render_file_context(
 
     parts: list[str] = []
 
-    # --- ADR coverage signal (explicit intent vs inferred) ---
+    # --- Structural intent coverage (graph-derived, works without ADRs) ---
     if ctx.github:
-        adr_hits = get_file_adr_coverage(ctx.github, file_path)
-        if adr_hits:
-            adr_lines = [f"- [{title}]({ref})" for ref, title in adr_hits]
-            parts.append(
-                "**ADR coverage (explicit architectural intent):**\n"
-                + "\n".join(adr_lines)
-            )
-        else:
-            parts.append(
-                "**No ADR coverage** — invariants for this file are inferred "
-                "from commit history and docstrings only; treat with lower confidence."
-            )
+        coverage = get_file_intent_coverage(ctx.github, file_path)
+        # Upgrade to L1 if commit bodies exist
+        if coverage.level == 0 and churn > 0:
+            coverage.level = 1
+        parts.append(coverage.render())
 
     if churn:
         label = ""
@@ -494,35 +531,200 @@ def _fetch_commit_metadata(root: Path, max_commits: int) -> list[CommitEntry]:
 
 
 _EVIDENCE_RE = re.compile(r"`([^`]*\.py[^`]*)`", re.IGNORECASE)
+# Matches "# ADR N — title" headings
 _ADR_TITLE_RE = re.compile(r"^#\s+ADR\s+\d+\s*[—\-–]\s*(.+)", re.MULTILINE)
+# Matches YAML frontmatter title: "..." (used when there's no # ADR heading)
+_ADR_FM_TITLE_RE = re.compile(r'^title:\s*["\']?(.+?)["\']?\s*$', re.MULTILINE)
+# CamelCase class/function names cited in ADR text (e.g. CanManageTargetUser)
+_SYMBOL_RE = re.compile(r"\b([A-Z][a-zA-Z0-9]{3,})\b")
+
+
+_FILE_REF_RE = re.compile(r"\b([\w/.-]+\.py)(?::\d+)?", re.IGNORECASE)
+_ISSUE_REF_RE = re.compile(r"#(\d+)")
+
+
+def build_intent_graph(ctx: GithubContext) -> "object | None":
+    """
+    Build a NetworkX DiGraph of the intent layer.
+
+    Nodes:
+      file:<fragment>  — source file
+      issue:<n>        — GitHub issue
+      pr:<n>           — pull request
+      adr:<ref>        — architectural decision record
+
+    Edges (directed, from source of intent to subject):
+      adr → file    COVERS
+      issue → file  MENTIONS
+      pr → file     MODIFIES  (from pr.files list)
+      pr → issue    REFERENCES (from #123 in pr body)
+      issue → issue REFERENCES
+    """
+    if not _NX_AVAILABLE:
+        return None
+
+    G = nx.DiGraph()
+
+    # --- ADR → file edges ---
+    for ref_key, content in ctx.adr_docs:
+        adr_node = f"adr:{ref_key}"
+        G.add_node(adr_node, kind="adr", ref=ref_key)
+        for match in _EVIDENCE_RE.finditer(content):
+            raw = match.group(1).strip().split(":")[0].strip()
+            if raw.endswith(".py"):
+                file_node = f"file:{raw}"
+                G.add_node(file_node, kind="file")
+                G.add_edge(adr_node, file_node, rel="COVERS")
+
+    # --- PR → file edges (from pr.files — already exact paths) ---
+    for pr in ctx.prs:
+        pr_node = f"pr:{pr.number}"
+        G.add_node(pr_node, kind="pr", number=pr.number, title=pr.title, state=pr.state)
+        for f in pr.files:
+            if f.endswith(".py"):
+                file_node = f"file:{f}"
+                G.add_node(file_node, kind="file")
+                G.add_edge(pr_node, file_node, rel="MODIFIES")
+        # PR → issue references
+        for m in _ISSUE_REF_RE.finditer(pr.body or ""):
+            G.add_edge(pr_node, f"issue:{m.group(1)}", rel="REFERENCES")
+
+    # --- Issue → file edges (from file mentions in body) ---
+    for issue in ctx.issues:
+        issue_node = f"issue:{issue.number}"
+        G.add_node(
+            issue_node,
+            kind="issue",
+            number=issue.number,
+            title=issue.title,
+            state=issue.state,
+        )
+        text = (issue.body or "") + " ".join(issue.comments or [])
+        for m in _FILE_REF_RE.finditer(text):
+            frag = m.group(1)
+            file_node = f"file:{frag}"
+            G.add_node(file_node, kind="file")
+            G.add_edge(issue_node, file_node, rel="MENTIONS")
+
+    return G
+
+
+def get_file_intent_coverage(ctx: GithubContext, file_path: str) -> IntentCoverage:
+    """
+    Return the structural intent coverage for a file.
+    Uses the NetworkX intent graph when available; falls back to ADR lookup only.
+    Works for any project — ADRs are just one source.
+    """
+    # --- ADR coverage (L3) ---
+    adrs = get_file_adr_coverage(ctx, file_path)
+
+    issues_found: list[tuple[int, str]] = []
+    prs_found: list[tuple[int, str]] = []
+
+    if _NX_AVAILABLE and ctx.intent_graph is not None:
+        G = ctx.intent_graph
+        # Find file nodes that correspond to this path (suffix matching)
+        file_parts = Path(file_path).parts
+        candidates = {
+            "/".join(file_parts[i:])
+            for i in range(max(0, len(file_parts) - 5), len(file_parts))
+        }
+        # also try just the filename fragment as stored in PR files lists
+        # (PR files are typically repo-relative paths like "futureagi/evaluations/engine/runner.py")
+        basename = Path(file_path).name
+        candidates.add(basename)
+
+        matched_file_nodes: set[str] = set()
+        for node, data in G.nodes(data=True):
+            if data.get("kind") != "file":
+                continue
+            frag = node[len("file:") :]
+            if frag in candidates or any(
+                frag.endswith(c) for c in candidates if len(c) > len(basename)
+            ):
+                matched_file_nodes.add(node)
+
+        # Walk predecessors: what intent nodes point at this file?
+        for file_node in matched_file_nodes:
+            for pred in G.predecessors(file_node):
+                data = G.nodes[pred]
+                if data.get("kind") == "issue":
+                    entry = (data["number"], data.get("title", ""))
+                    if entry not in issues_found:
+                        issues_found.append(entry)
+                elif data.get("kind") == "pr":
+                    entry = (data["number"], data.get("title", ""))
+                    if entry not in prs_found:
+                        prs_found.append(entry)
+
+    # Determine level
+    if adrs:
+        level = 3
+    elif issues_found or prs_found:
+        level = 2
+    else:
+        level = 0  # caller sets L1 if commit bodies exist (enrich knows churn)
+
+    return IntentCoverage(level=level, adrs=adrs, issues=issues_found, prs=prs_found)
 
 
 def _build_adr_coverage(
     adr_docs: list[tuple[str, str]],
+    root: Optional[Path] = None,
 ) -> dict[str, list[tuple[str, str]]]:
     """
-    Parse Evidence lines in ADR docs to build a file → [(adr_ref, title)] map.
-    ADRs use "**Evidence**: `path:line`" conventions.
-    Coverage is partial — only files Jonathan wrote ADRs for are covered.
+    Parse Evidence lines and symbol names in ADR docs to build a
+    file → [(adr_ref, title)] map.
+
+    Two strategies:
+    1. Backtick-quoted .py paths in Evidence sections (primary)
+    2. CamelCase class/function names in ADR title + decision text →
+       resolved to files via `git grep -l` (catches cases where the ADR
+       describes a class but doesn't cite its implementation file)
     """
     coverage: dict[str, list[tuple[str, str]]] = {}
+
+    def _add(path_part: str, ref_key: str, title: str) -> None:
+        parts = Path(path_part).parts
+        for i in range(len(parts)):
+            fragment = "/".join(parts[i:])
+            coverage.setdefault(fragment, [])
+            entry = (ref_key, title)
+            if entry not in coverage[fragment]:
+                coverage[fragment].append(entry)
+
     for ref_key, content in adr_docs:
-        title_m = _ADR_TITLE_RE.search(content)
+        title_m = _ADR_TITLE_RE.search(content) or _ADR_FM_TITLE_RE.search(content)
         title = title_m.group(1).strip() if title_m else Path(ref_key).stem
+
+        # Strategy 1: backtick-quoted .py paths
         for match in _EVIDENCE_RE.finditer(content):
-            raw = match.group(1).strip()
-            # strip line numbers (e.g. "runner.py:71-74" → "runner.py")
-            path_part = raw.split(":")[0].strip()
-            if not path_part.endswith(".py"):
-                continue
-            # index by progressively shorter suffixes for flexible lookup
-            parts = Path(path_part).parts
-            for i in range(len(parts)):
-                fragment = "/".join(parts[i:])
-                coverage.setdefault(fragment, [])
-                entry = (ref_key, title)
-                if entry not in coverage[fragment]:
-                    coverage[fragment].append(entry)
+            raw = match.group(1).strip().split(":")[0].strip()
+            if raw.endswith(".py"):
+                _add(raw, ref_key, title)
+
+        # Strategy 2: CamelCase symbols → git grep to find defining files
+        if root is not None:
+            symbols = {
+                m.group(1)
+                for m in _SYMBOL_RE.finditer(title_m.group(1) if title_m else "")
+            }
+            for sym in list(symbols)[:5]:  # cap to avoid runaway
+                try:
+                    r = subprocess.run(
+                        ["git", "grep", "-l", f"class {sym}\\|def {sym}"],
+                        cwd=root,
+                        capture_output=True,
+                        text=True,
+                        timeout=5,
+                    )
+                    for line in r.stdout.splitlines():
+                        line = line.strip()
+                        if line.endswith(".py"):
+                            _add(line, ref_key, title)
+                except (subprocess.TimeoutExpired, FileNotFoundError):
+                    pass
+
     return coverage
 
 
