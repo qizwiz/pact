@@ -790,8 +790,127 @@ def _extract_git_log(path: Path) -> str:
     return "\n\n".join(sections)
 
 
-def _extract_intent_signals(source: str) -> str:
-    """Module docstring + per-function docstrings (first line) + TODO/FIXME/HACK/BUG comments."""
+def _find_test_files(root: Path) -> list[Path]:
+    """Return all test_*.py and *_test.py files under *root*, skipping venv dirs."""
+    results = []
+    for p in sorted(root.rglob("*.py")):
+        if any(part in _SKIP_DIRS or part.endswith(".egg-info") for part in p.parts):
+            continue
+        if p.name.startswith("test_") or p.name.endswith("_test.py"):
+            results.append(p)
+    return results
+
+
+def _extract_test_intent(test_files: list[Path]) -> list[dict]:
+    """AST-parse test files and extract L1.5 intent signals from test function names.
+
+    For each test function whose name starts with ``test_``:
+    - strips the ``test_`` prefix and converts underscores to spaces for the description
+    - records the first ``assert`` statement body as an assertion pattern
+    - records the enclosing class name when the class has at least one base
+      (proxy for TestCase subclass without executing code)
+
+    Returns a list of dicts with keys:
+        file, test_name, description, assertion_pattern, class_name, confidence (0.75)
+
+    SyntaxError in any file is caught and skipped with a RuntimeWarning.
+    Functions whose names do not start with ``test_`` are ignored.
+    """
+    import warnings
+
+    results: list[dict] = []
+    for tf in test_files:
+        try:
+            source = tf.read_text(encoding="utf-8", errors="replace")
+            tree = ast.parse(source, filename=str(tf))
+        except SyntaxError as exc:
+            warnings.warn(
+                f"_extract_test_intent: skipped {tf} (SyntaxError: {exc})",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+            continue
+
+        def _first_assert(body: list) -> str:
+            for stmt in body:
+                if isinstance(stmt, ast.Assert):
+                    try:
+                        return ast.unparse(stmt.test)[:200]
+                    except Exception:
+                        return ""
+            return ""
+
+        def _make_signal(node, cls_name: str) -> dict:
+            description = node.name[len("test_") :].replace("_", " ")
+            return {
+                "file": str(tf),
+                "test_name": node.name,
+                "description": description,
+                "assertion_pattern": _first_assert(node.body),
+                "class_name": cls_name,
+                "confidence": 0.75,
+            }
+
+        # Collect class-level test methods (with base classes → TestCase proxy)
+        seen: set[int] = set()
+        for cls_node in ast.walk(tree):
+            if not isinstance(cls_node, ast.ClassDef):
+                continue
+            if not cls_node.bases:
+                continue
+            for item in cls_node.body:
+                if not isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    continue
+                if not item.name.startswith("test_"):
+                    continue
+                seen.add(id(item))
+                results.append(_make_signal(item, cls_node.name))
+
+        # Top-level test functions not already collected via a class
+        for node in ast.iter_child_nodes(tree):
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            if not node.name.startswith("test_"):
+                continue
+            if id(node) in seen:
+                continue
+            results.append(_make_signal(node, ""))
+
+    return results
+
+
+def _match_tests_for_module(source_path: Path, test_signals: list[dict]) -> list[dict]:
+    """Return test signals whose file name matches the stem of *source_path*.
+
+    e.g. ``intent.py`` matches ``test_intent.py`` or ``intent_test.py``.
+    The match is intentionally loose (stem substring) so ``test_intent_extra.py``
+    still counts as coverage for ``intent.py``.
+    """
+    stem = source_path.stem
+    matched = []
+    seen: set[str] = set()
+    for sig in test_signals:
+        tf_stem = Path(sig["file"]).stem
+        tf_module = tf_stem
+        if tf_module.startswith("test_"):
+            tf_module = tf_module[len("test_") :]
+        if tf_module.endswith("_test"):
+            tf_module = tf_module[: -len("_test")]
+        if stem == tf_module or stem in tf_module:
+            key = f"{sig['file']}::{sig['test_name']}"
+            if key not in seen:
+                seen.add(key)
+                matched.append(sig)
+    return matched
+
+
+def _extract_intent_signals(source: str, source_path: Optional[Path] = None) -> str:
+    """Module docstring + per-function docstrings (first line) + TODO/FIXME/HACK/BUG comments.
+
+    When *source_path* is supplied, also scans sibling test files for L1.5 intent
+    signals: test function names encode behavioural intent more precisely than most
+    docstrings (confidence 0.75 — stronger than commit messages, weaker than ADRs).
+    """
     signals: list[str] = []
 
     try:
@@ -820,6 +939,24 @@ def _extract_intent_signals(source: str) -> str:
             tag = m.group(1).upper()
             text = m.group(2).strip()[:120]
             signals.append(f"[line {i}] {tag}: {text}")
+
+    # --- L1.5: test-name intent signals ---
+    if source_path is not None:
+        test_files = _find_test_files(source_path.parent)
+        all_test_signals = _extract_test_intent(test_files)
+        matched = _match_tests_for_module(source_path, all_test_signals)
+        if matched:
+            n_files = len({s["file"] for s in matched})
+            signals.append(
+                f"[TEST COVERAGE — L1.5 ({len(matched)} test functions "
+                f"in {n_files} file(s))]"
+            )
+            for sig in matched[:20]:  # cap to avoid prompt bloat
+                prefix = f"  [{sig['class_name']}] " if sig["class_name"] else "  "
+                entry = f"{prefix}{sig['description']}"
+                if sig["assertion_pattern"]:
+                    entry += f"  → assert {sig['assertion_pattern'][:100]}"
+                signals.append(entry)
 
     return "\n".join(signals) if signals else "(none found)"
 
@@ -869,7 +1006,7 @@ def _understand_module(
         enriched = _enrich_file_ctx(enrich_ctx, str(path))
         if enriched:
             git_log = enriched + "\n\n---\n\n" + git_log
-    intent_signals = _extract_intent_signals(full_source)
+    intent_signals = _extract_intent_signals(full_source, source_path=path)
 
     template = _load_prompt("understand")
     graphify_section = (
@@ -1471,6 +1608,210 @@ def _improve_project_intent_prompt(
 
 
 # ---------------------------------------------------------------------------
+# ADR → import-linter contract synthesis
+# ---------------------------------------------------------------------------
+
+_ADR_RULE_PROMPT = """\
+You are a structural analysis tool. Read the ADR text below and determine whether
+it describes a constraint on which Python modules may import which other modules.
+
+If yes, extract exactly:
+- rule_type: "forbidden_import", "required_dependency", or "layer_ordering"
+- source_module: the module/package that is the subject of the constraint (short name, e.g. "api")
+- forbidden_modules: list of module/package names that source_module must NOT import (for forbidden_import/layer_ordering)
+- required_modules: list of module/package names that source_module MUST import (for required_dependency)
+- rationale: one sentence explaining the constraint
+
+Return JSON like:
+{{"rule_type": "forbidden_import", "source_module": "api", "forbidden_modules": ["db", "models"], "required_modules": [], "rationale": "API layer must not depend on DB layer directly"}}
+
+If no structural import constraint exists in the ADR, return exactly:
+{{"rule_type": null}}
+
+ADR text:
+{adr_text}
+"""
+
+
+def _extract_adr_rule(adr_text: str, key: str, model: str) -> "dict | None":
+    """
+    Use the LLM to extract a structural import constraint from ADR text.
+
+    Returns a dict with rule_type, source_module, forbidden_modules, rationale
+    if the ADR describes an import constraint, or None if no constraint is found.
+    Guards gracefully if key is empty.
+    """
+    if not key or not adr_text.strip():
+        return None
+
+    prompt = _ADR_RULE_PROMPT.format(adr_text=adr_text[:3000])
+    try:
+        raw = _call(prompt, model, key, max_tokens=512)
+    except Exception:
+        return None
+
+    rule_type = raw.get("rule_type")
+    if not rule_type:
+        return None
+
+    source = raw.get("source_module", "").strip()
+    if not source:
+        return None
+
+    return {
+        "rule_type": rule_type,
+        "source_module": source,
+        "forbidden_modules": raw.get("forbidden_modules") or [],
+        "required_modules": raw.get("required_modules") or [],
+        "rationale": raw.get("rationale", ""),
+    }
+
+
+def _contract_id(rule: dict) -> str:
+    """Build a stable contract identifier from a rule dict."""
+    src = re.sub(r"[^a-z0-9]+", "-", rule["source_module"].lower()).strip("-")
+    targets = rule.get("forbidden_modules") or rule.get("required_modules") or []
+    tgt = re.sub(r"[^a-z0-9]+", "-", (targets[0] if targets else "none").lower()).strip(
+        "-"
+    )
+    rtype = re.sub(r"[^a-z0-9]+", "-", rule["rule_type"].lower()).strip("-")
+    return f"adr-{src}-{rtype}-{tgt}"
+
+
+def _emit_importlinter_contract(rule: dict, project_root: Path) -> str:
+    """
+    Generate an import-linter contract block in .importlinter format.
+    Returns the contract text as a string (does not write to disk).
+    """
+    contract_id = _contract_id(rule)
+    rationale = rule.get("rationale", "")
+    source = rule["source_module"]
+    rule_type = rule["rule_type"]
+
+    # Map rule_type to import-linter contract type
+    if rule_type in ("forbidden_import", "layer_ordering"):
+        contract_type = "forbidden"
+    elif rule_type == "required_dependency":
+        contract_type = "layers"
+    else:
+        contract_type = "forbidden"
+
+    lines = [
+        f"[importlinter:contract:{contract_id}]",
+        f"name = {rationale or f'{source} import constraint (from ADR)'}",
+        f"type = {contract_type}",
+        "source_modules =",
+        f"    {source}",
+    ]
+
+    forbidden = rule.get("forbidden_modules") or []
+    required = rule.get("required_modules") or []
+
+    if forbidden:
+        lines.append("forbidden_modules =")
+        for m in forbidden:
+            lines.append(f"    {m}")
+    elif required and contract_type == "layers":
+        lines.append("layers =")
+        for m in required:
+            lines.append(f"    {m}")
+
+    return "\n".join(lines) + "\n"
+
+
+_IMPORTLINTER_HEADER = "[importlinter]\nroot_package = .\n\n"
+
+
+def _write_importlinter_contract(
+    rule: dict, project_root: Path, verbose: bool = False
+) -> bool:
+    """
+    Append an import-linter contract to .importlinter in project_root.
+    Skips silently if the contract id is already present.
+    Returns True if written, False if skipped.
+    """
+    contract_id = _contract_id(rule)
+    dotfile = project_root / ".importlinter"
+
+    existing = dotfile.read_text(encoding="utf-8") if dotfile.exists() else ""
+
+    # Skip if contract already present
+    if f"[importlinter:contract:{contract_id}]" in existing:
+        return False
+
+    contract_text = _emit_importlinter_contract(rule, project_root)
+
+    if not existing:
+        dotfile.write_text(_IMPORTLINTER_HEADER + contract_text, encoding="utf-8")
+    else:
+        # Ensure a blank line separator
+        sep = "\n" if existing.endswith("\n") else "\n\n"
+        with dotfile.open("a", encoding="utf-8") as fh:
+            fh.write(sep + contract_text)
+
+    if verbose:
+        print(f"  [adr-contract] wrote contract '{contract_id}' to {dotfile}")
+
+    return True
+
+
+def _synthesize_adr_contracts(
+    enrich_ctx: "_IntentContext",
+    project_root: Path,
+    key: str,
+    model: str,
+    verbose: bool,
+) -> list[dict]:
+    """
+    Process all ADR docs in enrich_ctx, extract import rules via LLM, and
+    write matching import-linter contracts to .importlinter.
+
+    Returns list of extracted rule dicts (empty if no LLM key or no ADRs).
+    Guards silently: any individual ADR failure is skipped.
+    """
+    if not key:
+        return []
+
+    gh = getattr(enrich_ctx, "github", None)
+    if gh is None:
+        return []
+
+    adr_docs: list[tuple[str, str]] = getattr(gh, "adr_docs", []) or []
+    if not adr_docs:
+        return []
+
+    if verbose:
+        print(
+            f"[intent] synthesizing import-linter contracts from {len(adr_docs)} ADR(s)..."
+        )
+
+    rules: list[dict] = []
+    for ref_key, content in adr_docs:
+        try:
+            rule = _extract_adr_rule(content, key, model)
+        except Exception:
+            rule = None
+
+        if rule is None:
+            continue
+
+        # Attach ADR provenance
+        rule["adr_ref"] = ref_key
+
+        written = _write_importlinter_contract(rule, project_root, verbose=verbose)
+        if verbose and not written:
+            contract_id = _contract_id(rule)
+            print(f"  [adr-contract] skipped duplicate contract '{contract_id}'")
+
+        rules.append(rule)
+
+    if verbose and rules:
+        print(f"  [adr-contract] {len(rules)} rule(s) extracted from ADRs")
+
+    return rules
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -1705,11 +2046,20 @@ def extract_project_intent(
         nfiles = len(enrich_ctx.file_commits)
         print(f"  {ndocs} doc files, {ncommits} commits, {nfiles} files with history")
 
+    # ADR → import-linter contract synthesis (LLM-optional, silently skipped if no key)
+    try:
+        adr_rules = _synthesize_adr_contracts(enrich_ctx, root, key, model, verbose)
+    except Exception:
+        adr_rules = []
+
     intent = ProjectIntent(
         project=str(root.resolve()),
         generated_at=datetime.datetime.utcnow().isoformat() + "Z",
         source_model=model,
     )
+    # Store ADR-derived structural rules on intent for downstream consumers
+    if adr_rules:
+        intent.__dict__["adr_import_rules"] = adr_rules
 
     # Step 1: triage
     try:
