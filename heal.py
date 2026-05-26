@@ -244,6 +244,7 @@ class SynthesisResult:
     cegis_iters: int = 1
     applied: bool = False
     oracle_confirmed: bool = False  # True when --test-cmd oracle passed
+    auto_applied: bool = False  # True when should_auto_apply() accepted without --apply
 
 
 @dataclass
@@ -1082,12 +1083,72 @@ def _apply_to_disk(result: SynthesisResult, verbose: bool) -> bool:
 # ---------------------------------------------------------------------------
 
 
+def should_auto_apply(
+    result: SynthesisResult,
+    project_root: Path,
+    baseline_checker_count: int,
+    verbose: bool = False,
+) -> bool:
+    """4-condition gate for automatic patch application without --apply.
+
+    All four must hold:
+      1. Z3 verification: ACCEPT, score >= 0.8
+      2. Test oracle: oracle_confirmed — suite passed with patch on disk
+      3. Surgical: total line delta <= 20 (lines_added + lines_removed)
+      4. No regression: checker violation count does not increase
+
+    The patch is already written to disk when this is called (oracle_confirmed
+    guarantees it). If any condition fails the caller is responsible for reverting.
+    """
+    if result.verify_verdict != "ACCEPT" or result.verify_score < 0.8:
+        if verbose:
+            print(
+                f"    auto-oracle [1/Z3]: REJECT "
+                f"verdict={result.verify_verdict} score={result.verify_score:.2f}"
+            )
+        return False
+
+    if not result.oracle_confirmed:
+        if verbose:
+            print("    auto-oracle [2/oracle]: REJECT oracle not confirmed")
+        return False
+
+    delta = result.patch.lines_added + result.patch.lines_removed
+    if delta > 20:
+        if verbose:
+            print(
+                f"    auto-oracle [3/surgical]: REJECT patch too large ({delta} lines)"
+            )
+        return False
+
+    try:
+        from checker import check_codebase
+
+        new_count = len(check_codebase(project_root))
+        if new_count > baseline_checker_count:
+            if verbose:
+                print(
+                    f"    auto-oracle [4/checker]: REJECT regression "
+                    f"({baseline_checker_count} → {new_count})"
+                )
+            return False
+    except Exception as exc:
+        if verbose:
+            print(f"    auto-oracle [4/checker]: REJECT error: {exc}")
+        return False
+
+    if verbose:
+        print("    auto-oracle: ACCEPT (all 4 conditions met)")
+    return True
+
+
 def heal_project(
     violations_path: Path,
     model: str = _DEFAULT_MODEL,
     api_key: Optional[str] = None,
     severity_filter: Optional[list[str]] = None,
     apply: bool = False,
+    auto: bool = False,
     improve: bool = False,
     output: Optional[Path] = None,
     verbose: bool = False,
@@ -1157,6 +1218,18 @@ def heal_project(
                 )
             effective_test_cmd = None
 
+    # Pre-compute checker baseline for the auto-apply oracle (condition 4).
+    _baseline_checker_count: Optional[int] = None
+    if (auto or apply) and project_root:
+        try:
+            from checker import check_codebase as _check_cb
+
+            _baseline_checker_count = len(_check_cb(project_root))
+            if verbose:
+                print(f"[heal] checker baseline: {_baseline_checker_count} violations")
+        except Exception:
+            pass
+
     if verbose:
         print(f"[heal] {len(to_heal)} violations to attempt ({', '.join(sev_set)})")
 
@@ -1177,6 +1250,8 @@ def heal_project(
             heal.patches_rejected += 1
             continue
 
+        # Snapshot original content before CEGIS so we can revert if auto-oracle rejects.
+        _original_source = path.read_text(encoding="utf-8") if path.exists() else None
         source_lines = _read_source(path)
 
         result = _heal_violation(
@@ -1201,6 +1276,30 @@ def heal_project(
         accepted = result.verify_verdict == "ACCEPT" and result.verify_score >= 0.8
         if effective_test_cmd:
             accepted = accepted and result.oracle_confirmed
+
+        # Auto-apply oracle: if --auto, run the 4-condition gate.
+        # The patch is already on disk when oracle_confirmed=True.
+        # If the gate rejects, revert to the snapshot taken before CEGIS.
+        if (
+            auto
+            and result.oracle_confirmed
+            and project_root
+            and _baseline_checker_count is not None
+        ):
+            if should_auto_apply(
+                result, project_root, _baseline_checker_count, verbose
+            ):
+                result.auto_applied = True
+                if verbose:
+                    print(f"    auto-oracle: applied → {path.name}")
+            else:
+                # Revert — auto-oracle rejected after oracle confirmed
+                if _original_source is not None:
+                    path.write_text(_original_source, encoding="utf-8")
+                    result.applied = False
+                    if verbose:
+                        print(f"    auto-oracle: reverted {path.name}")
+                accepted = False
 
         if accepted:
             heal.patches_accepted += 1
@@ -1284,6 +1383,15 @@ def main(argv=None):
     p.add_argument(
         "--apply", action="store_true", help="apply accepted patches to disk"
     )
+    p.add_argument(
+        "--auto",
+        action="store_true",
+        help=(
+            "automatically apply patches that pass all 4 oracle conditions: "
+            "Z3 ACCEPT, test suite pass, delta ≤ 20 lines, no new checker violations. "
+            "No --apply required."
+        ),
+    )
     p.add_argument("--out", type=Path, help="write heal.json output")
     p.add_argument("--model", default=_DEFAULT_MODEL, help="Claude model to use")
     p.add_argument("--api-key", help="Anthropic API key (or set ANTHROPIC_API_KEY)")
@@ -1311,6 +1419,7 @@ def main(argv=None):
         api_key=args.api_key,
         severity_filter=args.severity,
         apply=args.apply,
+        auto=args.auto,
         improve=args.improve,
         output=args.out,
         verbose=args.verbose,

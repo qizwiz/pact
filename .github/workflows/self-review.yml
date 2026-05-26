@@ -1,0 +1,146 @@
+name: Self-Review — pact on pact
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  structural-review:
+    name: pact intent analyze (self)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          pip install z3-solver networkx hypothesis pytest black ruff anthropic \
+                      pydriller python-dotenv semgrep mypy scipy
+          pip install gudhi || true
+          pip install -e .
+
+      - name: Run pact intent analysis
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          python -m pact intent analyze . --out intent_pact_pr.json 2>&1 | tee /tmp/pact_intent_log.txt
+
+      - name: Compare to baseline and build summary
+        id: compare
+        run: |
+          python3 - <<'PYEOF'
+          import json, os, sys, collections
+
+          def load_violations(path):
+              try:
+                  data = json.load(open(path))
+              except Exception:
+                  return []
+              mods = data.get("modules", [])
+              viols = []
+              for m in mods:
+                  if isinstance(m, dict):
+                      viols.extend(m.get("violations", []))
+              return viols
+
+          pr_viols = load_violations("intent_pact_pr.json")
+          base_viols = load_violations("intent_pact_self.json")
+
+          def counts(viols):
+              c = collections.Counter(v.get("severity", "?") for v in viols)
+              return c.get("high", 0) + c.get("critical", 0), c.get("medium", 0), len(viols)
+
+          pr_high, pr_med, pr_total = counts(pr_viols)
+          base_high, base_med, base_total = counts(base_viols)
+          delta_high = pr_high - base_high
+          delta_total = pr_total - base_total
+
+          def fmt(n):
+              return f"+{n}" if n > 0 else str(n)
+
+          regression = delta_high > 0
+          icon = "🚨" if regression else ("🎉" if delta_high < 0 else "✅")
+
+          summary = f"""{icon} **pact structural review**
+
+          | | Total | High-severity |
+          |---|---|---|
+          | Baseline (`main`) | {base_total} | {base_high} |
+          | This PR | {pr_total} | {pr_high} |
+          | **Delta** | **{fmt(delta_total)}** | **{fmt(delta_high)}** |
+
+          """
+          if regression:
+              new_high = [v for v in pr_viols if v.get("severity") in ("high","critical")]
+              base_files = {v.get("file","") + str(v.get("line","")) for v in base_viols}
+              new_ones = [v for v in new_high if v.get("file","") + str(v.get("line","")) not in base_files]
+              summary += f"⚠️ **Regression**: {delta_high} new high-severity violation(s).\n\n"
+              for v in new_ones[:5]:
+                  f = v.get("file","").replace(os.getcwd()+"/", "")
+                  summary += f"- `{f}:{v.get('line','')}` — {v.get('explanation','')[:120]}…\n"
+          elif delta_high < 0:
+              summary += f"Reduced high-severity violations by {abs(delta_high)}. 🏗️\n"
+          else:
+              summary += "Structural integrity maintained.\n"
+
+          summary += """
+          <details>
+          <summary>What is this?</summary>
+
+          pact reviews its own code on every PR using intent analysis + call-graph topology.
+          It checks that load-bearing joints are formally verified, contracts hold under
+          adversarial input, and structural integrity is maintained or improved.
+          </details>
+          """
+
+          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+              f.write(f"pr_total={pr_total}\n")
+              f.write(f"pr_high={pr_high}\n")
+              f.write(f"delta_total={delta_total}\n")
+              f.write(f"delta_high={delta_high}\n")
+              f.write(f"regression={'true' if regression else 'false'}\n")
+              # Write summary (escape newlines for GITHUB_OUTPUT multiline)
+              with open("/tmp/pr_summary.md", "w") as sf:
+                  sf.write(summary)
+
+          print(f"Baseline: {base_total} total, {base_high} high")
+          print(f"PR:       {pr_total} total, {pr_high} high")
+          print(f"Delta:    {fmt(delta_total)} total, {fmt(delta_high)} high")
+          if regression:
+              print(f"REGRESSION: {delta_high} new high-severity violation(s)")
+          PYEOF
+
+      - name: Post PR comment
+        if: github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh pr comment ${{ github.event.pull_request.number }} \
+            --body-file /tmp/pr_summary.md \
+            --repo ${{ github.repository }} \
+            --edit-last 2>/dev/null || \
+          gh pr comment ${{ github.event.pull_request.number }} \
+            --body-file /tmp/pr_summary.md \
+            --repo ${{ github.repository }}
+
+      - name: Upload analysis artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pact-self-review-${{ github.sha }}
+          path: intent_pact_pr.json
+          retention-days: 30
+
+      - name: Fail on regression
+        if: steps.compare.outputs.regression == 'true'
+        run: |
+          echo "::error::High-severity violations increased vs baseline (main). See summary above."
+          exit 1
