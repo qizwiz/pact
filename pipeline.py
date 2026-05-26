@@ -217,13 +217,29 @@ def _execute_z3(
         preencoded = raw_entry or None
         contract_kind = ""
 
+    source_file = step.get("module_path")
+    if source_file and not Path(source_file).exists():
+        import warnings
+        warnings.warn(
+            f"pipeline: source_file does not exist: {source_file!r} — "
+            "verify_contract result would be unreliable; returning error",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+        return StepResult(
+            step=step["step"],
+            tool="z3",
+            module_path=source_file,
+            status="error",
+            summary=f"Precondition violated: source_file not found: {source_file!r}",
+        )
     result = verify_contract(
         contract=contract,
         function_source=source,
         function_name=step.get("function_name") or "",
         api_key=key,
         model=model,
-        source_file=step.get("module_path"),
+        source_file=source_file,
         preencoded_z3_script=preencoded,
         contract_kind=contract_kind,
     )
@@ -622,15 +638,24 @@ def _execute_heal(
     attempted = result.violations_attempted
     if apply:
         summary = f"{accepted}/{attempted} patch(es) applied and oracle-verified (cmd: {test_cmd})"
+        heal_status = "verified" if accepted > 0 else "unknown"
     else:
-        summary = (
-            f"{accepted}/{attempted} patch(es) verified (dry-run — no oracle detected)"
+        import warnings
+        warnings.warn(
+            "pipeline: heal step running in dry-run mode (no test oracle detected) — "
+            "patches are NOT oracle-verified; CEGIS guarantee does not hold",
+            RuntimeWarning,
+            stacklevel=3,
         )
+        summary = (
+            f"{accepted}/{attempted} patch(es) proposed (dry-run — no oracle detected; NOT CEGIS-verified)"
+        )
+        heal_status = "unknown"
     return StepResult(
         step=step["step"],
         tool="heal",
         module_path=module_path,
-        status="verified" if accepted > 0 else "unknown",
+        status=heal_status,
         summary=summary,
         details={
             "patches_accepted": accepted,
@@ -654,6 +679,15 @@ def _execute_step(
     tool = step.get("tool", "")
     module_path = step.get("module_path", "")
     source = _load_source(module_path)
+
+    if not source and module_path:
+        return StepResult(
+            step=step["step"],
+            tool=tool,
+            module_path=module_path,
+            status="error",
+            summary=f"Source could not be loaded for {module_path!r} — verification skipped to avoid vacuous result",
+        )
 
     if verbose:
         fn = step.get("function_name") or "module-level"
