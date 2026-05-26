@@ -18,3 +18,6 @@ heal_*.json
 intent*.json
 pact_tool.egg-info/
 graphify-out/
+
+# Local credentials — never commit
+.env

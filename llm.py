@@ -3,7 +3,12 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 from typing import Optional
+
+from dotenv import load_dotenv
+
+load_dotenv(Path(__file__).parent / ".env", override=False)
 
 DEFAULT_MODEL = "claude-sonnet-4-6"
 
@@ -28,12 +33,12 @@ def make_client(api_key: Optional[str] = None):
 
     key = (
         api_key
-        or os.environ.get("ANTHROPIC_API_KEY")
         or os.environ.get("PACT_LLM_API_KEY")
         or os.environ.get("PACT_ANTHROPIC_API_KEY")
+        or os.environ.get("ANTHROPIC_API_KEY")
     )
-    base_url = os.environ.get("ANTHROPIC_BASE_URL") or os.environ.get(
-        "PACT_LLM_BASE_URL"
+    base_url = os.environ.get("PACT_LLM_BASE_URL") or os.environ.get(
+        "ANTHROPIC_BASE_URL"
     )
 
     if not key and not os.environ.get("ANTHROPIC_AUTH_TOKEN"):
@@ -56,9 +61,9 @@ def resolve_key(api_key: Optional[str] = None) -> str:
     """
     key = (
         api_key
-        or os.environ.get("ANTHROPIC_API_KEY")
         or os.environ.get("PACT_LLM_API_KEY")
         or os.environ.get("PACT_ANTHROPIC_API_KEY")
+        or os.environ.get("ANTHROPIC_API_KEY")
         or ""
     )
     if not key and not os.environ.get("ANTHROPIC_AUTH_TOKEN"):
