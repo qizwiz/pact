@@ -384,7 +384,18 @@ def _show_cut_vertex_contracts(
     """
     import os
 
-    cv_files = cut_vertex_files(functions, call_sites)
+    # Mine temporal coupling from git history and pass to cut_vertex_files
+    _coupling: list = []
+    try:
+        from .enrich import gather as _gather
+
+        _ctx = _gather(root, max_commits=500, github=False)
+        if _ctx and _ctx.tornhill:
+            _coupling = _ctx.tornhill.temporal_coupling
+    except Exception:
+        pass
+
+    cv_files = cut_vertex_files(functions, call_sites, coupling_edges=_coupling or None)
     if not cv_files:
         return
 

@@ -689,6 +689,7 @@ def find_bridge_violations(
 def cut_vertex_files(
     functions: list[FunctionManifest],
     call_sites: list[CallSite],
+    coupling_edges: list | None = None,
 ) -> dict[str, list[str]]:
     """Return a mapping of file path → list of cut-vertex function names.
 
@@ -696,6 +697,10 @@ def cut_vertex_files(
     disconnect the call graph — they are structurally load-bearing regardless
     of whether they have any violations. This is the NetworkX signal that
     should trigger intent analysis and Z3 contract verification.
+
+    If coupling_edges (list of TemporalCoupling from enrich) are provided,
+    co-commit pairs are overlaid as file-level nodes so that coordination
+    points visible only in git history are also surfaced as cut vertices.
     """
     if not _HAS_NX:
         return {}
@@ -703,12 +708,31 @@ def cut_vertex_files(
     if G is None:
         return {}
     G_undirected = G.to_undirected()
+
+    # Overlay temporal coupling edges: files that always move together are
+    # structurally coupled even when the call graph doesn't show it.
+    if coupling_edges:
+        for tc in coupling_edges:
+            a, b = tc.file_a, tc.file_b
+            if a not in G_undirected:
+                G_undirected.add_node(a, kind="file")
+            if b not in G_undirected:
+                G_undirected.add_node(b, kind="file")
+            if not G_undirected.has_edge(a, b):
+                G_undirected.add_edge(a, b, rel="COUPLED_WITH", strength=tc.strength)
+
     cut_verts: set[str] = set(nx.articulation_points(G_undirected))
     result: dict[str, list[str]] = {}
     for name in cut_verts:
         f = func_by_name.get(name)
         if f and f.file:
             result.setdefault(f.file, []).append(name)
+        elif (
+            name in G_undirected.nodes
+            and G_undirected.nodes[name].get("kind") == "file"
+        ):
+            # Coupling-only node: the file itself is the cut vertex
+            result.setdefault(name, []).append(name)
     return result
 
 
