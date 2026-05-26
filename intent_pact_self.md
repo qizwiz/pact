@@ -1,26 +1,33 @@
 # Structural Intent Analysis: `pact-standalone`
 
-**Generated:** 2026-05-26  **Model:** anthropic/claude-sonnet-4-5  **Modules:** 7
+**Generated:** 2026-05-26  **Model:** anthropic/claude-sonnet-4-5  **Modules:** 9
 
 ## Project Summary
 
-pact performs graph-based structural verification of codebases by building a call graph (via ast_utils.py, graph.py, import_graph.py), detecting architectural violations through formal constraint checking (checker.py, z3_engine.py, prover.py), and synthesizing minimal structural fixes (fixer.py, heal.py) using LLM-prompted patch generation with formal post-conditions. Unlike pattern-matching linters, pact treats violations as path properties over the call graph—a violation exists when a constraint fails along some execution path from source to sink.
+pact is a graph-first structural verifier that finds violations at component boundaries (load-bearing joints) by treating code as a call graph where violations are path properties violating formal contracts, not AST pattern matches. It orchestrates Z3/TLA+/CrossHair/Hypothesis formal verification, LLM-driven patch synthesis with self-improving prompts, and topological analysis (SZZ bug density, Hassan entropy, Martin instability metrics) to identify which functions, if broken, collapse the most downstream behavior.
 
 ## Violations
 
-**6 total** — 🟡 6 medium
+**6 total** — 🟠 3 high, 🟡 3 medium
 
-### `z3_engine.py`
+### `pipeline.py`
 
-**Purpose:** z3_engine.py implements two Z3 Fixedpoint Datalog engines for pact: (1) model_constraint verification (PactEngine) proves Django Model.objects.create() calls provide all required fields by joining site_creates EDB with model_req EDB to derive site_req IDB, then negating site_provides to yield violation IDB; (2) llm_response_unguarded verification (LLMResponseEngine) proves LLM-assigned variables are never accessed via .choices[0] without prior guard checks by joining llm_var EDB with unguarded_access EDB to derive llm_violation IDB. Both engines intern strings (file paths, field names, variable names) into 16-bit BitVec IDs, populate Z3 Fixedpoint with facts as rules, query with Exists over violation relation, and parse get_answer() DNF formula via _extract_tuples to yield concrete (site, field) or (scope, var) witness tuples. Unlike AST-only scanners, Z3 derives ALL violations in one query via stratified Datalog inference, treating violations as join/negation results over the call graph.
+**Purpose:** run_pipeline (line 735) orchestrates multi-tool verification pipeline: reads intent JSON from pact intent analyze (line 749), prompts LLM to generate step plan (lines 762-766), executes Z3/TLA+/Hypothesis/heal tools in dependency order (lines 783-791), and auto-injects Hypothesis for Z3 violations (lines 793-813). Main entry (line 840) returns 1 if violations found, 0 if all verified (line 875), enabling CI/CD integration. _execute_z3 (line 177) calls verify_contract with optional pre-built Z3 encoding from inv_z3_index (lines 190-203), _execute_tla (line 350) generates TLA+ spec from resource obligation via _render_tla_spec (line 406) and runs TLC (line 312), _execute_hypothesis (line 242) calls stress_contract with optional Z3 counterexample seed (lines 268-272). Purpose: deterministically route intent findings to formal tools, report structured verification results, enable automatic healing for confirmed violations.
 
-#### 🟡 `z3_engine.py:0`
-#### 🟡 `z3_engine.py:0`
-#### 🟡 `z3_engine.py:0`
-### `tda.py`
+#### 🟠 `pipeline.py:0`
+Contract claims single-call behavioral verification but implementation does not validate precondition (source_file exists) before calling verify_contract. If precondition violated, result is unreliable but still returned to caller.
 
-**Purpose:** tda.py computes persistent homology (H0, H1) of a directed call graph by converting it to an undirected simplicial complex with filtration values derived from edge betweenness centrality. `compute_persistence(G, weight_attr='weight')` at line 336 is the sole public API — returns `PersistenceResult` with `total_persistence_h1` (sum of finite H1 bar lengths) as the primary fragility score, replacing raw β₁ counts in sheaf_summary. Uses gudhi SimplexTree (preferred) for full persistence diagrams or falls back to Euler-characteristic β₁ counting via Union-Find when gudhi unavailable. Filtration design: edge with high betweenness centrality appears early (low filtration value 1/(centrality+ε)) because it carries structural load; triangles inserted at max(3 edge filtration values) per flag complex construction. Essential H1 classes (infinite bars) count toward β₁; finite bars measure cycle robustness.
+#### 🟠 `pipeline.py:0`
+Contract claims CEGIS-verified patches (counterexample-guided inductive synthesis requires oracle to verify candidate patches) but implementation allows apply=False mode where patches are not oracle-verified, violating verification guarantee.
 
-#### 🟡 `tda.py:0`
-#### 🟡 `tda.py:0`
-#### 🟡 `tda.py:0`
+#### 🟠 `pipeline.py:0`
+OSError loading source produces warning but no exception. Empty source passed to verifiers leads to meaningless verification results (e.g., vacuous truth) counted as 'verified' in summary, violating soundness: 'verified' should mean contract checked, not 'source missing, assume true'.
+
+#### 🟡 `pipeline.py:0`
+Contract claims adversarial inputs derived from contract (via Z3 counterexample) but implementation allows z3_ce=None without warning, meaning Hypothesis may run without contract-guided seeding, violating 'adversarial inputs from contract' guarantee.
+
+#### 🟡 `pipeline.py:0`
+JSONDecodeError produces warning but no exception or error status in PipelineResult. Empty plan returned from LLM failure is indistinguishable from empty plan returned when no work needed, misleading user. Warnings may not be visible if stderr not monitored.
+
+#### 🟡 `pipeline.py:0`
+Liveness template defines EventualCompletion as <>(done=TRUE) which is trivially satisfiable (Complete action exists). TLC reports 'verified' but property does not constrain system behavior (e.g., no fairness, no stuttering prevention). Status='verified' misleads caller into thinking strong liveness property checked.
