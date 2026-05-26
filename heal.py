@@ -1188,7 +1188,18 @@ def heal_project(
                 continue
             inv = inv_index.get(v.get("invariant_id", ""))
             if not inv:
-                continue
+                # Intent-analysis violations carry context in explanation/evidence
+                # directly rather than via an invariant reference. Synthesise a
+                # minimal invariant so the CEGIS loop has something to work with.
+                expl = v.get("explanation", "") or v.get("evidence", "")
+                if not expl:
+                    continue
+                inv = {
+                    "id": v.get("invariant_id") or "intent_gap",
+                    "type": "intent_gap",
+                    "statement": expl,
+                    "confidence": 0.85,
+                }
             to_heal.append((v, inv))
 
     heal = HealResult(
@@ -1200,7 +1211,7 @@ def heal_project(
     # This closes the oracle safety gap: patches applied to disk are oracle-validated
     # by default rather than relying on Z3 alone.
     effective_test_cmd = test_cmd
-    if apply and not effective_test_cmd and project_root:
+    if (apply or auto) and not effective_test_cmd and project_root:
         effective_test_cmd = _autodetect_test_cmd(project_root)
         if effective_test_cmd and verbose:
             print(f"[heal] auto-detected oracle: {effective_test_cmd!r}")
