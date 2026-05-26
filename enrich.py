@@ -205,7 +205,7 @@ class TemporalCoupling:
     file_a: str
     file_b: str
     co_changes: int
-    strength: float  # max(pct_a, pct_b): fraction of A's commits where B also changed
+    strength: float  # min(pct_a, pct_b): Tornhill weaker-pairing coupling strength
 
     def render(self) -> str:
         return (
@@ -220,26 +220,49 @@ class Hotspot:
 
     file: str
     churn: int
-    complexity: int
-    score: float  # churn × complexity
+    complexity: int  # latest observed cyclomatic complexity
+    complexity_trend: float  # linear slope over commits (+ = worsening, - = improving)
+    score: float  # churn × complexity_latest
+    bug_density: float = 0.0  # fraction of commits flagged as bug-introducing (SZZ)
+    change_entropy: float = 0.0  # Hassan (ICSE 2009) change entropy
 
     def render(self) -> str:
         name = "/".join(Path(self.file).parts[-3:])
-        return f"`{name}` — score {self.score:.0f} (churn={self.churn}, cx={self.complexity})"
+        if self.complexity_trend > 0.05:
+            trend = "▲"
+        elif self.complexity_trend < -0.05:
+            trend = "▼"
+        else:
+            trend = "—"
+        parts = [
+            f"`{name}` — score {self.score:.0f} "
+            f"(churn={self.churn}, cx={self.complexity}{trend})"
+        ]
+        if self.bug_density > 0:
+            parts.append(f"bug-density={self.bug_density:.0%}")
+        if self.change_entropy > 0:
+            parts.append(f"entropy={self.change_entropy:.2f}")
+        return " ".join(parts)
 
 
 @dataclass
 class KnowledgeSilo:
-    """File with high churn but very few authors — orphaned knowledge risk."""
+    """File with high churn but concentrated ownership — bus-factor / drive-by risk."""
 
     file: str
     churn: int
     n_authors: int
     authors: list[str]
+    top_author_ownership: float = 0.0  # fraction of commits by the dominant author
+    minor_contributor_count: int = 0  # authors with < 5% ownership
 
     def render(self) -> str:
         name = "/".join(Path(self.file).parts[-3:])
-        return f"`{name}` — {self.churn} commits, {self.n_authors} author(s)"
+        return (
+            f"`{name}` — {self.churn} commits, {self.n_authors} author(s), "
+            f"top-owner={self.top_author_ownership:.0%}, "
+            f"drive-bys={self.minor_contributor_count}"
+        )
 
 
 @dataclass
@@ -496,9 +519,20 @@ def render_file_context(
                 h.file.endswith("/".join(file_parts[i:]))
                 for i in range(max(0, len(file_parts) - 3), len(file_parts) - 1)
             ):
+                if h.complexity_trend > 0.05:
+                    trend_str = "▲ getting worse"
+                elif h.complexity_trend < -0.05:
+                    trend_str = "▼ improving"
+                else:
+                    trend_str = "— stable"
+                extra = ""
+                if h.bug_density > 0:
+                    extra += f", bug-density={h.bug_density:.0%}"
+                if h.change_entropy > 0:
+                    extra += f", entropy={h.change_entropy:.2f}"
                 parts.append(
                     f"**Hotspot score: {h.score:.0f}** (churn={h.churn}, "
-                    f"complexity={h.complexity}) — high structural risk"
+                    f"cx={h.complexity} {trend_str}{extra}) — high structural risk"
                 )
                 break
 
@@ -520,7 +554,9 @@ def render_file_context(
         for s in ctx.tornhill.knowledge_silos:
             if Path(s.file).name == basename:
                 parts.append(
-                    f"**Knowledge silo**: {s.n_authors} author(s) across {s.churn} commits — "
+                    f"**Knowledge silo**: {s.n_authors} author(s) across {s.churn} commits "
+                    f"(top-owner={s.top_author_ownership:.0%}, "
+                    f"drive-bys={s.minor_contributor_count}) — "
                     "changes here carry orphaned-knowledge risk"
                 )
                 break
@@ -698,13 +734,24 @@ def _mine_pydriller(
     silo_min_churn: int,
 ) -> TornhillMetrics:
     """PyDriller-based git archaeology — hotspots, temporal coupling, knowledge silos."""
+    import math
     from collections import Counter, defaultdict
     from itertools import combinations
 
     churn: dict[str, int] = defaultdict(int)
-    complexity_max: dict[str, int] = defaultdict(int)
+    # complexity_series[path] = list of (commit_index, complexity) in traversal order
+    complexity_series: dict[str, list[tuple[int, int]]] = defaultdict(list)
     co_changes: Counter = Counter()
     authors: dict[str, set] = defaultdict(set)
+    # author_commits[path][email] = count of commits by that author touching path
+    author_commits: dict[str, Counter] = defaultdict(Counter)
+    # commit_file_counts[commit_hash] = number of py files in that commit (for entropy)
+    commit_file_counts: dict[str, int] = {}
+    # file_commit_hashes[path] = list of commit hashes in order (for entropy sum)
+    file_commit_hashes: dict[str, list[str]] = defaultdict(list)
+
+    commit_index = 0
+    all_commits_ordered: list[object] = []  # store for SZZ pass
 
     for commit in _PyDrillerRepo(str(root), num_workers=4).traverse_commits():
         py_files = [
@@ -713,52 +760,122 @@ def _mine_pydriller(
             if f.new_path and f.new_path.endswith(".py")
         ]
         paths = [f.new_path for f in py_files]
+        commit_file_counts[commit.hash] = len(paths)
+        all_commits_ordered.append(commit)
         for f in py_files:
             p = f.new_path
             churn[p] += 1
             authors[p].add(commit.author.email)
-            if f.complexity and f.complexity > complexity_max[p]:
-                complexity_max[p] = f.complexity
+            author_commits[p][commit.author.email] += 1
+            file_commit_hashes[p].append(commit.hash)
+            if f.complexity is not None:
+                complexity_series[p].append((commit_index, f.complexity))
         for a, b in combinations(sorted(paths), 2):
             co_changes[(a, b)] += 1
+        commit_index += 1
 
-    # Hotspots
+    # Hassan (ICSE 2009) change entropy per file
+    # entropy(f) = -sum_c( p_c(f) * log2(p_c(f)) )
+    # where p_c(f) = 1 / |files_in_commit_c| for each commit c touching f
+    change_entropy: dict[str, float] = {}
+    for path, hashes in file_commit_hashes.items():
+        h = 0.0
+        for commit_hash in hashes:
+            n = commit_file_counts.get(commit_hash, 1)
+            p = 1.0 / max(1, n)
+            h -= p * math.log2(p) if p > 0 else 0.0
+        change_entropy[path] = round(h, 4)
+
+    # Hotspots — use latest complexity + linear trend
     hotspots: list[Hotspot] = []
-    for f, cx in complexity_max.items():
-        if cx > 0:
-            ch = churn[f]
-            hotspots.append(
-                Hotspot(file=f, churn=ch, complexity=cx, score=float(ch * cx))
+    for f, series in complexity_series.items():
+        if not series:
+            continue
+        # series is in traversal order; latest = last element
+        cx_latest = series[-1][1]
+        if cx_latest <= 0:
+            continue
+        # Linear trend: (last - first) / max(1, n-1)
+        cx_first = series[0][1]
+        n_cx = len(series)
+        trend = round((cx_latest - cx_first) / max(1, n_cx - 1), 2)
+        ch = churn[f]
+        hotspots.append(
+            Hotspot(
+                file=f,
+                churn=ch,
+                complexity=cx_latest,
+                complexity_trend=trend,
+                score=float(ch * cx_latest),
+                change_entropy=change_entropy.get(f, 0.0),
             )
+        )
     hotspots.sort(key=lambda h: -h.score)
 
-    # Temporal coupling — percentage-based to handle small repos
+    # Temporal coupling — use min (Tornhill: weaker pairing avoids overestimation)
     coupling: list[TemporalCoupling] = []
     for (a, b), cnt in co_changes.items():
         if cnt < coupling_min_cochanges:
             continue
         pct_a = cnt / churn[a] if churn[a] else 0.0
         pct_b = cnt / churn[b] if churn[b] else 0.0
-        strength = max(pct_a, pct_b)
+        strength = min(pct_a, pct_b)
         if strength >= coupling_min_pct:
             coupling.append(
                 TemporalCoupling(file_a=a, file_b=b, co_changes=cnt, strength=strength)
             )
     coupling.sort(key=lambda c: -c.strength)
 
-    # Knowledge silos
+    # Knowledge silos — Bird et al. (ESEC/FSE 2011) ownership-fraction model
     silos: list[KnowledgeSilo] = []
     for f, auth_set in authors.items():
-        if churn[f] >= silo_min_churn and len(auth_set) <= silo_max_authors:
+        total = churn[f]
+        if total < silo_min_churn:
+            continue
+        ac = author_commits[f]
+        ownership = {email: ac[email] / total for email in ac}
+        top_ownership = max(ownership.values()) if ownership else 0.0
+        minor_count = sum(1 for v in ownership.values() if v < 0.05)
+        is_silo = (top_ownership > 0.80) or (minor_count >= 3 and total >= 5)
+        if is_silo:
             silos.append(
                 KnowledgeSilo(
                     file=f,
-                    churn=churn[f],
+                    churn=total,
                     n_authors=len(auth_set),
                     authors=list(auth_set),
+                    top_author_ownership=round(top_ownership, 4),
+                    minor_contributor_count=minor_count,
                 )
             )
     silos.sort(key=lambda s: (-s.churn, s.n_authors))
+
+    # SZZ bug-introducing density — wrap in try/except (git blame can fail/timeout)
+    try:
+        from pydriller import Git as _PyDrillerGit
+
+        git_obj = _PyDrillerGit(str(root))
+        # bug_introducing_commits[path] = set of commit hashes flagged as introducing
+        bug_introducing: dict[str, set[str]] = defaultdict(set)
+        for commit in all_commits_ordered:
+            if not _FIX_RE.search(getattr(commit, "msg", "") or ""):
+                continue
+            try:
+                introducing = git_obj.get_commits_last_modified_lines(commit)
+                # introducing is dict[str, set[str]] mapping file_path → set of hashes
+                for path, intro_hashes in introducing.items():
+                    if path.endswith(".py"):
+                        bug_introducing[path].update(intro_hashes)
+            except Exception:  # noqa: BLE001
+                pass
+        # Attach bug_density to hotspots
+        hotspot_map = {h.file: h for h in hotspots}
+        for path, intro_set in bug_introducing.items():
+            if path in hotspot_map:
+                total = churn[path]
+                hotspot_map[path].bug_density = round(len(intro_set) / max(1, total), 4)
+    except Exception:  # noqa: BLE001
+        pass
 
     return TornhillMetrics(
         hotspots=hotspots, temporal_coupling=coupling, knowledge_silos=silos

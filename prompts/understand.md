@@ -44,6 +44,10 @@ falls outside the visible range. Do NOT read lines you can already see inline.
 3. Each git commit "fix X" / "ensure Y" with no visible guard → `intent_gap` invariant, confidence 0.85.
 4. Source truncated mid-function body → `intent_gap` invariant at confidence 0.70, quoting the last visible line, stating what logic is unverifiable.
 5. If the last visible line is a bare `def` with no body at all → mandatory `intent_gap` invariant at confidence 0.70. The `truncation_audit.last_complete_unit` must be the previous complete unit, not this bare def.
+6. **COMMENTED-OUT CODE**: Any commented-out validation, error handling, or business logic → `intent_gap` invariant at confidence 0.95, stating what the comment declares should happen versus what actually executes.
+7. **UNDOCUMENTED SENTINEL PATTERNS**: Any sentinel object (e.g., `_UNSET = object()`) lacking type annotations or docstring explanation of when to use it → `intent_gap` invariant at confidence 0.75.
+8. **RESTORATION FAILURES**: Any `finally:` clause that clears state without restoring prior values, when the function/context-manager docstring claims safe nesting or isolation → `intent_gap` invariant at confidence 0.90.
+9. **INCOMPLETE FIELD AT TRUNCATION**: If source ends with a comment suggesting a field (e.g., `# Per-org PII`) but no field definition follows before truncation → mandatory `intent_gap` invariant at confidence 0.70 stating field name, type, constraints unknown.
 
 **GIT PATTERN SIGNALS** — treat as first-class evidence:
 - `REVERT (Nx)`: confidence 0.95.
@@ -52,86 +56,306 @@ falls outside the visible range. Do NOT read lines you can already see inline.
 
 ---
 
-## ██ HARD STOP — READ THIS BEFORE PRODUCING A SINGLE CHARACTER ██
+## ██ CATASTROPHIC FAILURE MODE: SCHEMA VIOLATION ██
 
-The downstream parser accepts EXACTLY ONE opening: `{"truncation_audit":`
+**ROOT CAUSE OF 100% OF RECENT FAILURES**: Writing `{"path":` or `{"understanding":` as the opening.
 
-If your output begins with ANY other character — `{"path":`, `{"understanding":`, `{"file":`, a space, a newline, a markdown fence — the parser DISCARDS THE ENTIRE OUTPUT. There is no recovery. The run is lost.
-
-This is not a formatting preference. It is a binary parse gate.
-
-**Before you type anything**: say to yourself "My first characters will be: {"truncation_audit":" — then type exactly those characters.
-
-Do NOT type:
-- `{"path":` ← this is the most common failure mode. `path` is NEVER a top-level key.
-- `{"file":` ← also forbidden
-- `{"understanding":` ← also forbidden
-- Any markdown code fence
-- Any explanatory text
-
----
-
-## ABSOLUTE RULE 1 — SCHEMA
-
-The output JSON has EXACTLY FOUR top-level keys in this order:
+**THE SCHEMA HAS EXACTLY FOUR TOP-LEVEL KEYS**:
 1. `truncation_audit`
 2. `invariants`
 3. `violations`
 4. `understanding`
 
-Keys named `path`, `file`, `module`, or anything else are FORBIDDEN at the top level. Their presence is a schema failure equal to producing no output.
+**KEYS THAT DO NOT EXIST AND WILL CAUSE PARSE FAILURE**:
+- `path`
+- `file`
+- `module`
+- `filename`
+- `summary`
+- `metadata`
+- `analysis`
+- `description`
+- `overview`
 
-**SCHEMA VERIFICATION**: After writing every closing `}` or `]`, ask yourself: "What top-level keys have I written so far?" If you see anything other than the four keys above, you have already failed.
+**BEFORE YOU TYPE THE FIRST CHARACTER**:
 
----
+Recite these three sentences aloud:
 
-## ABSOLUTE RULE 2 — EMISSION ORDER WITH MANDATORY GATES
+1. "The first 21 characters I will type are: `{\"truncation_audit\":{` with no whitespace before the opening brace."
+2. "The string `\"path\":` does not appear anywhere in the schema. If I write it, the parser will reject my entire response."
+3. "I will verify character 1 is `{`, characters 2-20 are `\"truncation_audit\":{`, character 21 is the second opening brace."
 
-Follow these steps in exact order. Do not skip or reorder.
+**THE ONLY VALID OPENING**:
+```
+{"truncation_audit":{
+```
 
-**Step 1**: Write ONLY these characters as your absolute first output: `{"truncation_audit":`
-Then fill in the truncation_audit object and close it with `}`.
-
-**Step 2**: Immediately after the `}` that closes truncation_audit, write: `,"invariants": []`
-This is a placeholder. Do NOT fill it yet. Write it literally as `[]`.
-
-**Step 3**: Immediately write: `,"violations": []`
-This is a placeholder. Do NOT fill it yet.
-
-**Step 4**: Immediately write: `,"understanding": {`
-Then fill all seven understanding fields and close with `}`.
-
-**Step 5**: Write the final `}` to close the outer object.
-
-**Step 6 — MANDATORY BACKFILL**: NOW go back and replace `"invariants": []` with real invariants and `"violations": []` with real violations. If your token budget is exhausted, write at minimum one invariant per non-zero pattern_count.
-
-**FAILURE PATTERN TO AVOID**: The most common failure is writing `{"path":` or `{"understanding":` first. If you catch yourself doing this, your entire output is already invalid. The only correct first token after `{` is `"truncation_audit"`.
-
-**BUDGET RULE**: After writing `design_intent`, count remaining fields. If you have used more than 40% of your estimated token budget, write ONE SENTENCE per remaining understanding field and close it. A closed one-sentence field is infinitely better than a truncated mid-sentence field that breaks JSON.
-
-**CRITICAL**: A string field that ends without a closing `"` breaks the entire JSON. If you are running low on budget inside any string field, write `(omitted for budget)"` and close the field immediately. Never let a string field truncate mid-word.
+**AFTER YOU TYPE THE 21ST CHARACTER**: Stop. Verify you wrote `{"truncation_audit":{`. If you wrote anything else, you have failed the task before beginning.
 
 ---
 
-## ABSOLUTE RULE 3 — NO FABRICATION
+## ██ EMISSION ORDER: MANDATORY SEQUENCE ██
 
-Before writing any claim:
-1. Does a `def`, `class`, or top-level assignment line for this name appear in the source block?
-2. Can you quote the exact source line?
+**PRIMARY FAILURE MODE**: LLM writes understanding first (400+ tokens) → exhausts context window mid-field → never reaches invariants → JSON incomplete and unparseable.
 
-If NO to either: write `[not visible in truncated source]`.
+**THE ONLY VALID EMISSION ORDER**:
 
-Four traps:
-- **Docstring trap**: a name in a docstring is not defined. Only `def` lines count.
-- **Specificity trap**: invented variable names or thresholds are worse than nothing.
-- **Completion trap**: when source truncates mid-function, stop at the truncation point.
-- **Inference trap**: do not infer a function exists because something calls it.
+### Step 1: Write truncation_audit (budget: 150 tokens max)
+
+```json
+{"truncation_audit":{
+  "last_complete_unit": "def create_superuser(self, email, password=None, **extra_fields)",
+  "cutoff_line": "organization =",
+  "visible_definitions": ["CustomUserManager", "CustomUserManager.create_user", "CustomUserManager.create_superuser", "User", "User.id", "User.created_at", "User.email", "User.name", "User.is_active", "User.is_staff", "User.invited_by", "User.organization_role"],
+  "docstring_only_names": [],
+  "pattern_counts": {
+    "except_clauses": 0,
+    "timeout_params": 0,
+    "regex_calls": 0,
+    "numeric_thresholds": 0,
+    "status_code_checks": 0,
+    "truncated_bodies": 0,
+    "bare_def_no_body": 0,
+    "silent_fallback_returns": 0,
+    "commented_out_code": 0,
+    "transaction_blocks": 0,
+    "finally_without_restoration": 0,
+    "sentinel_without_types": 0,
+    "incomplete_field_definitions": 0
+  }
+},
+```
+
+**CRITICAL RULES FOR truncation_audit**:
+
+1. **last_complete_unit**: The last syntactic unit that is 100% complete in visible source. A field definition starting with a comment (e.g., `# Per-org PII`) but having no `field_name = models...` line is NOT complete. An incomplete comment is NOT a complete unit. Quote the line of the PREVIOUS complete unit.
+
+2. **cutoff_line**: The exact last visible line, even if it's a partial comment or mid-token.
+
+3. **visible_definitions**: ONLY constructs with complete definitions. For a Django model field, the definition is complete when the line contains `field_name = models.FieldType(...)`. A comment like `# Per-org PII` with no field definition following is NOT a visible definition.
+
+4. **HALLUCINATION PREVENTION**: If a field name does NOT appear in `visible_definitions`, you MUST NOT discuss it in understanding. If visible source shows 9 fields but you write "the model has 15 fields" and list 6 fields not in visible source, you are hallucinating.
+
+5. **INCOMPLETE FIELD PATTERN COUNT**: If source ends with a comment suggesting a field (e.g., `# Per-org PII` at line 73) but no field definition follows before EOF, `pattern_counts.incomplete_field_definitions` MUST be ≥1. This triggers mandatory `intent_gap` invariant emission in Step 7.
+
+### Step 2: Write invariants placeholder (2 tokens)
+
+```json
+"invariants":[],
+```
+
+**WHY THIS MUST BE STEP 2**: If you write understanding first and exhaust your context window mid-understanding, the JSON will be incomplete (no invariants, no violations, no closing braces). The parser will reject it entirely. Writing the placeholder ensures the field exists even if you truncate later.
+
+### Step 3: Write violations placeholder (2 tokens)
+
+```json
+"violations":[],
+```
+
+### Step 4: Open understanding object
+
+```json
+"understanding":{
+```
+
+### Step 5: Fill understanding fields with STRICT BUDGET
+
+**TOKEN BUDGET CALCULATION**:
+- Count visible_definitions length: N
+- If N ≤ 5: 120 words per field
+- If N = 6–12: 70 words per field  
+- If N ≥ 13: 50 words per field
+
+**EMERGENCY STRING CLOSURE PROTOCOL**:
+
+If you are mid-sentence in ANY understanding field and sense you are approaching token limit:
+
+1. Stop typing immediately
+2. Write: ` [budget limit]`
+3. Write closing `"`
+4. Move to next field
+
+A closed truncated string is valid JSON. An unclosed string destroys the entire document.
+
+**CATASTROPHIC TRUNCATION PREVENTION**:
+
+After completing `understanding.design_intent` (field 2 of 7), perform this check:
+
+- Estimate token budget consumed
+- If >40% consumed, write ONE SENTENCE MAXIMUM for each remaining field
+- Ensure every field closes with `"` before moving to next
+
+**FIELD-BY-FIELD REQUIREMENTS**:
+
+#### purpose
+
+What specific problem does THIS module solve, based ONLY on visible definitions?
+
+**FORBIDDEN PATTERNS** (score 0 if present):
+- "handles errors gracefully" (no specific construct quoted)
+- "processes data" (generic, could apply to any module)
+- "provides utilities" (meaningless)
+- "manages X" without naming specific functions/classes
+
+**REQUIRED PATTERN**: Quote a construct → explain its impact → state the consequence.
+
+**GOOD EXAMPLE**:
+"`CustomUserManager.create_user` calls `self.normalize_email(email)` at line 19 before user creation, ensuring all User.email values are lowercased — this means email-based lookups must use `email.lower()` or risk false negatives for mixed-case inputs."
+
+**BAD EXAMPLE**:
+"The module manages user accounts."
+
+**TRUNCATION ACKNOWLEDGMENT**:
+If source is truncated, state: "Source truncates at line X with incomplete [construct]; behavior beyond this point cannot be verified."
+
+**HALLUCINATION GATE**:
+Before writing about a field/method, verify it appears in `visible_definitions`. If `visible_definitions` lists 9 fields and you write "the model has 15 fields," you are hallucinating 6 invisible fields.
+
+#### design_intent
+
+Name exactly 2 specific visible design decisions. For each: quote the exact construct, state the choice made, name the rejected alternative, and explain the consequence.
+
+**FORBIDDEN**: "Uses standard Django patterns" — this is not a design decision, it's a framework choice.
+
+**GOOD EXAMPLE**:
+"`CustomUserManager.create_superuser` validates `is_staff=True` at line 29 by raising ValueError if false, rejecting the alternative of silently coercing the value to True. Consequence: calling code must explicitly pass `is_staff=True` or catch ValueError; Django admin's createsuperuser command will fail with clear error if middleware accidentally sets is_staff=False."
+
+**IF SOURCE TRUNCATED**: State "Source truncates before [construct]; cannot analyze design decisions in invisible code."
+
+#### key_abstractions
+
+**MUST NOT be empty if any visible definitions exist.**
+
+**CHARACTER BUDGET: N×60 characters** (where N = length of visible_definitions). At the limit, write `[budget limit]"` and close.
+
+For every name in `visible_definitions` (and ONLY those names):
+
+- **Classes**: inheritance, key fields visible, role.
+- **Functions**: signature, return value, key branches visible. For truncated bodies, quote last visible line and state `(body continues beyond visible source)`.
+- **Fields**: type, constraints, default. For incomplete definitions, state `(field definition truncated at line X; type and constraints unknown)`.
+- **Constants**: type, value, role.
+
+**HALLUCINATION DETECTION**: Before writing about a method/field, verify it appears in `visible_definitions`. If not, do not discuss it.
+
+**FOR INCOMPLETE CONSTRUCTS**:
+
+If source ends mid-field-definition (e.g., comment `# Per-org PII` at line 73 but no `pii = models...` line follows), state:
+
+"Source truncates at line 73 after comment `# Per-org PII`; no field definition visible. Field name, type (CharField? JSONField?), null constraints, default value unknown — cannot verify schema, validation, or cascade behavior."
+
+#### behavioral_contract
+
+Quote ONLY exact lines from visible source that create guarantees.
+
+**HARD RULE**: Do not discuss methods not in `visible_definitions`.
+
+**SWALLOWED-EXCEPTION RULE**: For every `except` that does not log or re-raise, state:
+1. Function/scope containing it.
+2. Exact except clause.
+3. What caller receives.
+4. User-visible symptom.
+
+**TRUNCATION IMPACT**: If source truncates mid-function, state: "Cannot verify error-handling contracts for code beyond line X."
+
+#### failure_modes
+
+**BUDGET RULE**: If near token limit, write one sentence per failure mode and close.
+
+For each try/except visible: quote verbatim.
+
+For each `return None`/`return []` on non-success path visible: state what conditions produce it.
+
+**TRUNCATION FAILURE MODE**: If any function body is truncated, state: "The body of `X` is truncated at `[last visible line]`; logic after that point cannot be audited."
+
+**INCOMPLETE FIELD FAILURE MODE**:
+
+If source ends with a comment suggesting a field (e.g., `# Per-org PII`) but no field definition follows, state:
+
+"Source truncates at line 73 after comment `# Per-org PII`; if this field exists beyond truncation, its type, constraints, and default are unknown. If this is a JSONField with no validator, malformed JSON can crash read paths; if ForeignKey with on_delete=CASCADE, deletion of referenced object will cascade without visible verification."
+
+#### assumptions
+
+List implicit assumptions embedded in VISIBLE code. For each, quote the exact expression and explain what breaks if violated.
+
+**HIGH-VALUE ASSUMPTIONS**:
+- **Field defaults**: `is_active=True` at line 45 — assumes new users are active; if registration workflow requires email verification before activation, this default bypasses the gate.
+- **Unique constraints**: `email = models.EmailField(unique=True)` — assumes email is stable identifier; if users can change email, old email becomes inaccessible but unique constraint prevents reuse, orphaning the address.
+- **ForeignKey null constraints**: `invited_by = models.ForeignKey("self", ..., null=True, default=None)` — assumes invited_by can be unknown; if analytics require tracking invitation chains, null breaks the chain.
+
+**IF TRUNCATED**: State "Cannot verify assumptions in code beyond line X."
+
+#### resource_obligations
+
+Look for: database transactions, S3 writes, async task spawning, global state mutation, ContextVar management.
+
+If none visible in truncated source, write `"[none detected in visible source; source truncates at line X]"`.
+
+### Step 6: Close understanding object (DO NOT CLOSE ROOT YET)
+
+```json
+  }
+```
+
+**WAIT — DO NOT CLOSE ROOT OBJECT YET. YOU MUST BACKFILL INVARIANTS AND VIOLATIONS FIRST.**
+
+### Step 7: MANDATORY BACKFILL — Invariants
+
+Scroll back to the line where you wrote `"invariants":[],`
+
+Replace the `[]` with your actual invariants array.
+
+**INVARIANT DEBT RULE**:
+
+Count your `pattern_counts`. Each non-zero count requires ≥1 invariant.
+
+Before submission:
+- `incomplete_field_definitions: 1` → must have ≥1 `intent_gap` invariant stating what cannot be verified
+- `except_clauses: 1` → must have ≥1 error_contract or intent_gap invariant
+- `truncated_bodies: 1` → must have ≥1 intent_gap invariant at confidence 0.70
+
+If `sum(non_zero_pattern_counts) > len(invariants)`, you have failed.
+
+**MANDATORY INVARIANT FOR INCOMPLETE FIELD AT TRUNCATION**:
+
+If source ends with a comment (e.g., `# Per-org PII` at line 73) but no field definition follows:
+
+```json
+{
+  "id": "inv_001",
+  "type": "intent_gap",
+  "statement": "Source truncates at line 73 after comment `# Per-org PII`; field definition incomplete or invisible. Cannot verify: (1) field name, (2) field type (CharField? JSONField? ForeignKey?), (3) null/blank constraints, (4) default value, (5) on_delete cascade behavior if ForeignKey, (6) validators/choices if CharField. If this field exists beyond visible source and lacks schema validation, malformed data can propagate to reads; if ForeignKey with CASCADE, deletion of referenced object will cascade-delete AgentccOrgConfig records.",
+  "applies_to": ["AgentccOrgConfig.<unknown_field>"],
+  "formal": "∀ field f where comment_suggests(f) ∧ definition_invisible(f): field_type(f) ∧ constraints(f) ∧ cascade_semantics(f) ∧ validation(f) unverifiable",
+  "derived_from": "# Per-org PII",
+  "confidence": 0.70
+}
+```
+
+**CALIBRATION**: Confidence scores MUST span ≥0.25. Directly quoted lines → 0.90–0.97. One-step inference → 0.70–0.89. Indirect → 0.60–0.69.
+
+**INVARIANT QUALITY TEST**: Could this have been written without reading the code? If yes, rewrite to reference a specific line/threshold/choice.
+
+### Step 8: MANDATORY BACKFILL — Violations
+
+Replace `"violations":[]` with actual violations.
+
+**CONTRACT-FIRST GATE**: A violation is valid only if it contradicts a specific claim in `behavioral_contract` or `purpose`. Before writing, complete: "The code claims [X]. The visible code fails to deliver [X] because [Y]." If you cannot complete this from visible code, do not emit.
+
+**HALLUCINATION GATE**: Do not report violations in code not present in `visible_definitions`.
+
+**VIOLATIONS FORCING RULE**: If you have invariants but zero violations, you MUST add a sibling field `"violations_audit":` (string) explaining for each invariant type why no violation exists in visible code.
+
+### Step 9: Close root object
+
+```json
+}
+```
 
 ---
 
-## PRE-FLIGHT PATTERN COUNT — MANDATORY AFTER WRITING `{"truncation_audit":` AND BEFORE FILLING IT
+## PRE-FLIGHT PATTERN COUNT — MANDATORY
 
-Scan the visible source and record these counts:
+Before writing ANY output, scan visible source and count:
 
 - `except` clauses: ___
 - `timeout=` parameters: ___
@@ -139,120 +363,19 @@ Scan the visible source and record these counts:
 - Hard-coded numeric constants used as thresholds: ___
 - `status_code` checks: ___
 - Functions whose body is truncated (def line visible, body cut off): ___
-- Bare `def` lines with NO body at all (source ends at the def): ___
-- `return None` / `return []` / `return "main"` on non-success paths: ___
-
-These counts create MANDATORY INVARIANT SLOTS. Each non-zero count requires at least one invariant.
+- Bare `def` lines with NO body at all: ___
+- `return None` / `return []` / `return "fallback"` on non-success paths: ___
+- Commented-out validation/error-handling code: ___
+- Transaction decorators (`@transaction.atomic`, `select_for_update()`): ___
+- `finally:` clauses that clear state without restoration: ___
+- Sentinel objects (e.g., `_UNSET = object()`) lacking type hints: ___
+- Incomplete field definitions:
+  - Lines ending with `=` but no value: ___
+  - Comments suggesting fields (e.g., `# Per-org PII`) with no field definition following before truncation: ___
 
 Write these counts under `"pattern_counts"` inside `truncation_audit`.
 
-**INVARIANT DEBT RULE**: After writing understanding, before closing the document, count your invariants. If `invariants.length < number of non-zero pattern_counts`, you are missing required invariants. Add them before closing.
-
----
-
-## PART 0 — TRUNCATION AUDIT
-
-Field: `truncation_audit`. Answer exactly:
-1. **last_complete_unit**: The last syntactic unit 100% complete in the source. Quote its `def`/`class`/assignment line verbatim. A bare `def` with no body is NOT a complete unit.
-2. **cutoff_line**: The exact last line of the source block, quoted verbatim.
-3. **visible_definitions**: Every name with an actual `def`, `class`, or top-level assignment. Mark truncated bodies with `(truncated body)`. Mark bare def lines with no body as `(no body visible)`.
-4. **docstring_only_names**: Names in docstrings/comments/call sites that lack a `def`/`class`/assignment in the source.
-5. **pattern_counts**: The counts from the pre-flight scan above.
-
----
-
-## PART 1 — UNDERSTANDING
-
-**Gate**: Every name in every sentence must appear in `truncation_audit.visible_definitions`. If not, write `[not visible in truncated source]`.
-
-**Sentence structure**: Every sentence must contain at least one backtick-quoted fragment that appears verbatim in the source.
-
-**Dynamic word budget**:
-- N ≤ 5 visible definitions: 120 words per field.
-- N = 6–12: 70 words per field.
-- N ≥ 13: 50 words per field.
-
-**Character budget for `key_abstractions`**: N×60 characters. Stop at the limit, write `[truncated]"` and close the field.
-
-**STRING CLOSURE RULE**: Every understanding field is a JSON string. If you approach your token limit inside a string, STOP adding content and close the string with `"`. An empty or one-sentence closed string is valid JSON. A string that ends without `"` breaks the entire document.
-
-### purpose
-What specific problem does THIS module solve, based ONLY on visible definitions? Name visible functions/classes by role. Do NOT restate the module docstring — add specificity it omits. Acknowledge truncation if source is cut off.
-
-FORBIDDEN: Generic phrases like "handles errors gracefully", "processes data", "provides utilities".
-
-REQUIRED: Quote a specific construct and explain its consequence.
-
-GOOD: "`fetch_file_head` returns `lines[:n_lines]` with a hard `timeout=10`, but no except clause wraps the `session.get` call, so any `requests.Timeout` propagates to the caller uncaught — callers that do not handle it will abort the entire corpus scan."
-
-BAD: "The module builds an import graph and provides analysis utilities."
-
-### design_intent
-Name exactly 2 specific visible design decisions. For each: quote the exact construct, state the choice made, name the rejected alternative, and explain the consequence if the alternative were used.
-
-FORBIDDEN: "Uses optional dependency pattern" — states a fact without tradeoffs.
-
-GOOD: "`get_default_branch` ends with bare `return \"main\"` on any non-200 response rather than raising or returning `None`. The rejected alternative — raising on 401/403 and sleeping on 429 — would surface credential problems early. The chosen approach means a rate-limited or unauthorized scan silently treats every repo as being on branch `main`, producing systematic 404s in all subsequent `fetch_file_head` calls without any error signal."
-
-### key_abstractions
-**MUST NOT be empty if any visible definitions exist.**
-
-**CHARACTER BUDGET: N×60 characters. Stop at the limit, write `[truncated]"`, close the field.**
-
-For every name in `visible_definitions` (and ONLY those names):
-- Constants: type, value, role, any inline comments.
-- Functions: signature, key branches visible in body. For truncated bodies, quote the last visible line and note truncation.
-- **For every `except` clause: quote it verbatim and state the return value or side effect.**
-- **For every `timeout=`: quote it verbatim and state what exception propagates if it fires.**
-- **For every non-200 HTTP status check: quote the branch verbatim and state the fallback.**
-- **For every bare `def` with no visible body: note it explicitly as `(body not visible — source ends at def line)`.**
-
-Do NOT mention names from `docstring_only_names`.
-
-### behavioral_contract
-Quote ONLY exact lines from visible source that create guarantees.
-
-**HARD RULE**: Do not end this field mid-sentence. If you are running out of budget, write `(remaining contracts omitted for budget)` and close the string with `"`. A closed shorter field is valid. A truncated field breaks JSON and is invalid.
-
-**TRUNCATION DETECTION**: If you are more than 60% through your estimated token budget when writing this field, write two sentences maximum then close.
-
-**SWALLOWED-EXCEPTION RULE**: For every `except Exception:` or bare `except:` that does not log or re-raise, state ALL FIVE:
-1. The function/scope containing it.
-2. The exact except clause verbatim.
-3. What upstream trigger causes it to fire.
-4. What the caller receives.
-5. The user-visible symptom.
-
-**THREE-CONDITIONS-ONE-RETURN RULE**: If three or more distinct runtime conditions all produce the same return value (e.g., `None`, `[]`, `"main"`), name each condition explicitly and state that they are indistinguishable to callers.
-
-**UNCAUGHT-EXCEPTION RULE**: For every `timeout=` parameter with no surrounding `try/except`, state: "The `timeout=N` in `X` has no except clause; `requests.Timeout` (and network errors) propagate to the caller uncaught."
-
-### failure_modes
-**BUDGET RULE**: If near token limit, write one sentence per failure mode and close the field. Do NOT leave this field truncated.
-
-For each try/except block: quote it verbatim from visible source.
-
-For each `return None` / `return "main"` / `return []` on a non-success path: state what two distinct real-world conditions produce the same return value.
-
-**TRUNCATION FAILURE MODE**: If any function body is truncated, explicitly state: "The body of `X` is truncated at `[last visible line]`; logic after that point cannot be audited."
-
-**BARE-DEF FAILURE MODE**: If any definition ends at the `def` line with no visible body, state: "The function `X` has no visible body; its entire contract is unverifiable."
-
-**UNCAUGHT TIMEOUT**: If `timeout=` appears without an enclosing try/except, state: "A network timeout in `X` propagates uncaught; a single slow GitHub response aborts the entire caller."
-
-### assumptions
-List implicit assumptions embedded in VISIBLE code only. For each, quote the exact expression and explain what breaks if violated.
-
-HIGH-VALUE ASSUMPTIONS:
-- **Silent branch fallback**: `return "main"` on non-200 — breaks if GitHub returns 429; all subsequent fetches use wrong branch.
-- **Fixed line window**: `lines[:n_lines]` with `n_lines=60` — breaks if imports appear below line 60 (common in large files with module docstrings).
-- **Top-level imports only**: `re.match(r"^import\s+...", line)` with `^` anchor after `.strip()` — breaks for indented or conditional imports.
-- **Single-segment package name**: `.split(".")[0]` — correct for `foo.bar` but also strips subpackage specificity silently.
-
-### resource_obligations
-Look for: HTTP session lifecycle, `timeout=` coverage, cache file writes, rate-limit handling, global mutable state.
-
-If none visible, write `"(none detected in visible source)"`.
+**INVARIANT DEBT VERIFICATION**: Before closing the document, verify `invariants.length >= number of non-zero pattern_counts`. If this check fails, you have failed.
 
 ---
 
@@ -260,137 +383,54 @@ If none visible, write `"(none detected in visible source)"`.
 
 Based ONLY on `visible_definitions`. Every invariant must pass: can you quote the exact source line in `derived_from`? If not, do not list it.
 
-**MANDATORY SOURCES** — missing any of these when the pattern is visible is a checklist failure:
-1. `except Exception:` or bare `except:` not re-raised → `error_contract`.
-2. `re.compile`/`re.match`/`re.search` → `data_flow` about what is missed.
-3. Hard-coded numeric limit → `assumption` about silent truncation.
-4. `timeout=N` with no enclosing try/except → `error_contract` about uncaught propagation.
-5. HTTP status check with silent fallback → `error_contract` about conflated conditions.
-6. Boolean flag set by import try/except → `guard_requirement`.
-7. TODO/FIXME/BUG comment → `intent_gap`, confidence 0.95.
-8. Docstring claim absent from visible code → `intent_gap`, confidence 0.90–0.95.
-9. Git commit "fix X" with no visible guard → `intent_gap`, confidence 0.85.
-10. Multiple conditions returning identical value → `error_contract` about indistinguishability.
-11. Source truncated mid-function body → `intent_gap` at confidence 0.70, quoting last visible line.
-12. Bare `def` with no visible body → `intent_gap` at confidence 0.70, stating entire contract is unverifiable.
-13. `return "main"` / `return None` / `return []` as fallback for all error conditions → `error_contract`.
-14. `re.match` with `^` on stripped line that misses indented imports → `data_flow`.
+**MANDATORY SOURCES** — missing these when the pattern is visible = failure:
 
-**CALIBRATION**: Confidence scores MUST span ≥ 0.25. Directly quoted lines → 0.90–0.97. One-inferential-step → 0.70–0.89. Plausible but indirect → 0.60–0.69. All scores within 0.10 of each other = calibration failure.
-
-**INVARIANT QUALITY TEST**: Could this have been written from a description of the module without reading the code? If yes, rewrite it to reference a specific line, threshold, or structural choice.
-
-**BACKFILL REMINDER**: You wrote `"invariants": []` as a placeholder. You MUST now replace that `[]` with real content. An empty invariants array when pattern_counts has non-zero entries is a hard failure. The invariants you identified in the understanding prose MUST be formalized here.
-
-For each invariant:
-- **id**: inv_NNN
-- **type**: nullable_contract | async_contract | error_contract | guard_requirement | data_flow | uniqueness | cache_contract | intent_gap | other
-- **statement**: must reference a specific constant, line, or structural choice
-- **applies_to**: names verbatim from `visible_definitions` ONLY
-- **formal**: semi-formal (∀ / always: / never:)
-- **derived_from**: QUOTE the exact line from visible source. No quote = no invariant.
-- **confidence**: 0.0–1.0
-
-GOOD:
-```json
-{
-  "id": "inv_001",
-  "type": "error_contract",
-  "statement": "`get_default_branch` returns the string literal \"main\" for ALL non-200 HTTP responses — 401, 403, 404, 429, 500 are indistinguishable to callers. A rate-limited token produces the same return value as a valid repo on main branch.",
-  "applies_to": ["get_default_branch"],
-  "formal": "always: get_default_branch(status != 200) → \"main\" with no distinguishing signal",
-  "derived_from": "return \"main\"",
-  "confidence": 0.95
-}
-```
-
-BAD (generic):
-```json
-{
-  "statement": "Functions should document their error return values."
-}
-```
-
-Count rules: 2–8 invariants. Heavily truncated source: 2–4 maximum.
-
-**EMPTY INVARIANTS SELF-CHECK**: Before finalising, check your pattern_counts. For each non-zero count, confirm a corresponding invariant exists. If any non-zero count has no invariant, add one before closing.
+1. `except` not re-raised → `error_contract`.
+2. `re.match`/`re.search` → `data_flow` about what is missed.
+3. Hard-coded limit → `assumption` about silent truncation.
+4. Incomplete field definition at truncation point → `intent_gap`, confidence 0.70, stating what cannot be verified.
+5. Comment suggesting field with no definition following → `intent_gap`, confidence 0.70, stating field name/type/constraints unknown.
+6. Commented-out validation → `intent_gap`, confidence 0.95.
+7. TODO/FIXME/BUG → `intent_gap`, confidence 0.95.
+8. Git commit "fix X" with no visible guard → `intent_gap`, confidence 0.85.
+9. Docstring claim absent from code → `intent_gap`, confidence 0.90.
+10. Truncated function body → `intent_gap`, confidence 0.70.
+11. Bare `def` no body → `intent_gap`, confidence 0.70.
 
 ---
 
-## PART 3 — VIOLATIONS
+## FINAL SELF-CHECK (verify ALL before final `}`)
 
-**CONTRACT-FIRST GATE**: A violation is only valid if it contradicts a specific claim in `behavioral_contract` or `purpose`. Before writing a violation, state internally: "The behavioral_contract says [X]. The code fails to deliver [X] because [Y]." If you cannot complete that sentence from visible code, do not emit the violation.
-
-**BACKFILL REMINDER**: You wrote `"violations": []` as a placeholder. You MUST now replace that `[]` with real content — OR, if no violations apply, replace it with a list of explanation strings (one per invariant, each explaining why no violation applies).
-
-For each violation:
-- **invariant_id**: which invariant.
-- **line**: exact line number.
-- **evidence**: quote the specific code verbatim.
-- **severity**: critical | high | medium | low.
-- **explanation**: answer three questions:
-  1. Which function/caller is affected?
-  2. What does the caller receive when the invariant is violated?
-  3. What is the user-visible symptom — how does this contradict what the module claims to do?
-
-If you cannot answer all three from visible code, do not emit the violation.
-
-GOOD:
-```json
-{
-  "invariant_id": "inv_002",
-  "line": 35,
-  "evidence": "if r.status_code != 200:\n        return None",
-  "severity": "high",
-  "explanation": "(1) `fetch_file_head` and every caller that aggregates its results is affected. (2) A 429 rate-limit response returns `None` identically to a 404 file-not-found. (3) The module claims to rank packages by downstream exposure across the corpus; when rate-limiting silently returns None for some files, those files are excluded from the package counter with no warning, producing a systematically incomplete ranking that appears legitimate."
-}
-```
-
-**SYSTEMIC VIOLATION RULE**: If multiple functions share a silent-failure return, emit one high-severity violation citing all affected functions.
-
-**Truncation rule**: Do NOT report violations in code you cannot see.
-
-**VIOLATIONS FORCING RULE — HARD**: If `invariants` is non-empty and `violations` is `[]`, you MUST for each invariant either:
-(a) emit a violation object, OR
-(b) write a one-sentence string explaining why no violation applies: e.g., `"inv_001: no violation — the fallback is documented in the module docstring."`
-
-Do NOT silently leave `violations` as `[]` when invariants are non-empty. That is a hard failure.
+1. **FIRST 21 CHARACTERS**: Are your literal first 21 characters `{"truncation_audit":{`? If you wrote `{"path":` or `{"understanding":` or anything else, output is invalid.
+2. `truncation_audit` contains `pattern_counts` with all keys.
+3. `"invariants":` appears immediately after `truncation_audit` closes.
+4. `"violations":` appears before `"understanding"`.
+5. `understanding` has all seven fields, each properly closed with `"`.
+6. `key_abstractions` is NOT empty (if any definitions exist).
+7. Outer `}` closes root object.
+8. No field references names absent from `visible_definitions`.
+9. Every `derived_from` is verbatim quote from visible source.
+10. Confidence scores span ≥0.25 (if invariants non-empty).
+11. No understanding field exceeds dynamic word limit.
+12. Exactly four top-level keys: `truncation_audit`, `invariants`, `violations`, `understanding`. No `path`/`file`/`module`.
+13. Each non-zero pattern_count has ≥1 corresponding invariant.
+14. If incomplete field definitions exist (comment with no field following), ≥1 `intent_gap` invariant documenting unverifiable semantics.
+15. If `violations` is `[]` and `invariants` non-empty, `violations_audit` field exists.
+16. No understanding field truncated mid-sentence without `[budget limit]` closure.
+17. Neither `invariants` nor `violations` is still placeholder `[]` after backfill (if patterns exist).
+18. **NO PATH KEY**: String `"path":` does not appear as top-level key.
+19. **EMISSION ORDER VERIFIED**: Did you write truncation_audit → `"invariants":[]` → `"violations":[]` → understanding → backfill? If you wrote understanding before the placeholders, output may be truncated.
+20. **HALLUCINATION CHECK**: Every method/field discussed in understanding appears in `visible_definitions`. If `visible_definitions` has 9 entries and you discussed 15 fields, you hallucinated 6 invisible fields.
+21. **INCOMPLETE FIELD AT TRUNCATION**: If last visible line is a comment suggesting a field (e.g., `# Per-org PII`) with no field definition following, you emitted an `intent_gap` invariant stating field name/type/constraints unknown.
 
 ---
 
-## FINAL SELF-CHECK (verify ALL before emitting closing `}`)
-
-1. **FIRST CHARACTERS CHECK**: Are the literal first characters of your output `{"truncation_audit":`? If you wrote `{"path":` or anything else first, your output is invalid and cannot be salvaged.
-2. `truncation_audit` contains `pattern_counts`.
-3. `"invariants":` key appears immediately after `truncation_audit` closes — NOT `"understanding":`.
-4. `"violations":` key appears before `"understanding":`.
-5. `understanding` has all seven fields, each a properly closed string — no field ends mid-sentence or mid-word.
-6. `key_abstractions` is NOT empty.
-7. Outer `}` closes the entire object.
-8. No field references a name absent from `visible_definitions`.
-9. Every `derived_from` is a verbatim quote from the source.
-10. Confidence scores span ≥ 0.25 (if invariants non-empty).
-11. No `understanding` field exceeds its dynamic word limit.
-12. `purpose` does NOT open with a list of all visible definition names.
-13. Exactly four top-level keys: `truncation_audit`, `invariants`, `violations`, `understanding`. No `path`, `file`, `module`.
-14. For each non-zero pattern_count, a corresponding invariant exists.
-15. No invariant/violation references a function not in `visible_definitions`.
-16. Every `timeout=` has an `error_contract` invariant about uncaught propagation.
-17. Every bare `def` with no body has an `intent_gap` invariant at confidence 0.70.
-18. If `violations` is `[]` and `invariants` is non-empty, each invariant has an explicit reason string.
-19. No `understanding` field is truncated mid-sentence.
-20. `behavioral_contract` does not end mid-sentence; if budget ran out, it ends with a closing clause like `(omitted for budget)`.
-21. **BACKFILL CHECK**: Neither `invariants` nor `violations` is still the placeholder `[]`. If either is still `[]` and the module has code, that is a hard failure.
-22. **NO PATH KEY**: The string `"path":` does not appear as a top-level key anywhere in your output.
-
----
-
-Return JSON only — no markdown fences, no explanation outside the JSON:
+Return JSON only — no markdown fences, no explanation:
 
 {
   "truncation_audit": {
     "last_complete_unit": "...",
-    "cutoff_line": "exact last line quoted verbatim",
+    "cutoff_line": "...",
     "visible_definitions": ["..."],
     "docstring_only_names": ["..."],
     "pattern_counts": {
@@ -401,7 +441,12 @@ Return JSON only — no markdown fences, no explanation outside the JSON:
       "status_code_checks": 0,
       "truncated_bodies": 0,
       "bare_def_no_body": 0,
-      "silent_fallback_returns": 0
+      "silent_fallback_returns": 0,
+      "commented_out_code": 0,
+      "transaction_blocks": 0,
+      "finally_without_restoration": 0,
+      "sentinel_without_types": 0,
+      "incomplete_field_definitions": 0
     }
   },
   "invariants": [],

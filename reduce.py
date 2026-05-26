@@ -52,12 +52,14 @@ Usage
 
 from __future__ import annotations
 
+import ast
 import collections
 import json
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-from .extractor import CallSite, FunctionManifest
+from .extractor import CallSite, FunctionManifest, iter_python_files
 from .encoder import Violation
 
 import warnings
@@ -75,6 +77,300 @@ except ImportError:
         UserWarning,
         stacklevel=2,
     )
+
+
+# ---------------------------------------------------------------------------
+# R.C. Martin module metrics (instability / abstractness)
+# ---------------------------------------------------------------------------
+
+# Python 3.10+ provides sys.stdlib_module_names; fall back to a minimal set
+# for older interpreters.  Ce computation excludes stdlib to avoid inflating
+# efferent coupling with language builtins.
+_STDLIB: frozenset[str]
+try:
+    _STDLIB = frozenset(sys.stdlib_module_names)  # type: ignore[attr-defined]
+except AttributeError:  # pragma: no cover — Python < 3.10 in test environments
+    _STDLIB = frozenset(
+        {
+            "abc",
+            "ast",
+            "asyncio",
+            "builtins",
+            "collections",
+            "contextlib",
+            "copy",
+            "dataclasses",
+            "datetime",
+            "enum",
+            "functools",
+            "hashlib",
+            "importlib",
+            "inspect",
+            "io",
+            "itertools",
+            "json",
+            "logging",
+            "math",
+            "operator",
+            "os",
+            "pathlib",
+            "pickle",
+            "platform",
+            "pprint",
+            "queue",
+            "random",
+            "re",
+            "shutil",
+            "signal",
+            "socket",
+            "sqlite3",
+            "string",
+            "struct",
+            "subprocess",
+            "sys",
+            "tempfile",
+            "threading",
+            "time",
+            "traceback",
+            "types",
+            "typing",
+            "typing_extensions",
+            "unittest",
+            "urllib",
+            "uuid",
+            "warnings",
+            "weakref",
+        }
+    )
+
+
+def _scan_module_imports(path: Path) -> tuple[set[str], int, int]:
+    """Parse ``path`` and return (imported_top_level_packages, class_count, abstract_class_count).
+
+    imported_top_level_packages: set of top-level package names imported by this
+        module (e.g. ``import os.path`` → ``{"os"}``; ``from collections import
+        defaultdict`` → ``{"collections"}``).
+    class_count: total number of class definitions in the module.
+    abstract_class_count: classes whose bases include ``abc.ABC`` or ``Protocol``,
+        or which contain at least one ``@abstractmethod``-decorated method.
+    """
+    try:
+        source = path.read_text(encoding="utf-8", errors="replace")
+        tree = ast.parse(source, filename=str(path))
+    except (SyntaxError, OSError):
+        return set(), 0, 0
+
+    imported: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                imported.add(alias.name.split(".")[0])
+        elif isinstance(node, ast.ImportFrom):
+            if node.module:
+                imported.add(node.module.split(".")[0])
+            # ``from . import foo`` — relative import, no top-level package name
+            # skip (node.module is None or empty for bare relative imports)
+
+    class_count = 0
+    abstract_count = 0
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.ClassDef):
+            continue
+        class_count += 1
+        # Check bases for ABC, Protocol, or abc.ABC / typing.Protocol
+        is_abstract = False
+        for base in node.bases:
+            base_name = ""
+            if isinstance(base, ast.Name):
+                base_name = base.id
+            elif isinstance(base, ast.Attribute):
+                base_name = base.attr
+            if base_name in {"ABC", "Protocol", "ABCMeta"}:
+                is_abstract = True
+                break
+        if not is_abstract:
+            # Check for any @abstractmethod decorator on methods
+            for item in node.body:
+                if not isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    continue
+                for dec in item.decorator_list:
+                    dec_name = ""
+                    if isinstance(dec, ast.Name):
+                        dec_name = dec.id
+                    elif isinstance(dec, ast.Attribute):
+                        dec_name = dec.attr
+                    if dec_name == "abstractmethod":
+                        is_abstract = True
+                        break
+                if is_abstract:
+                    break
+        if is_abstract:
+            abstract_count += 1
+
+    return imported, class_count, abstract_count
+
+
+@dataclass
+class ModuleMetrics:
+    """R.C. Martin package metrics for one Python module.
+
+    Ca  Afferent coupling  — how many other project modules import this one
+    Ce  Efferent coupling  — how many external (non-stdlib) packages this module imports
+    I   Instability        — Ce / (Ca + Ce); 0 = stable, 1 = unstable
+    A   Abstractness       — abstract_classes / total_classes; 0 = fully concrete
+    D   Distance from main sequence — |I + A - 1|; 0 = ideal, >0.5 = concern
+
+    zone
+        "zone of pain"        concrete AND stable (I<0.3, A<0.3, D>0.5)
+        "zone of uselessness" abstract AND unstable (I>0.7, A>0.7, D>0.5)
+        "main sequence"       everything else (near the ideal diagonal)
+    """
+
+    module: str  # dot-separated module name or file path relative to root
+    file: str  # absolute or project-relative file path
+    ca: int  # afferent coupling (fan-in)
+    ce: int  # efferent coupling (fan-out, non-stdlib)
+    instability: float  # I = Ce / (Ca + Ce)
+    abstractness: float  # A
+    distance: float  # D = |I + A - 1|
+    zone: str  # "zone of pain" | "zone of uselessness" | "main sequence"
+
+    def summary(self) -> str:
+        return (
+            f"  {self.module}  I={self.instability:.2f}  A={self.abstractness:.2f}"
+            f"  D={self.distance:.2f}  [{self.zone}]  (Ca={self.ca}, Ce={self.ce})"
+        )
+
+    def to_dict(self) -> dict:
+        return {
+            "module": self.module,
+            "file": self.file,
+            "ca": self.ca,
+            "ce": self.ce,
+            "instability": round(self.instability, 3),
+            "abstractness": round(self.abstractness, 3),
+            "distance": round(self.distance, 3),
+            "zone": self.zone,
+        }
+
+
+def _zone_label(instability: float, abstractness: float, distance: float) -> str:
+    if distance > 0.5:
+        if instability < 0.3 and abstractness < 0.3:
+            return "zone of pain"
+        if instability > 0.7 and abstractness > 0.7:
+            return "zone of uselessness"
+    return "main sequence"
+
+
+def compute_module_metrics(root: Path, top_n: int | None = None) -> list[ModuleMetrics]:
+    """Compute R.C. Martin instability/abstractness metrics for every Python module under root.
+
+    Steps:
+    1. Walk every ``.py`` file under ``root`` (using ``iter_python_files`` to honour
+       the same skip-list as the rest of pact).
+    2. For each file parse its import statements to collect the set of top-level
+       packages it imports.  Relative imports (``from . import …``) are treated
+       as intra-project edges.
+    3. Build a project-level import graph: edges are ``module → imported_module``
+       where the imported module is **also** a project module (relative by path).
+    4. Compute Ca (in-degree), Ce (external non-stdlib out-degree), I, A, D.
+    5. Return the list sorted by D descending (worst first), optionally truncated
+       to ``top_n``.
+    """
+    root = Path(root).resolve()
+    py_files = list(iter_python_files(root))
+    if not py_files:
+        return []
+
+    # Build module-name → Path mapping.  Use the path relative to root as the
+    # module key (e.g. ``pact/reduce.py`` → ``pact.reduce``).
+    path_to_mod: dict[Path, str] = {}
+    for p in py_files:
+        try:
+            rel = p.relative_to(root)
+        except ValueError:
+            rel = p
+        mod_name = ".".join(rel.with_suffix("").parts)
+        path_to_mod[p] = mod_name
+
+    mod_to_path: dict[str, Path] = {v: k for k, v in path_to_mod.items()}
+
+    # Parse each file: collect imported packages, class counts
+    file_data: dict[Path, tuple[set[str], int, int]] = {}
+    for p in py_files:
+        file_data[p] = _scan_module_imports(p)
+
+    # Build the intra-project import graph to compute Ca (afferent coupling).
+    # Also track Ce (external non-stdlib packages) per module.
+    # Ca[mod] = number of *project* modules that import mod
+    ca_count: dict[str, int] = collections.Counter()
+    ce_count: dict[str, int] = {}
+
+    for p in py_files:
+        mod = path_to_mod[p]
+        imported_pkgs, _, _ = file_data[p]
+
+        # Ce: count external (non-stdlib, non-project) top-level packages
+        project_top = {m.split(".")[0] for m in path_to_mod.values()}
+        external_pkgs = {
+            pkg
+            for pkg in imported_pkgs
+            if pkg not in _STDLIB and pkg not in project_top and pkg
+        }
+        ce_count[mod] = len(external_pkgs)
+
+        # Ca contribution: for each imported package that matches a project module
+        # (exact top-level name), credit that project module's Ca.
+        for pkg in imported_pkgs:
+            # Try exact match as a module name (e.g. ``pact.reduce``)
+            # and as a top-level name (e.g. ``pact`` imported by something outside)
+            if pkg in mod_to_path:
+                if mod_to_path[pkg] != p:  # don't self-count
+                    ca_count[pkg] += 1
+            else:
+                # Top-level package match: if ``pact`` is imported and we have
+                # modules ``pact.reduce``, ``pact.checker``, credit all of them
+                # would be over-counting; instead credit the __init__ if present.
+                init_mod = f"{pkg}.__init__"
+                if init_mod in mod_to_path and mod_to_path[init_mod] != p:
+                    ca_count[init_mod] += 1
+
+    results: list[ModuleMetrics] = []
+    for p in py_files:
+        mod = path_to_mod[p]
+        _, class_count, abstract_count = file_data[p]
+
+        ca = ca_count.get(mod, 0)
+        ce = ce_count.get(mod, 0)
+        total = ca + ce
+        instability = ce / total if total > 0 else 0.0
+        abstractness = abstract_count / class_count if class_count > 0 else 0.0
+        distance = abs(instability + abstractness - 1.0)
+        zone = _zone_label(instability, abstractness, distance)
+
+        try:
+            rel_file = str(p.relative_to(root))
+        except ValueError:
+            rel_file = str(p)
+
+        results.append(
+            ModuleMetrics(
+                module=mod,
+                file=rel_file,
+                ca=ca,
+                ce=ce,
+                instability=instability,
+                abstractness=abstractness,
+                distance=distance,
+                zone=zone,
+            )
+        )
+
+    results.sort(key=lambda m: -m.distance)
+    if top_n is not None:
+        results = results[:top_n]
+    return results
 
 
 # ---------------------------------------------------------------------------

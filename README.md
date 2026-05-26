@@ -5,15 +5,17 @@
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://pypi.org/project/pact-tool/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-**Formal analysis for the codebases AI builds.**
+**Structural verification for codebases AI builds.**
 
-`response.choices[0].message.content` is `Optional[str]` in the OpenAI SDK. It returns `None` — silently — on content filtering or tool-call responses. Every unguarded access is a latent crash site.
+---
 
-pact found this bug in **[openai/openai-python](https://github.com/openai/openai-python)**, **[microsoft/generative-ai-for-beginners](https://github.com/microsoft/generative-ai-for-beginners)**, **[hiyouga/LlamaFactory](https://github.com/hiyouga/LlamaFactory)**, and 1,200+ other repositories. 12 PRs merged so far.
+## The problem every engineering leader has right now
 
-It finds this class of bug — and others — by encoding each failure mode as a Z3 constraint over your call graph, not a regex. LLM-generated code has a signature failure profile: unawaited coroutines, unguarded nullable dereferences, silent exception swallowing, race conditions in ORM writes. Tests don't catch them — they only run the paths you thought of.
+Your team ships 10× faster with AI. Your on-call rotation is also 10× more interesting.
 
-Python, TypeScript, and Go supported.
+AI agents write each function correctly in isolation. The failures appear at the *joints* — the interfaces between components that each agent assumed were someone else's responsibility. Tests don't catch these because tests only exercise the paths you already imagined. The incidents that cost you at 3am are the ones nobody thought to test.
+
+pact treats your codebase the way a structural engineer treats a bridge: find the load-bearing joints, verify the contracts at those joints formally, stress-test them adversarially, and produce the minimal patch — before the code ships.
 
 ```bash
 pip install pact-tool
@@ -40,127 +42,113 @@ pact .
     your 3am incident is silently swallowed here
 ```
 
----
-
-## Why pact?
-
-The name started as "Python AST Constraint Tool" — a backronym built around the Z3 constraint engine at its core. It stuck because it means something: a pact is a formal agreement, a contract. That's exactly what pact enforces — the implicit contracts your code makes with itself that no linter checks and no test covers unless you already knew to write it.
-
-The Python-specific origin is now a detail. The constraint engine works on any language with an AST.
+**Python, TypeScript, and Go** supported. Runs in your existing CI pipeline in 5 minutes.
 
 ---
 
-## What makes pact different
+## Track record
 
-Most linters catch style. Most type checkers catch types. pact catches **structural bugs** — the ones that only appear under concurrency, at scale, or when an LLM response is shorter than you expected.
+pact has found violations in **14,148 unique sites across 1,254 repositories**. 12 PRs merged upstream to major open-source projects.
 
-Each failure mode is encoded as a Z3 constraint over your call graph, not a regex. That means:
-- **Cross-file reasoning**: the bug in `tasks.py` that was introduced by a change in `models.py`
-- **Context-aware**: `.get("key", default)` is safe; `.get("key")` is not — pact knows the difference
-- **Formally grounded**: violations are Z3-satisfiable, not heuristic guesses
+| Repository | Stars | Violations found |
+|------------|-------|-----------------|
+| langchain-ai/langchain | 136k | 438 — including 256 unawaited async calls across every LLM provider |
+| hiyouga/LlamaFactory | 71k | 18 — response array access without length guard, silent training failures |
+| home-assistant/core | 87k | 34,701 across 14,096 files |
+| microsoft/generative-ai-for-beginners | 64k | `choices[0]` without None check in tutorial code |
+| future-agi/future-agi | internal | 755 — 410 concurrent-write races across Django models |
 
-## Real-world findings
-
-**[openai/openai-python](https://github.com/openai/openai-python)** — 31k stars, the official SDK:
-```
-$ pact /tmp/openai-python/
-  llm_response_unguarded   response.choices[0].message.content accessed without guard
-                           — returns None on content filtering, crashes downstream
-```
-
-**[hiyouga/LlamaFactory](https://github.com/hiyouga/LlamaFactory)** — 71k stars:
-```
-$ pact /tmp/LlamaFactory/
-  llm_response_unguarded   12 sites  response.choices[0] without len() guard
-  bare_except               6 sites  silent swallow in training loop error paths
-```
-
-**[home-assistant/core](https://github.com/home-assistant/core)** — 87k stars, 14,096 files:
-```
-$ pact /tmp/ha-core/
-✗  pact: 34,701 violation(s) in 14,096 files  (2m 43s)
-
-  optional_dereference  22,458   nullable state pervasive across 3,000+ integrations
-  required_arg_missing  11,148   plugin pattern omits positional args at call sites
-  missing_await          1,068   async polling called without await — body never runs
-```
-
-**[langchain-ai/langchain](https://github.com/langchain-ai/langchain)** — 136k stars:
-```
-$ pact /tmp/langchain/libs/
-✗  pact: 438 violation(s)
-
-  missing_await            256   _astream() unawaited across every provider
-  llm_response_unguarded     4   response.content[0] without length guard
-```
-
-**[future-agi/future-agi](https://github.com/future-agi/future-agi)** — production AI platform:
-```
-$ pact futureagi/
-✗  pact: 755 violation(s)
-
-  save_without_update_fields  410   .save() races concurrent writes across 600 models
-  bare_except                 190   silent error swallowing in worker paths
-  model_constraint             59   missing required fields in .create() calls
-  optional_dereference         55   unguarded .first()/.get() in view layer
-  missing_await                 2   coroutines called without await
-```
-See [`examples/future-agi/findings.md`](examples/future-agi/findings.md).
-
-pact has found violations in **14,148 unique sites across 1,254 repositories**. 12 PRs merged upstream.
+None of these were found by the linters already in those repositories.
 
 ---
 
-## Install
+## For engineering leaders
 
-```bash
-pip install pact-tool
+**The core question pact answers: which parts of your codebase, if they break, take the most downstream behavior with them?**
+
+AI writes code that is locally correct. pact tells you whether it is *structurally* correct — whether the contracts between components hold, whether the load-bearing functions have been formally verified, and whether your codebase's dependency topology is safe to change.
+
+### Drop it into CI today
+
+```yaml
+# .github/workflows/ci.yml
+- name: pact
+  uses: qizwiz/pact/.github/actions/pact@main
+  with:
+    path: .
+    incremental: "true"   # only analyzes files changed since main
+    strict: "true"        # fails the build on any new violation
 ```
 
-For TLA+ spec generation (requires Anthropic API key):
-```bash
-pip install "pact-tool[llm]"
+Or directly:
+```yaml
+- run: pip install pact-tool z3-solver && pact . --incremental main --strict
 ```
 
-## Usage
+`--incremental main` ensures your team never introduces a new category of violation without being told. Existing violations are not blocked — only new ones. This means zero disruption to shipping velocity on day one.
+
+### Three-week onboarding path
+
+**Week 1** — `pact . --incremental main --strict` in CI. Zero disruption. Blocks new violation types only.
+
+**Week 2** — `pact fix . --apply` on the highest-density files. Each fix is verified by Z3 before application — not a suggestion, a proof.
+
+**Week 3** — `pact intent analyze . --out intent.json && pact pipeline intent.json` for any critical subsystem being rewritten by agents. Extracts behavioral contracts, verifies them formally, stress-tests adversarially, heals automatically.
+
+---
+
+## Why not a linter
+
+Linters match patterns. pact reasons about structure.
+
+`response.choices[0].message.content` is valid Python. It passes every linter. pact knows that `choices` is typed `Optional[list]` in the OpenAI SDK — the type says it can be an empty list — and that accessing `[0]` without a length check raises `IndexError` on content filtering. The linter sees a valid attribute access. pact sees a contract violation, and can prove it: Z3 will hand you the exact input that causes it.
+
+The difference matters more as AI writes more of your code. Linters were designed for human-paced codebases where the reviewer catches the structural mistakes. In the AI era, the reviewer is pact.
+
+---
+
+## The verification pipeline (for AI-generated code)
+
+When agents are writing most of your code, you need to verify the contracts between their work — not just surface-check for known patterns.
 
 ```bash
-# Scan your project
-pact path/to/project/
+# Requires: pip install "pact-tool[llm]" and ANTHROPIC_API_KEY
 
-# Fix violations automatically (dry-run: prints unified diff)
-pact fix path/to/project/
+# Step 1: extract behavioral contracts from your codebase
+pact intent analyze path/to/project/ --out intent.json
 
-# Fix and apply in-place
-pact fix path/to/project/ --apply
-
-# Fix only one mode
-pact fix . --mode llm_response_unguarded --apply
-
-# CI mode — only files changed since main
-pact . --incremental main --strict
-
-# Ranked refactoring targets (highest violation density × lowest coupling)
-pact . --suggest
-
-# Structural analysis: cycles, pass-through hops, fan-out hubs
-pact . --reduce
-
-# JSON for downstream tooling
-pact . --json
-
-# Upstream dependency analysis: which of your imports have corpus violations?
-# Ranked by leverage score (violations × log(stars) × downstream fan-out)
-pact . --upstream
+# Step 2: run the full verification pipeline
+pact pipeline intent.json -v
 ```
 
-## Failure modes
+```
+  step 1: z3 → payments.py:process_payment
+  Z3: ✗ violated — input x=-1 breaks the "amount must be positive" contract
+  step 2: hypothesis → payments.py:process_payment
+  Hypothesis: ✗ violated — counterexample: process_payment(amount=-1, currency='USD')
+  step 3: heal → payments.py:process_payment
+  heal: ✓ patch verified — added guard: if amount <= 0: raise ValueError
+```
 
-| Mode | What it catches |
-|------|-----------------|
+**Intent analysis** reads your code and docstrings and writes down what each function is supposed to guarantee. "This function must always return a positive number." "This function must never modify its input."
+
+**Z3 verification** takes each guarantee and exhaustively searches for any input that breaks it. This is not sampling — it is mathematical proof. If Z3 says the contract holds, it has *proved* it holds. If it finds a violation, it hands you the exact input.
+
+**Hypothesis stress-testing** seeds adversarial search from the Z3 counterexample, finding the full shape of the failure, not just one instance.
+
+**Heal** generates a candidate patch using an LLM, then *verifies the patch with Z3* before accepting it. LLM proposes; Z3 decides. This is counterexample-guided synthesis (CEGIS) — the same technique used in formal program synthesis research, applied to your codebase.
+
+---
+
+## What pact checks
+
+### Python
+
+| Check | What it catches |
+|-------|-----------------|
 | `optional_dereference` | `.first()` / `.get()` result used without `None` check |
 | `missing_await` | Async function called without `await` — body never runs |
-| `bare_except` | `except Exception: pass` or bare `except:` — silent error suppression (pure `except: raise` excluded) |
+| `bare_except` | `except Exception: pass` — silent error suppression |
 | `save_without_update_fields` | `.save()` overwrites all columns, races concurrent writes |
 | `unvalidated_lookup_chain` | `d.get(k)` result used as dict key without guard |
 | `required_arg_missing` | Call omits a required argument |
@@ -169,162 +157,104 @@ pact . --upstream
 | `model_constraint` | Django model created missing a required field |
 | `format_arg_mismatch` | `"{} {}".format(a)` — too few args → IndexError at runtime |
 
-Go support via `pact-go`: `go_ignored_error`, `go_bare_recover`, `go_unchecked_assertion`, `go_goroutine_no_sync`.
+### Go
 
-## CI integration
+`go_ignored_error`, `go_bare_recover`, `go_unchecked_assertion`, `go_goroutine_no_sync`
 
-```yaml
-- name: pact
-  uses: qizwiz/pact/.github/actions/pact@main
-  with:
-    path: .
-    incremental: "true"
-    strict: "true"
-```
+### TypeScript
 
-Or directly:
-```yaml
-- run: pip install pact-tool z3-solver && pact . --incremental main --strict
-```
+Full tree-sitter parser, same violation taxonomy.
 
-## TLA+ spec synthesis
+---
 
-pact extracts a TLA+ spec from your Python source — 70% mechanical from the AST, 30% filled in by an LLM (liveness properties, domain invariants).
+## Structural analysis
+
+Beyond individual violations, pact identifies which parts of your codebase are *structurally risky* — not because they have bugs today, but because of where they sit in the call graph.
 
 ```bash
-# Generate skeleton
-pact spec gen path/to/models.py
-
-# Fill in liveness + domain invariants
-export ANTHROPIC_API_KEY=sk-...
-pact spec complete path/to/tasks.py -o MySpec.tla
-
-# Model-check with TLC
-java -jar tla2tools.jar -config MySpec.cfg MySpec.tla
+pact . --reduce
 ```
 
-The formal spec for pact itself is at [`docs/tla/Pact.tla`](docs/tla/Pact.tla), verified under TLC in CI.
-
-## Graph reduction
-
-Fewer moving parts is better engineering, independent of observed failures. A pass-through node with zero violations is equally worth removing as one with violations — the structural noise exists regardless. pact ranks simplification targets by structural complexity eliminated, not by violation count.
-
-`--reduce` finds call cycles (SCCs), pass-through hops, and fan-out hubs — ranked by `reduction_potential` (structure eliminated), with violations annotated separately as urgency:
-
 ```
-$ pact . --reduce
-
-⬡ pact --reduce: 3 simplification target(s)  (showing top 3)
-
   TANGLE  payments.charge  [payments/charge.py:14]
     cycle: payments.charge → payments.validate → payments.charge
-    3 functions in a mutual call cycle — breaking the cycle removes 2 back-edge(s) and makes the subgraph a DAG
-    reduction_potential=2  score=2.0  violations=4
+    3 functions in a mutual call cycle — breaking the cycle removes 2 back-edges
+    reduction_potential=2  violations=4
 
   PASSTHROUGH  api.route_and_forward  [api/router.py:88]
-    in=1 caller  out=1 callee — pure hop with no logic of its own; inline to collapse 1 node + 2 edges
-    reduction_potential=3  score=3.0
+    pure hop with no logic — inline to collapse 1 node + 2 edges
+    reduction_potential=3
 ```
 
-`--fitness` reports how close your call graph is to its theoretical minimum — the transitive reduction of the condensation DAG:
+**Load-bearing functions** — called cut vertices in graph theory — are the functions where, if behavior changes, the most downstream code breaks. pact finds these and prioritizes formal verification there. A contract violation in a cut vertex propagates everywhere that depends on it.
 
+The R.C. Martin instability metrics (`I`, `A`, `D`) are also computed per module:
+- **Zone of pain** (D > 0.7, concrete, highly depended-on): these modules are hard to change and critically load-bearing
+- **Zone of uselessness** (D > 0.7, abstract, nobody depends on): these abstractions are stranded — carrying maintenance cost with no users
+
+---
+
+## Git archaeology
+
+```bash
+pact enrich path/to/project/ --out enrich.json
 ```
-$ pact . --fitness
 
-⬡ pact --fitness: structural fitness of call graph
+`enrich` extracts Tornhill signals from the full git history: hotspot scores (churn × complexity), temporal coupling (files that change together but are architecturally separate), and knowledge silos (the minor-contributor ratio that Bird et al. showed is the strongest post-release defect predictor ever measured at Microsoft). These signals feed the intent graph as L1 coverage edges.
 
-  structural fitness: 0.87  [█████████████████░░░]
-  nodes  127/142 load-bearing  (15 overhead, 89% efficient)
-  edges  241/318 non-redundant  (77 overhead, 76% efficient)
-  ⚠ 15 node(s) and 77 edge(s) are structural overhead — run --reduce-apply to see the breakdown
+---
+
+## TLA+ specifications
+
+For critical subsystems, pact generates a formal specification — a mathematically precise description of what must always be true — and verifies it with TLC.
+
+```bash
+pact spec complete path/to/tasks.py -o MySpec.tla
 ```
 
-`--reduce-apply` runs the full three-stage transformation pipeline (SCC contraction → dead-node pruning → transitive reduction) and reports what was eliminated:
+Four built-in templates cover the most common temporal properties:
+- `resource_lifecycle` — acquire without release is a real violation
+- `ordering` — initialization before use
+- `accumulation` — monotone growth invariants
+- `liveness` — eventual completion guarantees
 
-```
-$ pact . --reduce-apply
-
-  Graph reduction pipeline
-    original:           142 nodes, 318 edges
-    after SCC contract: 139 nodes (2 cycle(s) collapsed), 312 edges
-    after dead-prune:   127 nodes (12 unreachable removed), 298 edges
-    after trans-reduce: 127 nodes, 241 edges (57 redundant edge(s) removed)
-    TOTAL eliminated:   15 node(s), 77 edge(s) → 127 nodes / 241 edges remain
-```
+---
 
 ## How it works
 
 ```
-extractor.py    AST → ModelManifest, FunctionManifest, CallSite
-failure_mode.py FailureMode plugin layer (per-call + file-level checks)
-z3_engine.py    Z3 Fixedpoint Datalog — whole-program queries
-checker.py      Orchestration: extraction → Z3 → dedup → Violation list
-refactor.py     Suggestion engine: violation density ÷ caller coupling
-specgen.py      AST → TLA+ skeleton (70% mechanical)
-speccomplete.py Anthropic API → fills TODO stubs (30%)
-go/checker/     Go AST checker (Go codebase support)
+extractor.py    AST → function manifests, call sites, type information
+failure_mode.py Per-check plugin layer
+z3_engine.py    Constraint solver — whole-program satisfiability queries
+checker.py      Orchestration: extract → verify → deduplicate → report
+pipeline.py     Z3 → Hypothesis → heal pipeline for contract verification
+intent.py       Behavioral contract extraction from source + docstrings
+enrich.py       Git archaeology + GitHub layer + intent graph construction
+heal.py         CEGIS patch loop: generate → verify → accept/reject
+reduce.py       Structural analysis: cycles, pass-throughs, R.C. Martin metrics
+specgen.py      AST → TLA+ specification skeleton
 cli.py          Entry point
 ```
 
-pact encodes each failure mode as a Z3 constraint over the call graph. The incremental engine BFS-propagates changes through the call graph, so only the dirty subgraph is re-analyzed.
+Each violation pact reports is not a heuristic — it is Z3-satisfiable: there exists a concrete input that causes it. The interprocedural taint analysis tracks violations across file boundaries, resolving calls to their actual source files rather than guessing from function names.
 
-## Architecture decisions
+---
 
-Design rationale is in [`docs/adr/`](docs/adr/). Key decisions:
+## Install
 
-| ADR | Decision |
-|-----|----------|
-| [ADR-001](docs/adr/ADR-001-graph-first-architecture.md) | Graph-first over pattern-first — violations are path properties, not node matches |
-| [ADR-002](docs/adr/ADR-002-mermaid-over-sarif.md) | Mermaid PR comments over SARIF — call graph context beats file:line:col |
-| [ADR-003](docs/adr/ADR-003-tla-as-semantic-layer.md) | TLA+ as semantic layer — every FailureMode has a TLC-verified spec |
-| [ADR-004](docs/adr/ADR-004-yaml-rules-family-key.md) | YAML rules with `family:` key for cross-framework constraint families |
-| [ADR-005](docs/adr/ADR-005-coro-consumers-frozenset.md) | `_CORO_CONSUMERS` frozenset — O(1), immutable, TLC-verifiable |
-| [ADR-006](docs/adr/ADR-006-bare-except-reraise-exclusion.md) | `except: raise` excluded from bare_except — pure re-raise swallows nothing |
-| [ADR-007](docs/adr/ADR-007-structure-first-scoring.md) | Structure-first `--reduce` scoring — violations annotate, not rank; `--fitness` reports graph compression ratio |
-| [ADR-008](docs/adr/ADR-008-precise-mode-container-isolation.md) | Precise mode: container-isolated Jedi analysis + blast radius ranking via `nx.ancestors()` |
-| [ADR-009](docs/adr/ADR-009-monolith-density-signal.md) | Monolith density signal — per-file violation concentration ≥50 triggers structural warning, not individual bug list |
-| [ADR-010](docs/adr/ADR-010-update-fields-pk-guard.md) | `update_fields` fixes require a `pk` guard on methods callable from unsaved instances |
-| [ADR-011](docs/adr/ADR-011-bare-except-control-flow-exclusions.md) | Exclude `except Exception: pass` in nested last-resort handlers and probing try blocks |
-| [ADR-012](docs/adr/ADR-012-pragma-no-cover-escape-hatch.md) | `# pragma: no cover` on except line suppresses bare_except; `_ast.Attribute` fix in `_is_probe_expr` (see ADR-013) |
-| [ADR-013](docs/adr/ADR-013-attribute-access-probe-expr.md) | Attribute access is a pure probe expression; only constant returns (`True`/`False`/`None`) are probe statements |
-| [ADR-014](docs/adr/ADR-014-skip-backup-files.md) | Skip `*.backup.py` and `*_backup.py` — backup files are never production code |
-| [ADR-015](docs/adr/ADR-015-skip-github-dir.md) | Skip `.github/` directory — CI/repo metadata is not application code |
-| [ADR-016](docs/adr/ADR-016-defensive-import-probe-stmt.md) | `Import`/`ImportFrom` are probe statements — defensive imports in probe try blocks excluded |
-| [ADR-017](docs/adr/ADR-017-pact-fix-patch-generation.md) | `pact fix` — automated patch generation for `llm_response_unguarded` and `missing_await`; `save_without_update_fields` deferred (requires field mutation tracking) |
-| [ADR-018](docs/adr/ADR-018-ast-enclosing-stmt-guard-placement.md) | `_build_stmt_index` — AST-based enclosing-statement detection fixes guard placement for multi-line expressions; `_CORO_CONSUMERS_RE` skips `missing_await` in executor/asyncio.run contexts |
-| [ADR-019](docs/adr/ADR-019-write-tests-regression-generation.md) | `--write-tests` — generates falsifiable regression tests alongside `pact fix --apply`; MagicMock for all params (jedi/LSP upgrade deferred) |
-| [ADR-020](docs/adr/ADR-020-jedi-type-inference-test-writer.md) | Jedi `Script.infer()` for codebase-aware test generation — resolves `self` type, uses `__new__` over `MagicMock`; falls back on failure |
-| [ADR-021](docs/adr/ADR-021-corpus-deduplication.md) | Corpus deduplication on append — query overlap causes 4.5x overcount; unique `(repo,file,line,mode)` key; 14.1k unique violations / 1,254 repos scanned |
-| [ADR-036](docs/adr/ADR-036-pact-formal-analysis-toolkit.md) | Z3 Fixedpoint over traditional dataflow; TLA+ over property testing alone |
+```bash
+pip install pact-tool              # scanner + structural analysis
+pip install "pact-tool[llm]"      # + verification pipeline (requires ANTHROPIC_API_KEY)
+```
 
-## Formal verification
+Python 3.10+. Z3 solver included. No Java required for basic usage; TLC requires a JVM.
 
-Every FailureMode has a TLC-verified TLA+ specification in [`docs/tla/`](docs/tla/):
+---
 
-| Spec | States | What it proves |
-|------|--------|----------------|
-| [MissingAwait.tla](docs/tla/MissingAwait.tla) | 7 | `_CORO_CONSUMERS` exclusion is sound and complete |
-| [SaveWithoutUpdateFields.tla](docs/tla/SaveWithoutUpdateFields.tla) | 7 | Partial-save detection; safe saves never flagged |
-| [BareExcept.tla](docs/tla/BareExcept.tla) | 81 | Critical exceptions (KeyboardInterrupt) always propagate |
-| [OptionalDereference.tla](docs/tla/OptionalDereference.tla) | 256 | Guarded values never flagged; all unguarded optionals flagged |
-| [MutableDefaultArg.tla](docs/tla/MutableDefaultArg.tla) | 16 | Both conditions required: mutable default AND in-body mutation |
-| [LlmResponseUnguarded.tla](docs/tla/LlmResponseUnguarded.tla) | 32 | All unguarded LLM response access sites detected |
-| [UnvalidatedLookupChain.tla](docs/tla/UnvalidatedLookupChain.tla) | 16 | dict.get() result used as subscript without membership check |
-| [RequiredArgMissing.tla](docs/tla/RequiredArgMissing.tla) | 32 | Covered, safe, and violating call sites are disjoint; all violations flagged |
-| [FormatArgMismatch.tla](docs/tla/FormatArgMismatch.tla) | 16 | Matched format calls never flagged; all mismatches eventually detected |
+## Licensing
 
-## Testing methodology
+pact is MIT licensed. Free forever for self-hosted use.
 
-pact uses a five-layer verification approach:
+A commercial tier (pact Cloud) is in development: web dashboard, GitHub App integration, team-level trend analysis, compliance reports, SSO, and SLA support. If you're interested in early access for your organization — particularly if you're scaling AI-generated code across a team — reach out at jonathan.f.hill@gmail.com.
 
-1. **TLA+ (spec)** — temporal properties for each FailureMode, verified by TLC
-2. **ADRs (rationale)** — architectural decisions documented before implementation
-3. **Z3 (satisfiability)** — per-call-site constraint checking at analysis time
-4. **Hypothesis (property-based)** — `test_hypothesis_checkers.py` generates random Python fragments and asserts soundness/precision invariants for each checker
-5. **Integration probe** — `scan_github` corpus of 14.1k+ unique violations across 1,254 real repositories validates false-positive rates
-
-The Hypothesis layer (step 4) has already found one real false negative: `def fn(x=set())` was not flagged because `set()` is an `ast.Call` node, not an `ast.Set` literal. Fixed and regressed in `test_checker.py`.
-
-## License
-
-MIT
+Annual enterprise licenses are available for organizations that need on-premises deployment or custom rule sets.
