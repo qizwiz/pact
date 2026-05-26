@@ -5,7 +5,6 @@ from pathlib import Path
 
 from .heal import HealResult, _autodetect_test_cmd, _func_body_at_line, heal_project
 
-
 # ---------------------------------------------------------------------------
 # _autodetect_test_cmd
 # ---------------------------------------------------------------------------
