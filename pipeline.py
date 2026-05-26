@@ -218,10 +218,10 @@ def _execute_z3(
         contract_kind = ""
 
     source_file = step.get("module_path")
-    if source_file and not Path(source_file).exists():
+    if not source_file or not Path(source_file).exists():
         import warnings
         warnings.warn(
-            f"pipeline: source_file does not exist: {source_file!r} — "
+            f"pipeline: source_file precondition violated: {source_file!r} — "
             "verify_contract result would be unreliable; returning error",
             RuntimeWarning,
             stacklevel=2,
@@ -229,7 +229,7 @@ def _execute_z3(
         return StepResult(
             step=step["step"],
             tool="z3",
-            module_path=source_file,
+            module_path=source_file or "",
             status="error",
             summary=f"Precondition violated: source_file not found: {source_file!r}",
         )

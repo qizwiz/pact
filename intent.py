@@ -293,7 +293,10 @@ _MAX_FILE_BYTES = 40_000
 def _iter_python_files(root: Path) -> list[Path]:
     results = []
     for p in sorted(root.rglob("*.py")):
-        if any(part in _SKIP_DIRS or part.endswith(".egg-info") for part in p.parts):
+        # Use relative parts so that analysis of packages inside .venv isn't blocked
+        # by the .venv directory appearing in the absolute path.
+        rel_parts = p.relative_to(root).parts
+        if any(part in _SKIP_DIRS or part.endswith(".egg-info") for part in rel_parts):
             continue
         if p.name.startswith("test_") or p.name == "conftest.py":
             continue

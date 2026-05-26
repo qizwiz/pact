@@ -786,11 +786,12 @@ def _mine_pydriller(
         return TornhillMetrics(hotspots=[], temporal_coupling=[], knowledge_silos=[])
 
     for commit in _commits_iter:
-        py_files = [
-            f
-            for f in commit.modified_files
-            if f.new_path and f.new_path.endswith(".py")
-        ]
+        try:
+            _mod_files = commit.modified_files
+        except Exception:
+            # Shallow clones or corrupt commits may fail to produce diffs; skip.
+            continue
+        py_files = [f for f in _mod_files if f.new_path and f.new_path.endswith(".py")]
         paths = [f.new_path for f in py_files]
         commit_file_counts[commit.hash] = len(paths)
         all_commits_ordered.append(commit)
