@@ -424,6 +424,27 @@ def _z3_verify(
         return None, 0.0, ""
 
     func_name = _func_at_line(patched_source, result.line)
+    if not func_name and result.line == 0:
+        # Intent-gap violations have line=0 — find the function touched by the patch.
+        import ast as _ast
+
+        try:
+            tree = _ast.parse(patched_source)
+            replacement = (result.patch.replacement or "").strip()
+            for node in _ast.walk(tree):
+                if isinstance(node, (_ast.FunctionDef, _ast.AsyncFunctionDef)):
+                    body_src = _ast.get_source_segment(patched_source, node) or ""
+                    if replacement and replacement[:40] in body_src:
+                        func_name = node.name
+                        break
+            if not func_name:
+                # Fall back to first function in file
+                for node in _ast.walk(tree):
+                    if isinstance(node, (_ast.FunctionDef, _ast.AsyncFunctionDef)):
+                        func_name = node.name
+                        break
+        except SyntaxError:
+            pass
     if not func_name:
         return None, 0.0, ""
 
