@@ -445,6 +445,9 @@ class TestRunPipeline:
 
     def test_missing_api_key_raises(self, tmp_path, monkeypatch):
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("PACT_LLM_API_KEY", raising=False)
+        monkeypatch.delenv("PACT_ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("ANTHROPIC_AUTH_TOKEN", raising=False)
         intent_path = self._make_intent_file(tmp_path)
         with pytest.raises(RuntimeError, match="ANTHROPIC_API_KEY"):
             run_pipeline(intent_path, api_key=None)
