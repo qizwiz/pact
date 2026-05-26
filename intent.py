@@ -28,6 +28,8 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Optional
 
+from .llm import resolve_model as _resolve_model
+
 # ---------------------------------------------------------------------------
 # Prompt loading — prompts are files, not hardcoded strings
 # ---------------------------------------------------------------------------
@@ -261,7 +263,7 @@ def _collect_readme(root: Path) -> str:
 # API
 # ---------------------------------------------------------------------------
 
-_DEFAULT_MODEL = "claude-sonnet-4-6"
+_DEFAULT_MODEL = _resolve_model()
 _SYSTEM = (
     "You are performing semantic analysis for a formal verification pipeline. "
     "Return ONLY valid JSON. No markdown fences, no explanation outside the JSON."
