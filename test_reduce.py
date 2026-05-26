@@ -13,6 +13,7 @@ from .reduce import (
     analyze_graph_reduction,
     apply_full_reduction,
     compute_blast_radii,
+    compute_module_metrics,
     contract_sccs,
     eliminate_dead,
     find_bridge_violations,
@@ -20,6 +21,7 @@ from .reduce import (
     find_hubs,
     find_passthroughs,
     find_sccs,
+    ModuleMetrics,
     _build_digraph,
     _func_for_violation,
 )
@@ -810,7 +812,11 @@ class TestStructuralCoverage:
 
     def _linear(self):
         """A→B→C: B is the cut vertex."""
-        funcs = [_func("A", file="a.py"), _func("B", file="b.py"), _func("C", file="c.py")]
+        funcs = [
+            _func("A", file="a.py"),
+            _func("B", file="b.py"),
+            _func("C", file="c.py"),
+        ]
         calls = [_call("A", "B"), _call("B", "C")]
         return funcs, calls
 
@@ -828,7 +834,9 @@ class TestStructuralCoverage:
         from .reduce import compute_structural_coverage
 
         funcs, calls = self._linear()
-        cov = compute_structural_coverage(funcs, calls, intent_path=tmp_path / "missing.json")
+        cov = compute_structural_coverage(
+            funcs, calls, intent_path=tmp_path / "missing.json"
+        )
         assert cov.total >= 1
         assert cov.covered == 0
         assert cov.score == 0.0
@@ -874,3 +882,230 @@ class TestStructuralCoverage:
         assert "covered" in d
         assert "total" in d
         assert "dark" in d
+
+
+# ---------------------------------------------------------------------------
+# compute_module_metrics — R.C. Martin instability / abstractness
+# ---------------------------------------------------------------------------
+
+
+class TestModuleMetrics:
+    """Tests for compute_module_metrics and ModuleMetrics dataclass."""
+
+    def _write(self, tmp_path, name: str, content: str) -> None:
+        """Write a .py file under tmp_path with the given content."""
+        p = tmp_path / name
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(content)
+
+    # ------------------------------------------------------------------
+    # Basic shape / empty-project guard
+    # ------------------------------------------------------------------
+
+    def test_empty_project_returns_empty(self, tmp_path):
+        result = compute_module_metrics(tmp_path)
+        assert result == []
+
+    def test_returns_list_of_module_metrics(self, tmp_path):
+        self._write(tmp_path, "alpha.py", "x = 1\n")
+        result = compute_module_metrics(tmp_path)
+        assert len(result) >= 1
+        assert all(isinstance(m, ModuleMetrics) for m in result)
+
+    def test_top_n_truncates_results(self, tmp_path):
+        for i in range(5):
+            self._write(tmp_path, f"mod{i}.py", "x = 1\n")
+        result = compute_module_metrics(tmp_path, top_n=3)
+        assert len(result) <= 3
+
+    # ------------------------------------------------------------------
+    # Ca (afferent coupling) — fan-in
+    # ------------------------------------------------------------------
+
+    def test_ca_counts_project_importers(self, tmp_path):
+        """A module imported by two other project files has Ca=2."""
+        self._write(tmp_path, "core.py", "def f(): pass\n")
+        self._write(tmp_path, "a.py", "from core import f\n")
+        self._write(tmp_path, "b.py", "import core\n")
+        metrics = {m.module: m for m in compute_module_metrics(tmp_path)}
+        assert metrics["core"].ca == 2
+
+    def test_self_import_not_counted(self, tmp_path):
+        """A module that imports itself (pathological case) must not bump its own Ca."""
+        self._write(tmp_path, "weird.py", "import weird\n")
+        metrics = {m.module: m for m in compute_module_metrics(tmp_path)}
+        # Ca of weird should not include itself
+        assert metrics["weird"].ca == 0
+
+    # ------------------------------------------------------------------
+    # Ce (efferent coupling) — external non-stdlib fan-out
+    # ------------------------------------------------------------------
+
+    def test_ce_excludes_stdlib(self, tmp_path):
+        """stdlib imports (os, sys, json, …) do not contribute to Ce."""
+        self._write(tmp_path, "stdlib_user.py", "import os\nimport sys\nimport json\n")
+        metrics = {m.module: m for m in compute_module_metrics(tmp_path)}
+        assert metrics["stdlib_user"].ce == 0
+
+    def test_ce_counts_external_package(self, tmp_path):
+        """A single non-stdlib, non-project import increments Ce."""
+        self._write(tmp_path, "uses_requests.py", "import requests\n")
+        metrics = {m.module: m for m in compute_module_metrics(tmp_path)}
+        assert metrics["uses_requests"].ce >= 1
+
+    def test_ce_does_not_count_project_modules(self, tmp_path):
+        """Imports of other project modules are Ca edges, not Ce."""
+        self._write(tmp_path, "utils.py", "def helper(): pass\n")
+        self._write(tmp_path, "main.py", "from utils import helper\n")
+        metrics = {m.module: m for m in compute_module_metrics(tmp_path)}
+        # main imports utils (a project module) → Ce for main should be 0
+        assert metrics["main"].ce == 0
+
+    # ------------------------------------------------------------------
+    # Instability (I)
+    # ------------------------------------------------------------------
+
+    def test_instability_zero_for_pure_provider(self, tmp_path):
+        """A module that is imported by others but imports nothing external has I=0."""
+        self._write(tmp_path, "provider.py", "import os\n")  # only stdlib
+        self._write(tmp_path, "consumer.py", "import provider\n")
+        metrics = {m.module: m for m in compute_module_metrics(tmp_path)}
+        assert metrics["provider"].instability == 0.0
+
+    def test_instability_range(self, tmp_path):
+        """Instability is always in [0, 1]."""
+        self._write(tmp_path, "foo.py", "import requests\nimport httpx\n")
+        for m in compute_module_metrics(tmp_path):
+            assert 0.0 <= m.instability <= 1.0, f"{m.module}: I={m.instability}"
+
+    def test_isolated_module_instability_zero(self, tmp_path):
+        """A module with no Ca and no Ce (empty file, no imports) has I=0 (not NaN)."""
+        self._write(tmp_path, "empty.py", "# nothing\n")
+        metrics = {m.module: m for m in compute_module_metrics(tmp_path)}
+        assert metrics["empty"].instability == 0.0
+
+    # ------------------------------------------------------------------
+    # Abstractness (A)
+    # ------------------------------------------------------------------
+
+    def test_abstractness_zero_for_no_classes(self, tmp_path):
+        self._write(tmp_path, "no_classes.py", "def f(): pass\n")
+        metrics = {m.module: m for m in compute_module_metrics(tmp_path)}
+        assert metrics["no_classes"].abstractness == 0.0
+
+    def test_abstractness_one_for_all_abstract(self, tmp_path):
+        """A module with only ABC-derived classes has A=1."""
+        src = "from abc import ABC, abstractmethod\nclass MyABC(ABC):\n    @abstractmethod\n    def method(self): ...\n"
+        self._write(tmp_path, "all_abstract.py", src)
+        metrics = {m.module: m for m in compute_module_metrics(tmp_path)}
+        assert metrics["all_abstract"].abstractness == 1.0
+
+    def test_abstractness_partial(self, tmp_path):
+        """One concrete + one abstract class → A=0.5."""
+        src = (
+            "from abc import ABC\n"
+            "class Concrete: pass\n"
+            "class Abstract(ABC): pass\n"
+        )
+        self._write(tmp_path, "mixed.py", src)
+        metrics = {m.module: m for m in compute_module_metrics(tmp_path)}
+        assert metrics["mixed"].abstractness == pytest.approx(0.5)
+
+    def test_protocol_counts_as_abstract(self, tmp_path):
+        """A class inheriting Protocol is treated as abstract."""
+        src = "from typing import Protocol\nclass MyProto(Protocol):\n    def method(self) -> None: ...\n"
+        self._write(tmp_path, "proto.py", src)
+        metrics = {m.module: m for m in compute_module_metrics(tmp_path)}
+        assert metrics["proto"].abstractness == 1.0
+
+    def test_abstractmethod_decorator_makes_class_abstract(self, tmp_path):
+        """A class with @abstractmethod on a method is abstract even without ABC base."""
+        src = (
+            "from abc import abstractmethod\n"
+            "class PseudoAbstract:\n"
+            "    @abstractmethod\n"
+            "    def do_it(self): ...\n"
+        )
+        self._write(tmp_path, "pseudo.py", src)
+        metrics = {m.module: m for m in compute_module_metrics(tmp_path)}
+        assert metrics["pseudo"].abstractness == 1.0
+
+    # ------------------------------------------------------------------
+    # Distance (D) and zone labels
+    # ------------------------------------------------------------------
+
+    def test_distance_range(self, tmp_path):
+        """D is always in [0, 1]."""
+        self._write(tmp_path, "any_mod.py", "import requests\ndef f(): pass\n")
+        for m in compute_module_metrics(tmp_path):
+            assert 0.0 <= m.distance <= 1.0, f"{m.module}: D={m.distance}"
+
+    def test_zone_of_pain_concrete_stable(self, tmp_path):
+        """Ca >> Ce and no abstract classes → zone of pain when D > 0.5."""
+        # core is imported by many modules but imports nothing external
+        self._write(tmp_path, "core.py", "class Concrete: pass\n")
+        for importer in range(6):
+            self._write(tmp_path, f"user{importer}.py", "import core\n")
+        metrics = {m.module: m for m in compute_module_metrics(tmp_path)}
+        core_m = metrics["core"]
+        # I=0 (no external deps), A=0 (concrete), D=|0+0-1|=1 > 0.5 → zone of pain
+        assert core_m.zone == "zone of pain"
+        assert core_m.distance > 0.5
+
+    def test_main_sequence_near_diagonal(self, tmp_path):
+        """A module with I≈0.5 and A≈0.5 should be near the main sequence (D small)."""
+        src = (
+            "import requests\n"
+            "from abc import ABC\n"
+            "class Concrete: pass\n"
+            "class Abstract(ABC): pass\n"
+        )
+        self._write(tmp_path, "balanced.py", src)
+        self._write(tmp_path, "importer.py", "import balanced\n")
+        metrics = {m.module: m for m in compute_module_metrics(tmp_path)}
+        # balanced: Ca=1 (importer), Ce=1 (requests) → I=0.5, A=0.5, D=|0.5+0.5-1|=0
+        assert metrics["balanced"].distance == pytest.approx(0.0, abs=0.01)
+        assert metrics["balanced"].zone == "main sequence"
+
+    # ------------------------------------------------------------------
+    # to_dict and summary
+    # ------------------------------------------------------------------
+
+    def test_to_dict_has_required_keys(self, tmp_path):
+        self._write(tmp_path, "m.py", "x = 1\n")
+        metrics = compute_module_metrics(tmp_path)
+        assert metrics
+        d = metrics[0].to_dict()
+        for key in (
+            "module",
+            "file",
+            "ca",
+            "ce",
+            "instability",
+            "abstractness",
+            "distance",
+            "zone",
+        ):
+            assert key in d, f"missing key {key!r} in to_dict"
+
+    def test_summary_contains_key_fields(self, tmp_path):
+        self._write(tmp_path, "m.py", "x = 1\n")
+        metrics = compute_module_metrics(tmp_path)
+        s = metrics[0].summary()
+        assert "I=" in s
+        assert "A=" in s
+        assert "D=" in s
+        assert "Ca=" in s
+        assert "Ce=" in s
+
+    # ------------------------------------------------------------------
+    # Sorting
+    # ------------------------------------------------------------------
+
+    def test_sorted_by_distance_descending(self, tmp_path):
+        """Results are sorted worst-first (highest D first)."""
+        self._write(tmp_path, "a.py", "x = 1\n")
+        self._write(tmp_path, "b.py", "import requests\n")
+        results = compute_module_metrics(tmp_path)
+        distances = [m.distance for m in results]
+        assert distances == sorted(distances, reverse=True)

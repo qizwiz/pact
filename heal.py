@@ -461,6 +461,78 @@ def _z3_verify(
     return None, 0.0, ""
 
 
+def _crosshair_verify(
+    patched_source: str,
+    verbose: bool,
+) -> Optional[tuple[str, float, str]]:
+    """
+    Layer 2.5: CrossHair symbolic-execution verifier.
+
+    Runs CrossHair on *patched_source* looking for PEP316 contracts
+    (pre:/post: docstrings).  Returns:
+      ("ACCEPT", 1.0, ...)   — no counterexample found within time limit
+      ("REJECT", 0.0, ...)   — counterexample found; explanation contains it
+      None                   — crosshair not installed, no checkable contracts,
+                               or import error in the source; caller falls through
+                               to LLM rubric
+    """
+    try:
+        import argparse
+        import io as _io
+
+        from crosshair.main import check as _ch_check
+        from crosshair.options import AnalysisKind, AnalysisOptionSet
+    except ImportError:
+        return None
+
+    tmp_path = Path(tempfile.mktemp(suffix=".py", prefix="pact_ch_"))
+    try:
+        tmp_path.write_text(patched_source, encoding="utf-8")
+
+        args = argparse.Namespace(target=[str(tmp_path)])
+        options = AnalysisOptionSet(
+            analysis_kind=[AnalysisKind.PEP316],
+            per_path_timeout=3.0,
+            timeout=12.0,
+        )
+        stdout_buf = _io.StringIO()
+        stderr_buf = _io.StringIO()
+        exit_code = _ch_check(args, options, stdout_buf, stderr_buf)
+
+        err_text = stderr_buf.getvalue()
+        out_text = stdout_buf.getvalue().strip()
+
+        # No checkable functions (no contracts) — not a CrossHair problem
+        if "no checkable functions" in err_text:
+            return None
+
+        if exit_code == 0:
+            if verbose:
+                print("    CrossHair: no counterexample found (ACCEPT)")
+            return (
+                "ACCEPT",
+                1.0,
+                "CrossHair: symbolic execution found no contract violations",
+            )
+
+        # exit_code != 0 → counterexample(s) found
+        explanation = (
+            f"CrossHair: contract violated — {out_text}"
+            if out_text
+            else "CrossHair: contract violated (see logs)"
+        )
+        if verbose:
+            print(f"    CrossHair: REJECT — {out_text[:120]}")
+        return "REJECT", 0.0, explanation
+
+    except Exception as exc:
+        if verbose:
+            print(f"    CrossHair: skipped ({exc})")
+        return None
+    finally:
+        tmp_path.unlink(missing_ok=True)
+
+
 def apply_patch(source: str, original: str, replacement: str) -> Optional[str]:
     """
     Apply a patch by exact string replacement of `original` with `replacement`.
@@ -659,9 +731,23 @@ def _verify(
             print(f"    Z3: {z3_verdict} (score={z3_score:.2f})")
         return z3_score, z3_verdict, "\n".join(filter(None, feedback_parts))
 
+    # Layer 2.5: CrossHair symbolic execution — handles string/collection contracts
+    # that Z3's encoder cannot model.
+    if verbose:
+        print("    CrossHair: Z3 encoding failed — trying symbolic execution...")
+    ch_result = _crosshair_verify(patched, verbose)
+    if ch_result is not None:
+        ch_verdict, ch_score, ch_feedback = ch_result
+        feedback_parts = [ch_feedback]
+        if new_viols:
+            feedback_parts.append(f"New violations introduced: {json.dumps(new_viols)}")
+        if verbose:
+            print(f"    CrossHair: {ch_verdict} (score={ch_score:.2f})")
+        return ch_score, ch_verdict, "\n".join(filter(None, feedback_parts))
+
     # Layer 3: LLM rubric — Z3 could not encode this contract
     if verbose:
-        print("    Z3: could not encode contract — falling back to LLM rubric")
+        print("    CrossHair: no contracts found — falling back to LLM rubric")
     patch_display = f"ORIGINAL:\n{result.patch.original}\n\nREPLACEMENT:\n{result.patch.replacement}"
     template = _load_prompt("verify")
     prompt = _render(
