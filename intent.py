@@ -422,11 +422,28 @@ def _parse_text(text: str) -> dict:
         pass
     # Model wrote reasoning before the JSON — find the first top-level { and parse from there.
     start = text.find("{")
-    if start > 0:
+    if start >= 0:
+        candidate = text[start:]
         try:
-            return json.loads(text[start:])
+            return json.loads(candidate)
         except json.JSONDecodeError:
             pass
+        # Trailing text after closing brace — scan for balanced end
+        depth = 0
+        end = -1
+        for i, ch in enumerate(candidate):
+            if ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    end = i + 1
+                    break
+        if end > 0:
+            try:
+                return json.loads(candidate[:end])
+            except json.JSONDecodeError:
+                pass
     # Try extracting from a ```json fence that may appear mid-text
     m = re.search(r"```(?:json)?\s*(\{.*?)\s*```", text, re.DOTALL)
     if m:
@@ -1063,6 +1080,7 @@ def _understand_module(
             explanation=v.get("explanation", ""),
         )
         for v in raw.get("violations", [])
+        if v.get("invariant_id") or v.get("explanation")  # drop hollow shells
     ]
 
     ta_raw = raw.get("truncation_audit", {})

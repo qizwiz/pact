@@ -16,6 +16,7 @@ docs/tla/generated/
 .pact_loop/
 heal_*.json
 intent*.json
+!intent_pact_self.json
 pact_tool.egg-info/
 graphify-out/
 

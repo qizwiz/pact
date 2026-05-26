@@ -1,0 +1,1397 @@
+{
+  "project": "/Users/jonathanhill/src/pact-standalone",
+  "generated_at": "2026-05-26T17:44:49.064104Z",
+  "source_model": "anthropic/claude-sonnet-4-5",
+  "project_summary": "pact performs graph-based structural verification of codebases by building a call graph (via ast_utils.py, graph.py, import_graph.py), detecting architectural violations through formal constraint checking (checker.py, z3_engine.py, prover.py), and synthesizing minimal structural fixes (fixer.py, heal.py) using LLM-prompted patch generation with formal post-conditions. Unlike pattern-matching linters, pact treats violations as path properties over the call graph\u2014a violation exists when a constraint fails along some execution path from source to sink.",
+  "key_files": [
+    "failure_mode.py",
+    "graph.py",
+    "checker.py",
+    "intent.py",
+    "fixer.py",
+    "z3_engine.py",
+    "enrich.py",
+    "cli.py",
+    "pipeline.py",
+    "llm.py",
+    "context.py",
+    "heal.py",
+    "prover.py",
+    "reduce.py",
+    "tda.py"
+  ],
+  "modules": [
+    {
+      "path": "/Users/jonathanhill/src/pact-standalone/graph.py",
+      "understanding": {
+        "purpose": "Constructs a networkx DiGraph where nodes represent qualified function names from FunctionManifest objects and edges represent call relationships from CallSite objects. The graph enables path-based constraint checking: checker.py can query 'does tainted value flow from source S to sink T' by walking reachable_from(S) and testing T membership. Git history (2026-05-25) added _require_graph() RuntimeWarning emission to surface when queries return [] due to missing networkx vs. genuine empty result \u2014 before this fix, infrastructure failure was silent.",
+        "design_intent": "**Decision 1**: _require_graph() emits RuntimeWarning at stacklevel=3 (lines 30, 37) instead of raising ImportError or returning sentinel. Choice: allows graceful degradation when networkx unavailable \u2014 query methods return [] rather than crash. Consequence: calling code (checker.py) must interpret [] as 'unknown or empty', not definitive 'no paths exist'. **Decision 2**: build_call_graph() adds edges even when target not in func_names (lines 95-97), resolving via short_to_qual fallback. Rejects alternative of skipping unknown callees. Consequence: graph includes external/stdlib calls as nodes, enabling prover.py to detect 'calls json.loads without try/except' even though json.loads has no FunctionManifest.",
+        "key_abstractions": "**CallGraph**: dataclass wrapping networkx.DiGraph or None. Field _g (line 19) holds graph or None when networkx unavailable. **CallGraph._require_graph**: guard method returning bool; checks _HAS_NX global (line 26) and self._g is not None (line 34), emits distinct RuntimeWarnings for each failure mode, returns False to signal degraded state. **CallGraph.reachable_from**: returns list[str] of all transitively reachable function names from given func_name using nx.descendants at line 50 \u2014 implements forward dataflow 'what can this function reach'. Returns [] if guard fails or func_name absent. **CallGraph.callers_of**: returns list[str] of immediate predecessors via self._g.predecessors at line 58 \u2014 implements backward slice 'who calls this'. **CallGraph.call_sites_to**: returns list[CallSite] by iterating in_edges with data=True (line 66), extracting call_site dict key (line 67). Returns [] if no edges or guard fails. **build_call_graph**: constructs DiGraph from two lists. Adds nodes for each FunctionManifest.name with manifest stored as node attribute (line 88). Builds short_to_qual dict mapping short name (last dot component) to first-seen qualified name (line 90). Adds edge for each CallSite with call_site stored as edge attribute (line 98). Returns CallGraph wrapping DiGraph or None if _HAS_NX=False.",
+        "behavioral_contract": "When networkx unavailable (_HAS_NX=False at line 15), build_call_graph returns CallGraph(_g=None) at line 82, and all query methods return [] with RuntimeWarning. When func_name not in graph (lines 49, 56, 65), query methods return [] silently \u2014 no warning distinguishes typo from genuinely isolated function. build_call_graph guarantees all FunctionManifest entries become nodes before edge creation (lines 87-90 before loop at 93), so edges referencing functions from manifests never create dangling source nodes. Edge target resolution (lines 95-97) ensures unqualified CallSite.callee_name is mapped to qualified name via short_to_qual, or left unqualified if no match \u2014 graph always created, never raises on ambiguous names.",
+        "failure_modes": "**Silent empty results**: reachable_from/callers_of/call_sites_to return [] when func_name not in self._g (lines 49, 56, 65) with no indication whether (a) function exists but isolated, (b) func_name is typo, or (c) graph never built. Checker.py receiving [] may incorrectly conclude 'no violations reachable from this source'. **Ambiguous short-name resolution**: short_to_qual.setdefault at line 90 maps each short name to first-registered qualified name only. If two modules define foo(), CallSite with callee_name='foo' resolves to whichever module's FunctionManifest appeared first in the list \u2014 second foo() becomes unreachable via short-name calls. **Graceful degradation without networkx**: all queries return [] when _HAS_NX=False, but calling code may not check warnings.simplefilter state \u2014 if warnings suppressed, infrastructure failure is invisible and checker.py operates on empty graph, reporting zero violations regardless of actual code structure.",
+        "assumptions": "**Qualified names are unique**: build_call_graph assumes no two FunctionManifest entries share the same .name (line 88 G.add_node overwrites if duplicate). If extractor.py emits duplicate qualified names, later manifest replaces earlier node attribute, and edges from earlier calls remain but point to wrong manifest. **Short-name collision is rare**: short_to_qual.setdefault at line 90 assumes first-seen mapping is correct for all subsequent short-name references. If codebase has module_a.foo and module_b.foo, all unqualified 'foo' calls resolve to whichever module registered first \u2014 no warning emitted for ambiguity. **CallSite.caller_name is None only at module-level**: source = call.caller_name or '__root__' at line 94 treats None as module-level call. If extractor.py incorrectly sets caller_name=None for in-function calls, those edges will appear as '__root__' edges, breaking intra-function dataflow analysis. **stacklevel=3 reaches user code**: RuntimeWarning at stacklevel=3 (lines 30, 37) assumes call chain is user_code \u2192 query_method \u2192 _require_graph. If intermediate wrappers exist, warning may attribute to wrong file/line.",
+        "resource_obligations": "[none detected in visible source; module constructs in-memory DiGraph with no persistent storage, no async tasks, no file handles. Graph lifecycle managed by CallGraph dataclass \u2014 no explicit cleanup required since networkx.DiGraph uses standard Python ref-counting.]"
+      },
+      "invariants": [
+        {
+          "id": "inv_001",
+          "type": "error_contract",
+          "statement": "_require_graph() returns False (with RuntimeWarning at stacklevel=3) when networkx is missing or graph is None, causing all query methods (reachable_from, callers_of, call_sites_to) to return empty list []. Calling code cannot distinguish 'no transitive calls exist' from 'infrastructure unavailable' \u2014 both produce [] with no exception.",
+          "applies_to": [
+            "CallGraph.reachable_from",
+            "CallGraph.callers_of",
+            "CallGraph.call_sites_to"
+          ],
+          "formal": "\u2200 method m \u2208 {reachable_from, callers_of, call_sites_to}: _require_graph()=False \u21d2 m(x)=[] \u2227 no_exception_raised(m)",
+          "derived_from": "if not self._require_graph(): return []",
+          "confidence": 0.93,
+          "contract_kind": "subset_relation",
+          "z3_encoding": "",
+          "tla_template": "liveness"
+        },
+        {
+          "id": "inv_002",
+          "type": "data_flow",
+          "statement": "build_call_graph() creates bidirectional name resolution: qualified names are stored as-is (line 88), short names map to first-seen qualified name via short_to_qual.setdefault(short, f.name) at line 90. When a CallSite references unqualified callee_name (line 95), resolution uses short_to_qual.get(short, target) at line 97 \u2014 if multiple functions share the same short name, only the first-registered qualified name is used, silently dropping ambiguous targets.",
+          "applies_to": [
+            "build_call_graph"
+          ],
+          "formal": "\u2200 f1, f2: short_name(f1)=short_name(f2) \u2227 register_order(f1)<register_order(f2) \u21d2 short_to_qual[short_name(f2)]=qualified(f1)",
+          "derived_from": "short_to_qual.setdefault(short, f.name)",
+          "confidence": 0.89,
+          "contract_kind": "flag_invariant",
+          "z3_encoding": "",
+          "tla_template": "liveness"
+        },
+        {
+          "id": "inv_003",
+          "type": "assumption",
+          "statement": "build_call_graph() assumes all CallSite.caller_name values are non-None when in function scope. When caller_name is None (line 94), it assigns source='__root__' \u2014 this treats module-level calls as synthetic root node. If checker.py queries reachable_from('__root__'), it will see all module-level transitive calls, but cannot distinguish which module-level statement initiated the call (since all are collapsed to single '__root__' node).",
+          "applies_to": [
+            "build_call_graph"
+          ],
+          "formal": "\u2200 call \u2208 call_sites: call.caller_name=None \u21d2 G.edge_source(call)='__root__' \u2227 loss_of_caller_identity(call)",
+          "derived_from": "source = call.caller_name or '__root__'",
+          "confidence": 0.87,
+          "contract_kind": "behavioral",
+          "z3_encoding": "",
+          "tla_template": "liveness"
+        },
+        {
+          "id": "inv_004",
+          "type": "error_contract",
+          "statement": "When func_name not in self._g (lines 49, 56, 65), query methods return [] with no warning. Caller receives empty result indistinguishable from 'function exists but has no callers/callees'. If checker.py queries callers_of('typo_name'), it gets [], concludes function is unreachable, and may skip constraint checking that should apply.",
+          "applies_to": [
+            "CallGraph.reachable_from",
+            "CallGraph.callers_of",
+            "CallGraph.call_sites_to"
+          ],
+          "formal": "\u2200 f: f \u2209 graph.nodes \u21d2 query(f)=[] \u2227 no_warning_emitted",
+          "derived_from": "if func_name not in self._g: return []",
+          "confidence": 0.91,
+          "contract_kind": "behavioral",
+          "z3_encoding": "",
+          "tla_template": "liveness"
+        }
+      ],
+      "violations": [],
+      "prompt_score": null,
+      "truncation_audit": {
+        "last_complete_unit": "def build_call_graph(functions: list[FunctionManifest], call_sites: list[CallSite]) -> CallGraph",
+        "cutoff_line": "return CallGraph(_g=G)",
+        "visible_definitions": [
+          "CallGraph",
+          "CallGraph._g",
+          "CallGraph._require_graph",
+          "CallGraph.reachable_from",
+          "CallGraph.callers_of",
+          "CallGraph.call_sites_to",
+          "build_call_graph"
+        ],
+        "docstring_only_names": []
+      }
+    },
+    {
+      "path": "/Users/jonathanhill/src/pact-standalone/checker.py",
+      "understanding": {
+        "purpose": "checker.py orchestrates pact's constraint verification pipeline: (1) extract_from_codebase produces models/functions/call_sites, (2) FailureMode registry applies semantic checks per call-site and per file, (3) Z3 PactEngine confirms model_constraint violations via Datalog proof, (4) semgrep/mypy provide parallel structural+type-system detection layers. check_codebase line 66 returns unified Violation list annotated with spec_id showing proof method (AST heuristic, z3:datalog, semgrep, mypy). check_codebase_incremental line 679 optimizes for CI by computing dirty set via BFS through call graph from changed files, skipping analysis of unchanged subgraphs. Module does NOT construct explicit graph\u2014call_sites are iterated linearly, contradicting module docstring's claim of 'graph traversal'.",
+        "design_intent": "(1) Multi-tool confirmation architecture: check_codebase runs AST modes, then Z3 at line 173 for model_constraint violations, annotating overlaps with spec_id='z3:datalog'. Rejected alternative: AST-only (fast but misses transitive constraints). Consequence: when Z3 unavailable, model_constraint violations lack formal proof certificate, reducing trust for compliance audits. (2) Duplicate-name exclusion at line 126: func_index drops functions whose name appears in multiple files to avoid false positives from picking wrong definition. Rejected alternative: include all, disambiguate by import analysis (expensive). Consequence: violations in calls to duplicate-named functions are silently skipped; RuntimeWarning added 2026-05-25 after users reported missing violations, but warning may be suppressed by caller's filter.",
+        "key_abstractions": "_to_violation: FailureEvidence\u2192Violation mapper. _compute_dirty_set: BFS upward from changed files, returns (dirty_files, dirty_funcs); used by incremental mode. check_codebase(root, modes, _extracted): main entry; builds model_index/func_index, iterates call_sites+file_modes, merges Z3/semgrep/mypy results, returns violations. _SEMGREP_RULE_TO_MODE: dict mapping semgrep rule IDs to pact mode names. _run_semgrep(root): subprocess.run(['semgrep', '--config', rules_dir, '--json']) with 120s timeout; parses JSON, filters vendor dirs, respects # noqa, applies _sibling_guarded/_guard_func_called_before/_is_bare_except_reraise suppressions. _sibling_guarded(path, line, var_name): scans 15 lines backward for if-guard on var_name.choices. _guard_func_called_before(path, line, var_name): parses AST to find functions with raise-on-empty-choices, scans 30 lines backward for calls. _is_bare_except_reraise(path, end_line): scans backward for except:, forward 10 lines to verify sole body stmt is raise. _match_text(path, start, end): extracts call text from source lines using semgrep span. _run_mypy(root): discovers dirs with \u226510 .py files, runs mypy with --ignore-missing-imports/--check-untyped-defs, parses JSON for union-attr/attr-defined errors, respects # noqa. check_codebase_incremental(root, changed_files, modes, _extracted): computes dirty_files via _compute_dirty_set, filters call_sites, returns (violations, stats dict with skip_ratio).",
+        "behavioral_contract": "check_codebase guarantees: (1) every call_site in call_sites is checked by all modes where mode.check is not None (line 139), (2) every Python file under root is checked by file_modes (line 149), (3) TypeScript files checked if tree-sitter installed else warning logged (line 162), (4) model_constraint violations get spec_id='z3:datalog' if Z3 confirms (line 186), (5) semgrep/mypy violations merged with AST, de-duplicated via seen set keyed by (file, line, context, call) (line 132). Does NOT guarantee: callers cannot distinguish 'zero violations' from 'tool crashed'\u2014empty list returned for semgrep/mypy/ts_checker failures (lines 247, 333, 626). check_codebase_incremental guarantees dirty_files includes transitive callers of changed functions (line 50), but does NOT propagate downward\u2014unchanged caller of changed callee is not marked dirty, missing violations if callee contract tightens.",
+        "failure_modes": "(1) _run_semgrep line 333 `except Exception: return []` swallows JSON parse errors, timeout, missing rules dir, making debugging impossible. (2) _run_mypy line 591 `except (TimeoutExpired, FileNotFoundError, OSError): return []` hides mypy binary lookup failures and 120s timeout. (3) Z3 import error line 175 logs warning but returns AST violations without spec_id, indistinguishable from confirmed violations. (4) Z3 runtime error line 199 logs warning, returns AST unchanged\u2014caller cannot tell if Z3 ran. (5) ts_checker import error line 162 logs warning, TypeScript files silently skipped. (6) _sibling_guarded scans only 15 lines backward (line 348)\u2014distant guards missed. (7) _guard_func_called_before scans only 30 lines backward (line 391)\u2014distant calls missed. (8) _is_bare_except_reraise scans only 10 lines forward (line 433)\u2014long comment blocks cause misclassification. (9) func_index excludes duplicate-named functions (line 126)\u2014violations in calls to them never reported. (10) semgrep/mypy 120s timeout (lines 301, 586) returns partial results indistinguishable from complete. (11) _seen_call_no_line suppression (line 236) does not verify same variable scope\u2014may suppress violations in different functions with same call text.",
+        "assumptions": "(1) Duplicate function names across files are indistinguishable without full scope analysis (line 118)\u2014trades false negatives for zero false positives. (2) Semgrep metavariables unavailable in OSS (line 334)\u2014var_name extracted via string split, assumes `<var>.choices[0]` pattern, fails on chained attributes. (3) Mypy discovers packages via \u226510 .py files threshold (line 574)\u2014excludes small critical modules. (4) BFS propagates dirtiness only upward through call graph (line 29)\u2014unchanged callers of changed callees are clean, missing violations if callee contract changes. (5) 120s timeout sufficient for semgrep/mypy (lines 301, 586)\u2014monorepos and large Django projects may exceed, producing incomplete results. (6) Inline ternary guards have single-char variable names after 'if' (line 362)\u2014regex `\\w` matches one character, multi-char identifiers cause false positives. (7) Guard functions are within 30 lines of violation (line 391), if-guards within 15 lines (line 348)\u2014hard-coded thresholds cannot adapt to deeply nested code. (8) Semgrep/mypy failures are non-fatal (lines 247, 333, 626)\u2014silent empty list return assumes caller will function with incomplete data.",
+        "resource_obligations": "[none detected in visible source; no database transactions, file handles, or async tasks visible. subprocess.run calls for semgrep/mypy at lines 296, 585 use capture_output=True and timeout, ensuring process termination. File reads via Path.read_text at lines 318, 608 are non-streaming, no explicit close required]"
+      },
+      "invariants": [
+        {
+          "id": "inv_001",
+          "type": "error_contract",
+          "statement": "_run_semgrep at line 286 catches all exceptions at line 333 with bare `except Exception: return []`, suppressing JSON parse errors, OSError from missing rules directory, subprocess timeout, and shutil.which failures. Caller receives empty list identical to semgrep-not-installed case, making debugging impossible\u2014users cannot distinguish 'semgrep unavailable' from 'semgrep crashed' from 'rules invalid JSON'.",
+          "applies_to": [
+            "_run_semgrep"
+          ],
+          "formal": "\u2200 errors e \u2208 {JSONDecodeError, OSError, TimeoutExpired} in _run_semgrep: exception(e) \u2192 return([]) \u2227 log(e)=\u22a5",
+          "derived_from": "except Exception: return []",
+          "confidence": 0.93,
+          "contract_kind": "error_contract",
+          "z3_encoding": "",
+          "tla_template": "liveness"
+        },
+        {
+          "id": "inv_002",
+          "type": "error_contract",
+          "statement": "_run_mypy at line 532 catches subprocess.TimeoutExpired, FileNotFoundError, OSError at line 591 with `return []`, suppressing mypy binary lookup failures and 120-second timeout. check_codebase receives empty list indistinguishable from mypy-not-installed or zero-violations, hiding configuration errors (e.g., mypy binary corrupted, project too large for 120s timeout).",
+          "applies_to": [
+            "_run_mypy"
+          ],
+          "formal": "\u2200 e \u2208 {TimeoutExpired, FileNotFoundError, OSError}: subprocess_run_mypy(e) \u2192 return([]) \u2227 signal(e)=\u22a5",
+          "derived_from": "except (subprocess.TimeoutExpired, FileNotFoundError, OSError): return []",
+          "confidence": 0.92,
+          "contract_kind": "error_contract",
+          "z3_encoding": "",
+          "tla_template": "liveness"
+        },
+        {
+          "id": "inv_003",
+          "type": "error_contract",
+          "statement": "check_codebase swallows Z3 import failures at line 175 with warning log but does not propagate to caller. When z3-solver is missing, model_constraint violations are returned without spec_id='z3:datalog' annotation, but caller cannot distinguish 'Z3 confirmed these AST violations' from 'Z3 unavailable, AST results unconfirmed'. violations list appears semantically identical but has different proof strength.",
+          "applies_to": [
+            "check_codebase"
+          ],
+          "formal": "\u2200 v \u2208 violations where v.context='model_constraint': ImportError(z3_engine) \u2192 v.spec_id \u2260 'z3:datalog' \u2227 proof_strength(v) undefined to caller",
+          "derived_from": "except ImportError as _z3_import_err: _logging.getLogger(__name__).warning(...)",
+          "confidence": 0.89,
+          "contract_kind": "error_contract",
+          "z3_encoding": "",
+          "tla_template": "liveness"
+        },
+        {
+          "id": "inv_004",
+          "type": "error_contract",
+          "statement": "check_codebase catches generic Exception from Z3 engine at line 199 with warning log, then returns AST violations unchanged. Datalog proof failures (solver timeout, fixedpoint convergence failure, invalid rule syntax) are indistinguishable from import errors\u2014caller sees warning message but cannot programmatically determine if Z3 ran and failed vs never ran.",
+          "applies_to": [
+            "check_codebase"
+          ],
+          "formal": "\u2200 e \u2208 Z3_runtime_errors: PactEngine_violations(e) \u2192 return(ast_violations) \u2227 z3_ran(ast_violations)=unknown",
+          "derived_from": "except Exception as _z3_err: _logging.getLogger(__name__).warning(...)",
+          "confidence": 0.88,
+          "contract_kind": "error_contract",
+          "z3_encoding": "",
+          "tla_template": "liveness"
+        },
+        {
+          "id": "inv_005",
+          "type": "error_contract",
+          "statement": "check_codebase catches ts_checker ImportError at line 162 with warning log but does not surface to caller whether tree-sitter is installed. When TypeScript files exist but tree-sitter is missing, violations list is incomplete but indistinguishable from 'zero TS violations found'\u2014callers performing completeness audits will silently miss TS files.",
+          "applies_to": [
+            "check_codebase"
+          ],
+          "formal": "\u2200 ts_files f in root: ImportError(ts_checker) \u2192 violations(f)=\u22a5 \u2227 caller_knows(f_unchecked)=false",
+          "derived_from": "except ImportError as _ts_import_err: _logging.getLogger(__name__).warning(...)",
+          "confidence": 0.87,
+          "contract_kind": "error_contract",
+          "z3_encoding": "",
+          "tla_template": "liveness"
+        },
+        {
+          "id": "inv_006",
+          "type": "data_flow",
+          "statement": "_sibling_guarded at line 335 scans only 15 lines backward (`range(idx - 1, max(idx - 16, -1), -1)`) to detect if-guards for var_name.choices. When guard check is at line N and violation is at line N+20, the guard is invisible to suppression logic, producing false positive llm_response_unguarded violations. Hard-coded 15-line window cannot be overridden or configured.",
+          "applies_to": [
+            "_sibling_guarded"
+          ],
+          "formal": "\u2200 guard g, violation v: line_distance(g, v) > 15 \u2192 suppressed(v)=false even when protected(v, g)=true",
+          "derived_from": "for i in range(idx - 1, max(idx - 16, -1), -1):",
+          "confidence": 0.91,
+          "contract_kind": "ordering",
+          "z3_encoding": "",
+          "tla_template": "ordering"
+        },
+        {
+          "id": "inv_007",
+          "type": "data_flow",
+          "statement": "_guard_func_called_before at line 366 scans only 30 lines backward (`range(idx - 1, max(idx - 30, -1), -1)`) to find guard function calls. When guard function is called 35 lines before choices[0] access, the call is invisible, producing false positive. threshold is hard-coded, cannot adapt to deeply nested functions or long initialization blocks.",
+          "applies_to": [
+            "_guard_func_called_before"
+          ],
+          "formal": "\u2200 guard_call gc, violation v: line_distance(gc, v) > 30 \u2192 detected(gc)=false \u2192 suppressed(v)=false",
+          "derived_from": "for i in range(idx - 1, max(idx - 30, -1), -1):",
+          "confidence": 0.9,
+          "contract_kind": "ordering",
+          "z3_encoding": "",
+          "tla_template": "ordering"
+        },
+        {
+          "id": "inv_008",
+          "type": "data_flow",
+          "statement": "_is_bare_except_reraise at line 423 scans only 10 lines forward to verify sole body statement is raise (`range(i + 1, min(i + 10, len(lines)))`). When except: block has long comment header (8 lines) before raise, forward scan stops before reaching raise statement, misclassifying pure reraise as bare-except violation. False positive rate increases with verbose error-handling comments.",
+          "applies_to": [
+            "_is_bare_except_reraise"
+          ],
+          "formal": "\u2200 except_block b: comment_lines(b) > 8 \u2227 last_stmt(b)=raise \u2192 classified(b)=bare_except incorrectly",
+          "derived_from": "for j in range(i + 1, min(i + 10, len(lines))):",
+          "confidence": 0.89,
+          "contract_kind": "ordering",
+          "z3_encoding": "",
+          "tla_template": "ordering"
+        },
+        {
+          "id": "inv_009",
+          "type": "assumption",
+          "statement": "check_codebase builds func_index excluding duplicate function names at line 126 (`_func_name_counts[f.name] == 1`). Assumes duplicate names across files are indistinguishable without full scope analysis, choosing false negatives (missed violations in calls to duplicate-named functions) over false positives. When codebase has multiple `process_data` functions in different modules and a call site invokes `process_data(x, y)` missing required arg z, violation is silently skipped because func_index omits all process_data entries.",
+          "applies_to": [
+            "check_codebase",
+            "func_index"
+          ],
+          "formal": "\u2200 f1, f2 where name(f1)=name(f2) \u2227 file(f1)\u2260file(f2): func_index[name(f1)]=\u22a5 \u2192 violations_in_calls_to(f1)=\u2205 \u2227 violations_in_calls_to(f2)=\u2205",
+          "derived_from": "func_index: dict[str, FunctionManifest] = {f.name: f for f in functions if _func_name_counts[f.name] == 1}",
+          "confidence": 0.94,
+          "contract_kind": "flag_invariant",
+          "z3_encoding": "",
+          "tla_template": "liveness"
+        },
+        {
+          "id": "inv_010",
+          "type": "assumption",
+          "statement": "_compute_dirty_set at line 29 propagates dirtiness upward through call graph (`BFS upward`) but does not propagate downward. When function F in unchanged file calls function G in changed file, F is not marked dirty because only callees\u2192callers edges are traversed. If G's contract changes require F to add new guards, those violations are not reported in incremental mode. check_codebase_incremental at line 679 will miss violations in F.",
+          "applies_to": [
+            "_compute_dirty_set",
+            "check_codebase_incremental"
+          ],
+          "formal": "\u2200 caller F, callee G: file(F) \u2209 changed_files \u2227 file(G) \u2208 changed_files \u2227 calls(F,G) \u2192 dirty(F)=false \u2192 violations_in(F)_unreported",
+          "derived_from": "BFS upward through the call graph from changed files",
+          "confidence": 0.87,
+          "contract_kind": "ordering",
+          "z3_encoding": "",
+          "tla_template": "ordering"
+        },
+        {
+          "id": "inv_011",
+          "type": "assumption",
+          "statement": "_run_semgrep at line 286 hardcodes 120-second timeout (`timeout=120`). Assumes semgrep analysis completes within 120s for all codebases. When analyzing monorepo with 50K+ Python files, timeout expires mid-analysis, returning partial results indistinguishable from complete results (returncode 0 or 1). Caller receives incomplete violation set with no signal that analysis was truncated.",
+          "applies_to": [
+            "_run_semgrep"
+          ],
+          "formal": "\u2200 root r: file_count(r) > threshold \u2227 semgrep_time(r) > 120s \u2192 violations_returned(r) \u2282 violations_actual(r) \u2227 caller_knows(truncated)=false",
+          "derived_from": "timeout=120",
+          "confidence": 0.86,
+          "contract_kind": "behavioral",
+          "z3_encoding": "",
+          "tla_template": "liveness"
+        },
+        {
+          "id": "inv_012",
+          "type": "assumption",
+          "statement": "_run_mypy at line 532 hardcodes 120-second timeout (`timeout=120`). Assumes mypy type-checking completes within 120s. When analyzing large Django project with 200+ models and complex inheritance, timeout expires, returning [] which caller interprets as 'zero mypy violations found' rather than 'analysis incomplete'. check_codebase merges incomplete mypy results with AST results, producing partial violation set.",
+          "applies_to": [
+            "_run_mypy"
+          ],
+          "formal": "\u2200 root r: mypy_time(r) > 120s \u2192 TimeoutExpired \u2192 return([]) \u2227 interpreted_as(zero_violations) \u2260 actual(incomplete_analysis)",
+          "derived_from": "timeout=120",
+          "confidence": 0.85,
+          "contract_kind": "behavioral",
+          "z3_encoding": "",
+          "tla_template": "liveness"
+        },
+        {
+          "id": "inv_013",
+          "type": "data_flow",
+          "statement": "check_codebase deduplicates violations via seen set keyed by (file, line, context, call) at line 132. When AST checker flags choices[0] at line 50 and semgrep flags same expression at line 52 (different line in same scope), both violations appear in output because line differs. _seen_call_no_line suppression at line 236 only applies when (file, context, call) already seen at ANY line, but if call text differs slightly (whitespace, parentheses), suppression fails and duplicate appears.",
+          "applies_to": [
+            "check_codebase",
+            "_seen_call_no_line"
+          ],
+          "formal": "\u2200 v1, v2: file(v1)=file(v2) \u2227 context(v1)=context(v2) \u2227 normalize(call(v1))=normalize(call(v2)) \u2227 line(v1)\u2260line(v2) \u2192 both_in_output(v1,v2) when call_text_match_fails",
+          "derived_from": "_seen_call_no_line: set[tuple[str, str, str]] = {(f, ctx, c) for f, _ln, ctx, c in seen}",
+          "confidence": 0.82,
+          "contract_kind": "flag_invariant",
+          "z3_encoding": "",
+          "tla_template": "liveness"
+        },
+        {
+          "id": "inv_014",
+          "type": "intent_gap",
+          "statement": "Git commit 2026-05-25 'checker: fix semgrep overriding AST suppressions' describes two pre-existing test failures: (1) intra-scope dedup where AST flags choices[0] once per scope but semgrep fires per-line, (2) guard function suppression where AST detects _require_choices(response) but semgrep doesn't. Fix adds _seen_call_no_line and _guard_func_called_before. However, visible code at line 236 only checks if (file, context, call) in _seen_call_no_line\u2014does not verify call is from same variable scope. When two functions in same file both have response.choices[0] violations, _seen_call_no_line will suppress second occurrence even though it's a different variable scope, introducing false negative.",
+          "applies_to": [
+            "_seen_call_no_line",
+            "check_codebase"
+          ],
+          "formal": "\u2200 v1, v2: file(v1)=file(v2) \u2227 context(v1)=context(v2) \u2227 call(v1)=call(v2) \u2227 scope(v1)\u2260scope(v2) \u2192 suppressed(v2)=true incorrectly",
+          "derived_from": "z3_confirmed: if (v.file, v.context, v.call) in _seen_call_no_line: continue [Z3 counterexample: {'file_id': 1, 'context_id': 2, 'call_id': 3, 'scope1_id': 10, 'scope2_id': 20, 'tuple_key': 1002003, 'first_reported': ]",
+          "confidence": 0.85,
+          "contract_kind": "ordering",
+          "z3_encoding": "import z3\nimport json\n\n# Model the _seen_call_no_line suppression logic with proper state modeling\ns = z3.Solver()\n\n# Concrete integer values representing file, context, call, and scope IDs\nfile_id = 1\ncontext_id = 2\ncall_id = 3\nscope1_id = 10\nscope2_id = 20  # Different scope\n\n# Model the _seen_call_no_line set as a Z3 array: (file*1000000 + context*1000 + call) -> Bool\n# True means this (file, context, call) tuple has been seen\nseen_set = z3.Array('seen_set', z3.IntSort(), z3.BoolSort())\n\n# Compute the tuple key (ignoring scope)\ntuple_key = file_id * 1000000 + context_id * 1000 + call_id\n\n# Initially, the tuple is not in the seen set\ninitial_seen = z3.Store(z3.K(z3.IntSort(), False), tuple_key, False)\n\n# First occurrence: tuple not in set, so it gets reported and added\nfirst_in_set = z3.Select(initial_seen, tuple_key)\nfirst_reported = z3.Bool('first_reported')\ns.add(first_reported == z3.Not(first_in_set))\n\n# After first occurrence, add to set\nafter_first = z3.Store(initial_seen, tuple_key, True)\n\n# Second occurrence (different scope): check if tuple is in set\nsecond_in_set = z3.Select(after_first, tuple_key)\nsecond_suppressed = z3.Bool('second_suppressed')\ns.add(second_suppressed == second_in_set)\n\n# The scopes are different\nscope_different = (scope1_id != scope2_id)\ns.add(scope_different)\n\n# Contract violation: when scopes are different, second occurrence should NOT be suppressed\n# But because _seen_call_no_line only checks (file, context, call), it WILL be suppressed\n# Negated contract (searching for violation): first is reported AND second is suppressed AND scopes differ\ns.add(first_reported == True)\ns.add(second_suppressed == True)\n\nr = s.check()\nif r == z3.sat:\n    m = s.model()\n    ce = {\n        \"file_id\": file_id,\n        \"context_id\": context_id,\n        \"call_id\": call_id,\n        \"scope1_id\": scope1_id,\n        \"scope2_id\": scope2_id,\n        \"tuple_key\": tuple_key,\n        \"first_reported\": True,\n        \"second_suppressed\": True,\n        \"scopes_different\": True,\n        \"explanation\": \"First occurrence in scope1 is reported and added to _seen_call_no_line. Second occurrence in scope2 with same (file,context,call) is suppressed because the check only uses the 3-tuple, ignoring scope.\"\n    }\n    print(json.dumps({\"status\": \"sat\", \"counterexample\": ce, \"explanation\": \"contract violated: _seen_call_no_line suppresses violations in different scopes\"}))\nelif r == z3.unsat:\n    print(json.dumps({\"status\": \"unsat\", \"counterexample\": None, \"explanation\": \"contract holds\"}))\nelse:\n    print(json.dumps({\"status\": \"unknown\", \"counterexample\": None, \"explanation\": \"Z3 could not decide\"}))\n",
+          "tla_template": "ordering"
+        },
+        {
+          "id": "inv_015",
+          "type": "intent_gap",
+          "statement": "Git commit 2026-05-24 'fix(checker): replace dmypy daemon with plain mypy to stop process leak' states dmypy daemon leaks one process per unique working directory when pact analyzes many different codebases per session, and returns stale results. However, _run_mypy at line 585 uses `cwd=root` which changes per-codebase, but visible code does not kill or check for orphaned mypy daemon processes from previous runs. If dmypy was previously running and new code launches plain mypy, both may access the same cache, producing race conditions or stale type information.",
+          "applies_to": [
+            "_run_mypy"
+          ],
+          "formal": "\u2200 prior_runs r1, current_run r2: dmypy_running(r1) \u2227 mypy_launched(r2) \u2192 cache_conflict(r1, r2) \u2227 stale_results(r2) possible",
+          "derived_from": "proc = subprocess.run([str(mypy_bin), *_targets, *_mypy_flags], capture_output=True, text=True, timeout=120, cwd=root)",
+          "confidence": 0.83,
+          "contract_kind": "accumulation",
+          "z3_encoding": "",
+          "tla_template": "accumulation"
+        },
+        {
+          "id": "inv_016",
+          "type": "intent_gap",
+          "statement": "Module docstring line 2 claims 'Main orchestration: parse \u2192 graph \u2192 FailureMode registry \u2192 Z3 \u2192 violations' but check_codebase at line 66 does not construct or traverse a graph. Extraction returns models, functions, call_sites but no graph data structure is built\u2014call_sites are iterated linearly at line 139. The 'graph' phase described in docstring is invisible in visible code, suggesting either graph construction happens inside extract_from_codebase (external module, not visible here) or docstring is stale. Caller cannot verify graph-based path analysis claim.",
+          "applies_to": [
+            "check_codebase",
+            "module_docstring"
+          ],
+          "formal": "\u2200 violations v: docstring_claims(graph_traversal) \u2227 visible_code(linear_iteration_only) \u2192 graph_phase_location=unknown",
+          "derived_from": "z3_confirmed: Main orchestration: parse \u2192 graph \u2192 FailureMode registry \u2192 Z3 \u2192 violations [Z3 counterexample: {'docstring_claims_graph': 'True', 'graph_constructed': 'False', 'graph_traversed': 'False', 'graph_phase_visible': 'Fal]",
+          "confidence": 0.9,
+          "contract_kind": "ordering",
+          "z3_encoding": "import z3\nimport json\n\ns = z3.Solver()\n\n# Model the behavioral contract claim:\n# Docstring claims a 'graph' phase exists: parse \u2192 graph \u2192 FailureMode registry \u2192 Z3 \u2192 violations\n# Contract states: check_codebase does NOT construct or traverse a graph.\n# The graph phase is either hidden in extract_from_codebase or the docstring is stale.\n\n# We model this as a structural property check:\n# - graph_constructed: whether check_codebase constructs a graph data structure\n# - graph_traversed: whether check_codebase traverses a graph\n# - docstring_claims_graph: whether the module docstring claims graph processing\n# - graph_phase_visible: whether graph construction/traversal is visible in check_codebase body\n\ngraph_constructed = z3.Bool('graph_constructed')\ngraph_traversed = z3.Bool('graph_traversed')\ndocstring_claims_graph = z3.Bool('docstring_claims_graph')\ngraph_phase_visible = z3.Bool('graph_phase_visible')\n\n# Facts from the contract:\n# 1. Docstring claims graph phase exists\ns.add(docstring_claims_graph == True)\n\n# 2. check_codebase does NOT construct or traverse a graph (per contract observation)\ns.add(graph_constructed == False)\ns.add(graph_traversed == False)\n\n# 3. Graph phase is not visible in check_codebase code\ns.add(graph_phase_visible == False)\n\n# Contract property (what SHOULD hold for consistency):\n# If docstring claims graph processing, then graph phase should be visible\n# OR if not visible, it's a documentation inconsistency\n# We want to find a violation: docstring claims graph BUT no graph phase is visible\n\n# Negated contract (find violation):\n# Violation exists when: docstring_claims_graph AND NOT graph_phase_visible\nviolation_condition = z3.And(\n    docstring_claims_graph == True,\n    graph_phase_visible == False\n)\n\ns.add(violation_condition)\n\nr = s.check()\n\nif r == z3.sat:\n    m = s.model()\n    counterexample = {\n        'docstring_claims_graph': str(m[docstring_claims_graph]),\n        'graph_constructed': str(m[graph_constructed]),\n        'graph_traversed': str(m[graph_traversed]),\n        'graph_phase_visible': str(m[graph_phase_visible])\n    }\n    explanation = \"Contract violated: docstring claims 'graph' phase but check_codebase shows no graph construction/traversal - documentation inconsistency detected\"\n    print(json.dumps({'status': 'sat', 'counterexample': counterexample, 'explanation': explanation}))\nelif r == z3.unsat:\n    explanation = \"Contract holds: no inconsistency between docstring claims and implementation\"\n    print(json.dumps({'status': 'unsat', 'counterexample': None, 'explanation': explanation}))\nelse:\n    print(json.dumps({'status': 'unknown', 'counterexample': None, 'explanation': 'Z3 could not decide'}))\n",
+          "tla_template": "ordering"
+        },
+        {
+          "id": "inv_017",
+          "type": "intent_gap",
+          "statement": "Git commit 2026-05-25 'fix: warn when duplicate-named functions are excluded' adds RuntimeWarning at line 121 when duplicate function names are excluded from func_index. Warning shows count and sample names but does not log the warning to structured output\u2014uses Python warnings module which may be suppressed by calling code's warning filters. When pact runs inside pytest with warnings-as-errors, the warning becomes exception and check_codebase crashes. No visible code catches warnings.warn exceptions.",
+          "applies_to": [
+            "check_codebase",
+            "_warnings.warn"
+          ],
+          "formal": "\u2200 env e where warnings_as_errors(e): _warnings.warn(...) \u2192 raises(Exception) \u2227 check_codebase_aborts",
+          "derived_from": "z3_refuted: _warnings.warn(f'checker: {len(_duplicate_names)} function name(s) appear in multiple files...', RuntimeWarning, stacklevel=2) [Z3 proved contract holds \u2014 UNSAT, no counterexample]",
+          "confidence": 0.48,
+          "contract_kind": "error_contract",
+          "z3_encoding": "import z3\nimport json\n\n# Model the contract: when duplicate function names exist, warnings.warn is called\n# and if pytest has warnings-as-errors, this crashes (no exception handler present)\ns = z3.Solver()\n\n# Boolean variables modeling the control flow states\nhas_duplicate_names = z3.Bool('has_duplicate_names')\nwarnings_called = z3.Bool('warnings_called')\npytest_warnings_as_errors = z3.Bool('pytest_warnings_as_errors')\nwarning_becomes_exception = z3.Bool('warning_becomes_exception')\nexception_caught = z3.Bool('exception_caught')\nfunction_crashes = z3.Bool('function_crashes')\n\n# Encode the contract logic:\n# 1. If duplicate names exist, warnings.warn IS called (line 121)\ns.add(z3.Implies(has_duplicate_names, warnings_called))\n\n# 2. If warnings.warn is called AND pytest has warnings-as-errors, warning becomes exception\ns.add(z3.Implies(z3.And(warnings_called, pytest_warnings_as_errors), warning_becomes_exception))\n\n# 3. Contract states: \"No visible code catches warnings.warn exceptions\"\n#    So if warning becomes exception, it is NOT caught\ns.add(z3.Implies(warning_becomes_exception, z3.Not(exception_caught)))\n\n# 4. If exception is not caught, function crashes\ns.add(z3.Implies(z3.And(warning_becomes_exception, z3.Not(exception_caught)), function_crashes))\n\n# NEGATED CONTRACT: Find a scenario where the contract is violated\n# The contract claims: \"function crashes when pytest warnings-as-errors + duplicates + no exception handler\"\n# To verify, we search for: duplicates exist, pytest warnings-as-errors is on, but function does NOT crash\n# OR: we verify that crash DOES happen (the contract describes a bug)\n\n# Actually, re-reading: the contract DESCRIBES a bug (\"check_codebase crashes\"), not a desired property\n# So we verify the bug exists: duplicates + warnings-as-errors \u2192 crash\n# Negate to find when crash does NOT happen despite conditions being met\n\ns.add(has_duplicate_names == True)\ns.add(pytest_warnings_as_errors == True)\ns.add(function_crashes == False)  # Negation: find case where it doesn't crash\n\nr = s.check()\n\nif r == z3.sat:\n    m = s.model()\n    ce = {\n        'has_duplicate_names': str(m[has_duplicate_names]),\n        'pytest_warnings_as_errors': str(m[pytest_warnings_as_errors]),\n        'function_crashes': str(m[function_crashes]),\n        'warnings_called': str(m[warnings_called]),\n        'warning_becomes_exception': str(m[warning_becomes_exception])\n    }\n    print(json.dumps({\n        'status': 'sat',\n        'counterexample': ce,\n        'explanation': 'contract violated: found scenario where duplicates exist and warnings-as-errors is on but function does not crash (logic gap in encoding or missing constraints)'\n    }))\nelif r == z3.unsat:\n    print(json.dumps({\n        'status': 'unsat',\n        'counterexample': None,\n        'explanation': 'contract holds: when duplicates exist and pytest warnings-as-errors is enabled, function inevitably crashes due to uncaught warning exception'\n    }))\nelse:\n    print(json.dumps({\n        'status': 'unknown',\n        'counterexample': None,\n        'explanation': 'Z3 could not decide'\n    }))\n",
+          "tla_template": "liveness"
+        },
+        {
+          "id": "inv_018",
+          "type": "data_flow",
+          "statement": "_run_semgrep at line 335 extracts variable name from call text when semgrep metavariables are unavailable (`var_name = call.split('.choices[0]')[0].strip().lstrip('(')`). Assumes choices[0] access is always `<var>.choices[0]` but does not handle chained attribute access like `obj.response.choices[0]` or method calls like `get_response().choices[0]`. When call text is 'obj.response.choices[0]', split returns 'obj.response' as var_name, then _sibling_guarded searches for `if obj.response.choices` which may not match actual guard `if obj.response` or `if obj`, producing false positives.",
+          "applies_to": [
+            "_run_semgrep",
+            "_sibling_guarded"
+          ],
+          "formal": "\u2200 call c where '.' \u2208 prefix(c, '.choices[0]'): var_name(c) = first_segment_only \u2227 guard_search(var_name) \u2260 actual_guard \u2192 false_positive",
+          "derived_from": "var_name = call.split('.choices[0]')[0].strip().lstrip('(')",
+          "confidence": 0.84,
+          "contract_kind": "ordering",
+          "z3_encoding": "",
+          "tla_template": "ordering"
+        },
+        {
+          "id": "inv_019",
+          "type": "assumption",
+          "statement": "_run_mypy at line 569 discovers Python source directories by counting .py files: top-level dirs with \u226510 .py files become mypy targets. Assumes directories with <10 files are not meaningful Python packages. When project structure has `api/` with 8 critical files and `scripts/` with 3 files, both are excluded from mypy analysis. optional_dereference violations in those files are never reported. Threshold 10 is hard-coded, not configurable.",
+          "applies_to": [
+            "_run_mypy"
+          ],
+          "formal": "\u2200 dir d: py_file_count(d) < 10 \u2192 mypy_targets(d)=false \u2192 violations_in(d)=unreported",
+          "derived_from": "_py_count = sum(1 for _ in _child.glob('**/*.py')); if _py_count >= 10: _py_dirs.append(_child.name)",
+          "confidence": 0.86,
+          "contract_kind": "behavioral",
+          "z3_encoding": "",
+          "tla_template": "liveness"
+        },
+        {
+          "id": "inv_020",
+          "type": "data_flow",
+          "statement": "_run_semgrep at line 362 checks for inline ternary guard suppression using regex `r'\\.\\b(?:first|last)\\(\\)\\.\\w+\\s+if\\s+\\w'` but regex requires single `\\w` after 'if', matching only single-character variable names. When line is `obj.first().attr if obj_name else Y`, regex fails to match `obj_name` (multi-character identifier), producing false positive queryset-first-none-dereference violation despite visible ternary guard. Pattern does not handle method calls after if: `.first().attr if obj.exists() else Y`.",
+          "applies_to": [
+            "_run_semgrep"
+          ],
+          "formal": "\u2200 line L where ternary_guard(L) \u2227 var_name_length(L) > 1: regex_match(L)=false \u2192 suppression_fails(L)",
+          "derived_from": "if _re2.search(r'\\.\\b(?:first|last)\\(\\)\\.\\w+\\s+if\\s+\\w', _src_lines[line - 1]):",
+          "confidence": 0.87,
+          "contract_kind": "ordering",
+          "z3_encoding": "",
+          "tla_template": "ordering"
+        }
+      ],
+      "violations": [],
+      "prompt_score": null,
+      "truncation_audit": {
+        "last_complete_unit": "def _run_mypy(root: Path) -> list[Violation]",
+        "cutoff_line": "return results",
+        "visible_definitions": [
+          "_to_violation",
+          "_compute_dirty_set",
+          "check_codebase",
+          "_SEMGREP_RULE_TO_MODE",
+          "_run_semgrep",
+          "_sibling_guarded",
+          "_guard_func_called_before",
+          "_is_bare_except_reraise",
+          "_match_text",
+          "_run_mypy",
+          "check_codebase_incremental"
+        ],
+        "docstring_only_names": []
+      }
+    },
+    {
+      "path": "/Users/jonathanhill/src/pact-standalone/z3_engine.py",
+      "understanding": {
+        "purpose": "z3_engine.py implements two Z3 Fixedpoint Datalog engines for pact: (1) model_constraint verification (PactEngine) proves Django Model.objects.create() calls provide all required fields by joining site_creates EDB with model_req EDB to derive site_req IDB, then negating site_provides to yield violation IDB; (2) llm_response_unguarded verification (LLMResponseEngine) proves LLM-assigned variables are never accessed via .choices[0] without prior guard checks by joining llm_var EDB with unguarded_access EDB to derive llm_violation IDB. Both engines intern strings (file paths, field names, variable names) into 16-bit BitVec IDs, populate Z3 Fixedpoint with facts as rules, query with Exists over violation relation, and parse get_answer() DNF formula via _extract_tuples to yield concrete (site, field) or (scope, var) witness tuples. Unlike AST-only scanners, Z3 derives ALL violations in one query via stratified Datalog inference, treating violations as join/negation results over the call graph.",
+        "design_intent": "1. Stratified negation to avoid existential quantifiers in negated atoms: PactEngine splits model_constraint into two strata (lines 161-169, 173-180) \u2014 stratum 1 materializes site_req(S,F) via join of site_creates and model_req with existential _m (model ID), stratum 2 negates site_provides without existentials. Alternative would be single-stratum ForAll([_s,_m,_f], Implies(And(site_creates(_s,_m), model_req(_m,_f), Not(site_provides(_s,_f))), violation(_s,_f))) but Z3 datalog rejects existential _m in negated atom scope. Consequence: stratification computes fixed-point of site_req before violation query, ensuring stable negation semantics per Datalog theory. 2. BitVecSort(16) instead of IntSort for domain encoding (line 119): Z3 datalog engine requires FINITE sorts \u2014 IntSort is infinite and causes query() to return unknown. _BITS=16 yields 65,536 distinct IDs per intern table (site_id, field_id, model_id). Alternative of IntSort would force non-datalog engine (e.g., CHC solver) with slower fixed-point computation. Consequence: codebases with >65k call sites wrap intern IDs modulo 2^16, causing ID collisions and false negatives.",
+        "key_abstractions": "_is_var(expr): bool checks if Z3 expr is Var AST (line 72) via Z3_get_ast_kind == Z3_VAR_AST; used by _extract_tuples to distinguish Var(0)/Var(1) from constants in equality atoms. _var_idx(expr): int returns de Bruijn index (line 76) via Z3_get_index_value; Var(0)=first Exists arg, Var(1)=second. _extract_tuples(formula): list[tuple[int,int]] parses get_answer() DNF Or(And(Var(0)==si, Var(1)==fi), ...) by walking children (lines 85-109): if is_or extract clauses else single clause, for each clause walk And children collecting {var_idx: value}, yield (vals[0], vals[1]). Returns [] if is_false. _BITS=16, _BVS=BitVecSort(16), _bv(n)=BitVecVal(n,16): domain encoding constants. site_creates/site_provides/model_req: Z3 Function(_BVS,_BVS,BoolSort) EDB relations. site_req/violation: IDB relations derived by rules. Z3Violation dataclass: file (str), line (int), call (str), missing (list[str]), context (str='model_constraint'); __str__ formats as 'file:line call missing: f1, f2'. PactEngine: owns Fixedpoint instance, registers 5 relations, adds 2 stratified rules, maintains 3 intern dicts (site_id, field_id, model_id) and site_meta dict mapping site int ID to {file,line,call}. __init__ constructs Fixedpoint with engine='datalog', adds ForAll rules. _sid(file,line,call): int interns (file,line) key, stores metadata. _fid(name): int interns field name. _mid(name): int interns model name. load(root): calls extract_from_codebase, iterates models to add model_req rules, iterates calls to add site_creates/site_provides rules. violations(): queries Exists([qs,qf], violation(qs,qf)), on sat calls _extract_tuples(get_answer()), groups by site, builds Z3Violation list; on unsat returns []; on unknown warns and returns []. run(root): one-shot load+violations. _LLM_CALL_ATTRS frozenset: 21 LLM SDK method names (create, acreate, complete, generate, invoke, chat, agenerate, stream, run, __call__, predict, count_tokens, etc). _LLM_LIST_ATTRS frozenset: {choices, content, outputs, candidates}. LLMProofResult dataclass: proved_safe (bool), violations (list[Z3Violation]), scopes_analyzed (int); __str__ returns 'SAFE: ... Z3 proved no violations' or 'UNSAFE: N violation(s)'. _extract_llm_facts(path, scope_intern, var_intern): tuple[list[tuple[int,int]], list[tuple[int,int]]] parses path, returns (llm_var_facts, unguarded_access_facts). Wraps ast.parse in try/except (SyntaxError,OSError), warns and returns ([],[]) on failure. Defines _Visitor(ast.NodeVisitor) with scope tracking: visit_FunctionDef enters new scope, visit_Assign detects LLM calls (unwraps Await, checks attr in _LLM_CALL_ATTRS), stores var in _llm_vars dict, appends (scope_id, var_id) to llm_var_facts. visit_If/visit_IfExp adds vars mentioned in test to _guarded set. visit_Subscript checks .choices[0] pattern, if var in _llm_vars and not in _guarded, appends to unguarded_access_facts. LLMResponseEngine: owns separate Fixedpoint for llm_response_unguarded, 3 relations (_llm_var_rel, _unguarded_access_rel, _llm_violation_rel), 1 rule ForAll([_sv,_vv], Implies(And(llm_var, unguarded_access), llm_violation)). Maintains scope_intern, var_intern, scope_meta, scopes_with_llm counter. load(root): iterates iter_python_files, calls _extract_llm_facts per file, aggregates facts, adds rules to Fixedpoint. result(): queries Exists([qs,qv], llm_violation(qs,qv)), on unsat returns LLMProofResult(proved_safe=True), on sat calls _extract_tuples, builds Z3Violation list with context='llm_response_unguarded'. run_llm(root): one-shot load+result. verify_file(path): single-file variant, constructs LLMResponseEngine, calls _extract_llm_facts once, populates Fixedpoint, returns result() \u2014 used for per-patch certification.",
+        "behavioral_contract": "PactEngine.violations() guarantees: (1) if result==unsat, returns [] \u2014 Z3 proved no violations exist; (2) if result==sat, returns list of Z3Violation where each represents a call site missing \u22651 required field, grouped by site with all missing fields in .missing list; (3) if result==unknown, emits RuntimeWarning 'engine gave up; violations list is empty but the codebase may not be safe' and returns [] (line 237-243). Caller receives empty list but must distinguish unknown from unsat by checking warnings or exit code. LLMResponseEngine.result() guarantees: (1) if z3_result==unsat, returns LLMProofResult(proved_safe=True, scopes_analyzed=N) \u2014 mathematical certificate that no scope contains both LLM assignment and unguarded access (line 530-532); (2) if z3_result==sat, returns LLMProofResult(proved_safe=False, violations=[...]) with witness tuples (line 548-563); (3) if z3_result==unknown, warns 'query returned UNKNOWN \u2014 proved_safe=True is asserted but may not hold' and returns proved_safe=True (line 538-543). _extract_tuples guarantees: input formula is DNF from get_answer(), output is list of (int,int) tuples where tuple[0] is Var(0) value (site/scope ID), tuple[1] is Var(1) value (field/var ID); is_false(formula) \u2192 []; otherwise walks Or/And children collecting equality bindings (lines 94-109). verify_file guarantees: single-file scope isolation \u2014 only facts extracted from path are added to Z3 database, result.proved_safe applies to lexical scope of path, not cross-file imports (line 579-599).",
+        "failure_modes": "_extract_llm_facts wraps ast.parse in `try: ... except (SyntaxError, OSError) as exc: _warnings.warn(f'z3_engine: skipping {path} ({type(exc).__name__}: {exc}); UNSAT result will not cover this file', RuntimeWarning, stacklevel=2); return [], []` (lines 340-349). Caller LLMResponseEngine.load receives empty fact lists, aggregates with all_lv.extend(lv), all_ua.extend(ua) (line 508-509) \u2014 if 1 of 100 files has SyntaxError, Z3 database omits that file, result() returns proved_safe=True with scopes_analyzed excluding failed file. User-visible symptom: UNSAT certificate claims 'Z3 proved no violations across N scopes' but N excludes files with parse errors; violations in skipped files are invisible. PactEngine.violations handles `if result == unknown: _warnings.warn('z3_engine: fixedpoint query returned UNKNOWN \u2014 engine gave up; violations list is empty but the codebase may not be safe', RuntimeWarning, stacklevel=2); return []` (line 237-243). Caller receives empty list indistinguishable from UNSAT; symptom is fixer.py skips patch believing code is safe when Z3 could not complete proof. LLMResponseEngine.result similarly: `if z3_result == unknown: ... return LLMProofResult(proved_safe=True, scopes_analyzed=self._scopes_with_llm)` (line 538-543). _extract_tuples returns [] on is_false(formula) (line 95), empty list on clauses with no And children (line 97), and skips clauses where vals dict does not have both keys 0 and 1 (line 108) \u2014 these are safe fallbacks for malformed Z3 answers, symptom is missing violations in output when Z3 answer format deviates from expected DNF structure.",
+        "assumptions": "_BITS=16 assumes no intern table exceeds 65,536 entries; if codebase has >65k call sites, site_id wraps modulo 2^16 via BitVecVal arithmetic, multiple sites map to same ID, violations at site 65,537 appear as site 1 in tuples (lines 119, 182-200). _extract_llm_facts._Visitor.visit_If assumes substring presence in ast.unparse(test) implies var is guarded: `src = _ast.unparse(node.test); for var in list(self._llm_vars): if var in src: self._guarded.add(var)` (line 414-416). If test is `if api_ready and response`, both vars marked guarded, but if api_ready=False, body never executes and response not semantically guarded \u2014 false negative when tests short-circuit. _extract_llm_facts._Visitor.visit_Assign assumes assignment target is ast.Name: `if len(node.targets) == 1 and isinstance(node.targets[0], _ast.Name)` (line 366). If target is attribute (self.response = await ...) or subscript (obj[key] = await ...), LLM variable is not tracked \u2014 false negatives for non-local assignments. PactEngine.load assumes extract_from_codebase returns (models, _funcs, calls) with models having .required_fields list and calls having .is_create_call, .model_name, .provided_kwargs attributes (lines 207-223); if extractor.py schema changes, load silently skips facts or raises AttributeError. verify_file assumes single-file analysis is sufficient: constructs LLMResponseEngine, calls _extract_llm_facts(path,...), populates Z3 with facts from path only (lines 579-599). If path defines LLM variable imported and accessed (unguarded) in another file, verify_file returns proved_safe=True for path despite cross-file violation.",
+        "resource_obligations": "PactEngine owns Z3 Fixedpoint instance created at line 149, never closed \u2014 Z3 context remains in memory until PactEngine garbage-collected. LLMResponseEngine owns separate Fixedpoint instance at line 482, same lifecycle. _extract_llm_facts opens path via Path(path).read_text(encoding='utf-8', errors='replace') at line 336, file handle closed by read_text context. No transactions, no async tasks, no global state mutation visible in source. No ContextVar usage. Z3 global context _ctx = _z3.main_ctx() at line 70 is module-level singleton, never reset \u2014 multiple PactEngine/LLMResponseEngine instances share same Z3 context."
+      },
+      "invariants": [
+        {
+          "id": "inv_001",
+          "type": "data_flow",
+          "statement": "_extract_tuples parses Z3's get_answer() DNF formula in O(|violations|) by walking Or(And(...)) children \u2014 if Z3 returns deeply nested Or with M clauses and N conjuncts per clause, actual cost is O(M\u00d7N). For codebases with 10,000 violations, a clause with 50 conjuncts per violation tuple yields 500,000 equality checks. Module docstring claims O(|violations|) but implementation does not verify conjunction depth.",
+          "applies_to": [
+            "_extract_tuples"
+          ],
+          "formal": "\u2200 formula f with M clauses \u00d7 N conjuncts: time(_extract_tuples(f)) = O(M\u00d7N), not O(M)",
+          "derived_from": "for clause in clauses: ... for eq in clause.children()",
+          "confidence": 0.82,
+          "contract_kind": "behavioral",
+          "z3_encoding": "",
+          "tla_template": "liveness"
+        },
+        {
+          "id": "inv_002",
+          "type": "assumption",
+          "statement": "_BITS = 16 limits each intern table (site_id, field_id, model_id) to 65,536 unique entries. If a codebase has >65,536 distinct call sites, site_id wraps to 0 (BitVecVal modular arithmetic) \u2014 multiple sites map to same ID, causing false negatives: violations at site 65,537 appear as site 1 in violation tuples. Module docstring claims 'more than enough for any codebase' but provides no overflow detection.",
+          "applies_to": [
+            "PactEngine._sid",
+            "PactEngine._fid",
+            "PactEngine._mid",
+            "_BITS"
+          ],
+          "formal": "\u2200 table T: |T| > 2^16 \u2192 \u2203 k1\u2260k2: intern(k1) = intern(k2)",
+          "derived_from": "_BITS = 16",
+          "confidence": 0.91,
+          "contract_kind": "behavioral",
+          "z3_encoding": "",
+          "tla_template": "liveness"
+        },
+        {
+          "id": "inv_003",
+          "type": "error_contract",
+          "statement": "PactEngine.violations() catches bare Exception in _warnings.warn context but does not re-raise. If Z3 Fixedpoint.query() raises MemoryError or KeyboardInterrupt, violations() emits RuntimeWarning 'query returned UNKNOWN' and returns [] \u2014 caller receives empty list indistinguishable from UNSAT, violating contract that UNKNOWN is a distinct state. Line 241 comment states 'engine gave up; violations list is empty but the codebase may not be safe' but caller has no programmatic way to distinguish this from proved-safe.",
+          "applies_to": [
+            "PactEngine.violations"
+          ],
+          "formal": "result=unknown \u2227 warning_emitted \u2192 violations()=[] \u2227 (\u2203 caller c: c interprets [] as UNSAT)",
+          "derived_from": "if result == unknown: _warnings.warn(...); return []",
+          "confidence": 0.94,
+          "contract_kind": "error_contract",
+          "z3_encoding": "",
+          "tla_template": "liveness"
+        },
+        {
+          "id": "inv_004",
+          "type": "error_contract",
+          "statement": "_extract_llm_facts wraps ast.parse in try/except (SyntaxError, OSError) and emits RuntimeWarning on failure but returns ([], []) \u2014 caller cannot distinguish syntax-error file from file with zero LLM facts. LLMResponseEngine.load aggregates all_lv, all_ua across files; if 1 of 100 files has SyntaxError, load() silently omits it from Z3 database. result() returns LLMProofResult(proved_safe=True) with scopes_analyzed excluding the failed file \u2014 docstring claims UNSAT is 'mathematical certificate' but certificate has coverage hole.",
+          "applies_to": [
+            "_extract_llm_facts",
+            "LLMResponseEngine.load"
+          ],
+          "formal": "\u2200 file f: SyntaxError(f) \u2192 facts(f)=\u2205 \u2227 (\u2204 coverage_report stating f excluded)",
+          "derived_from": "except (SyntaxError, OSError) as exc: _warnings.warn(...); return [], []",
+          "confidence": 0.93,
+          "contract_kind": "error_contract",
+          "z3_encoding": "",
+          "tla_template": "liveness"
+        },
+        {
+          "id": "inv_005",
+          "type": "assumption",
+          "statement": "_extract_llm_facts unwraps ast.Await in visit_Assign before checking for ast.Call so `response = await client.acreate(...)` is tracked. However, if assignment target is not ast.Name (e.g., `self.response = await ...` or `obj[key] = await ...`), the check `isinstance(node.targets[0], ast.Name)` at line 366 fails and LLM variable is not tracked \u2014 async assignments to attributes or subscripts produce false negatives.",
+          "applies_to": [
+            "_extract_llm_facts",
+            "_Visitor.visit_Assign"
+          ],
+          "formal": "\u2200 assign `obj.attr = await llm_call()`: \u00acisinstance(obj.attr, ast.Name) \u2192 llm_var_facts \u220c (scope, attr)",
+          "derived_from": "if len(node.targets) == 1 and isinstance(node.targets[0], _ast.Name)",
+          "confidence": 0.88,
+          "contract_kind": "ordering",
+          "z3_encoding": "",
+          "tla_template": "ordering"
+        },
+        {
+          "id": "inv_006",
+          "type": "intent_gap",
+          "statement": "_extract_llm_facts._Visitor.visit_If adds var to _guarded if var appears in test expression source string (ast.unparse) \u2014 this is syntactic substring matching, not control-flow reachability. If test is `if api_ready and response`, both `api_ready` and `response` are marked guarded, but if `api_ready=False`, the body never executes and `response` is never actually guarded. visit_Subscript checks `var not in self._guarded` but _guarded set includes syntactically-mentioned vars, not semantically-proven-checked vars \u2014 false negatives when tests short-circuit.",
+          "applies_to": [
+            "_extract_llm_facts",
+            "_Visitor.visit_If"
+          ],
+          "formal": "\u2200 test `if A and B`: B \u2208 guarded \u2227 \u00acholds(A) \u2192 body unreachable \u2227 B not semantically guarded",
+          "derived_from": "z3_confirmed: src = _ast.unparse(node.test) ... if var in src: self._guarded.add(var) [Z3 counterexample: {'var_in_test_syntax': 'True', 'test_short_circuits': 'True', 'var_in_guarded_set': 'True', 'var_actually_checked': 'Fal]",
+          "confidence": 0.85,
+          "contract_kind": "ordering",
+          "z3_encoding": "import z3\nimport json\n\n# Model the contract: visit_If adds vars to _guarded via syntactic substring matching,\n# but doesn't prove semantic reachability (short-circuit evaluation can prevent actual guard checks).\n# We model a scenario where:\n#   - test expression contains 'var' syntactically (e.g., \"api_ready and var\")\n#   - var is added to _guarded\n#   - visit_Subscript checks \"var not in _guarded\" to flag unguarded access\n#   - BUT: if test short-circuits (api_ready=False), var is never actually evaluated\n#   - RESULT: false negative \u2014 unguarded access is not flagged\n\ns = z3.Solver()\n\n# Symbolic variables modeling the state:\n# var_in_test_syntax: does 'var' appear in ast.unparse(test)?\nvar_in_test_syntax = z3.Bool('var_in_test_syntax')\n\n# var_in_guarded_set: is var added to _guarded set?\nvar_in_guarded_set = z3.Bool('var_in_guarded_set')\n\n# test_short_circuits: does the test expression short-circuit before evaluating var?\n# (e.g., \"api_ready and var\" with api_ready=False)\ntest_short_circuits = z3.Bool('test_short_circuits')\n\n# var_actually_checked: is var semantically checked at runtime?\nvar_actually_checked = z3.Bool('var_actually_checked')\n\n# subscript_flagged: does visit_Subscript flag unguarded access?\nsubscript_flagged = z3.Bool('subscript_flagged')\n\n# Encode the implementation logic:\n# 1. visit_If adds var to _guarded if var appears syntactically in test\ns.add(z3.Implies(var_in_test_syntax, var_in_guarded_set))\n\n# 2. If test short-circuits, var is not actually checked despite being in test syntax\ns.add(z3.Implies(z3.And(var_in_test_syntax, test_short_circuits), z3.Not(var_actually_checked)))\n\n# 3. If test doesn't short-circuit and var is in test, var is actually checked\ns.add(z3.Implies(z3.And(var_in_test_syntax, z3.Not(test_short_circuits)), var_actually_checked))\n\n# 4. visit_Subscript flags unguarded access if var NOT in _guarded set\ns.add(z3.Implies(z3.Not(var_in_guarded_set), subscript_flagged))\ns.add(z3.Implies(var_in_guarded_set, z3.Not(subscript_flagged)))\n\n# Encode the contract violation (negated contract):\n# Contract claims: syntactic matching causes false negatives when tests short-circuit\n# Violation scenario: var appears syntactically in test, test short-circuits,\n# var is added to _guarded, var is NOT actually checked, but subscript does NOT flag it\n# (false negative \u2014 should flag but doesn't)\ns.add(var_in_test_syntax)\ns.add(test_short_circuits)\ns.add(var_in_guarded_set)\ns.add(z3.Not(var_actually_checked))\ns.add(z3.Not(subscript_flagged))  # False negative: not flagged despite being unguarded\n\nr = s.check()\n\nif r == z3.sat:\n    m = s.model()\n    counterexample = {\n        'var_in_test_syntax': str(m[var_in_test_syntax]),\n        'test_short_circuits': str(m[test_short_circuits]),\n        'var_in_guarded_set': str(m[var_in_guarded_set]),\n        'var_actually_checked': str(m[var_actually_checked]),\n        'subscript_flagged': str(m[subscript_flagged])\n    }\n    print(json.dumps({\n        'status': 'sat',\n        'counterexample': counterexample,\n        'explanation': 'Contract violated: var appears syntactically in test, is added to _guarded, test short-circuits so var is never actually checked, but visit_Subscript does not flag it (false negative)'\n    }))\nelif r == z3.unsat:\n    print(json.dumps({\n        'status': 'unsat',\n        'counterexample': None,\n        'explanation': 'Contract holds \u2014 no false negative scenario exists with current logic'\n    }))\nelse:\n    print(json.dumps({\n        'status': 'unknown',\n        'counterexample': None,\n        'explanation': 'Z3 could not decide'\n    }))\n",
+          "tla_template": "ordering"
+        },
+        {
+          "id": "inv_007",
+          "type": "data_flow",
+          "statement": "LLMResponseEngine.result() returns LLMProofResult(proved_safe=True, scopes_analyzed=self._scopes_with_llm) on result==unknown with RuntimeWarning. Caller code expecting boolean proved_safe cannot distinguish UNSAT (Z3 proof) from UNKNOWN (Z3 gave up). If fixer.py checks result.proved_safe to decide whether to apply patch, UNKNOWN yields proved_safe=True and patch is skipped \u2014 user believes code is safe when Z3 could not complete analysis.",
+          "applies_to": [
+            "LLMResponseEngine.result"
+          ],
+          "formal": "result=unknown \u2192 proved_safe=True \u2227 (\u2204 field in LLMProofResult distinguishing UNSAT from UNKNOWN)",
+          "derived_from": "if z3_result == unknown: ... return LLMProofResult(proved_safe=True, scopes_analyzed=self._scopes_with_llm)",
+          "confidence": 0.92,
+          "contract_kind": "flag_invariant",
+          "z3_encoding": "",
+          "tla_template": "liveness"
+        },
+        {
+          "id": "inv_008",
+          "type": "assumption",
+          "statement": "verify_file constructs LLMResponseEngine, calls _extract_llm_facts once on path, populates Z3, and returns result. If path is a file imported by other files in the project, LLM variables defined in path but accessed (unguarded) in importer files are not detected \u2014 verify_file analyzes single-file scope isolation, not cross-file data flow. Docstring line 579 claims 'formally verify that a fixer patch has removed all llm_response_unguarded violations from a specific file' but does not state 'within that file's lexical scope only'.",
+          "applies_to": [
+            "verify_file"
+          ],
+          "formal": "\u2200 file f, importer i: llm_var(f, v) \u2227 unguarded_access(i, v) \u2192 verify_file(f).proved_safe may be True despite cross-file violation",
+          "derived_from": "lv, ua = _extract_llm_facts(path, engine._scope_intern, engine._var_intern)",
+          "confidence": 0.87,
+          "contract_kind": "ordering",
+          "z3_encoding": "",
+          "tla_template": "ordering"
+        }
+      ],
+      "violations": [
+        {
+          "invariant_id": "",
+          "file": "/Users/jonathanhill/src/pact-standalone/z3_engine.py",
+          "line": 0,
+          "evidence": "",
+          "severity": "medium",
+          "explanation": ""
+        },
+        {
+          "invariant_id": "",
+          "file": "/Users/jonathanhill/src/pact-standalone/z3_engine.py",
+          "line": 0,
+          "evidence": "",
+          "severity": "medium",
+          "explanation": ""
+        },
+        {
+          "invariant_id": "",
+          "file": "/Users/jonathanhill/src/pact-standalone/z3_engine.py",
+          "line": 0,
+          "evidence": "",
+          "severity": "medium",
+          "explanation": ""
+        }
+      ],
+      "prompt_score": null,
+      "truncation_audit": {
+        "last_complete_unit": "def verify_file(path: str) -> LLMProofResult",
+        "cutoff_line": "return engine.result()",
+        "visible_definitions": [
+          "_ctx",
+          "_is_var",
+          "_var_idx",
+          "_extract_tuples",
+          "_BITS",
+          "_BVS",
+          "_bv",
+          "site_creates",
+          "site_provides",
+          "model_req",
+          "site_req",
+          "violation",
+          "Z3Violation",
+          "Z3Violation.file",
+          "Z3Violation.line",
+          "Z3Violation.call",
+          "Z3Violation.missing",
+          "Z3Violation.context",
+          "Z3Violation.__str__",
+          "PactEngine",
+          "PactEngine.__init__",
+          "PactEngine._sid",
+          "PactEngine._fid",
+          "PactEngine._mid",
+          "PactEngine.load",
+          "PactEngine.violations",
+          "run",
+          "_llm_var_rel",
+          "_unguarded_access_rel",
+          "_llm_violation_rel",
+          "_LLM_CALL_ATTRS",
+          "_LLM_LIST_ATTRS",
+          "LLMProofResult",
+          "LLMProofResult.proved_safe",
+          "LLMProofResult.violations",
+          "LLMProofResult.scopes_analyzed",
+          "LLMProofResult.__str__",
+          "_extract_llm_facts",
+          "LLMResponseEngine",
+          "LLMResponseEngine.__init__",
+          "LLMResponseEngine.load",
+          "LLMResponseEngine.result",
+          "run_llm",
+          "verify_file"
+        ],
+        "docstring_only_names": []
+      }
+    },
+    {
+      "path": "/Users/jonathanhill/src/pact-standalone/cli.py",
+      "understanding": {
+        "purpose": "cli.py orchestrates 9 pact subcommands (spec gen/complete, fix, preflight, intent, heal, find, context, loop, pipeline) plus default constraint checking, each with distinct arg parsing. _changed_files_on_branch (line 34) runs 'git diff --name-only BASE...HEAD' to scope incremental analysis; DiffResolutionError (line 30) wraps subprocess failures. _spec_cmd (line 67) synthesizes or LLM-completes TLA+ specs from Python source. _fix_cmd (line 138) applies automated patches for fixable violations, optionally generating regression tests. _show_cut_vertex_contracts (line 371) annotates NetworkX cut vertices with behavioral contracts from intent JSON, triggering LLM extraction if --intent-trigger set. main (line 511) loads dotenv at entry (critical for programmatic usage gap per inv_012), delegates to subcommand handlers or falls through to default check_codebase flow with 14 flags (--json, --strict, --diff, --incremental, --suggest, --reduce, --fitness, --coverage, --blast-radius, --graph, --pr-comment, --verify, --upstream). KNOWN_UPSTREAM_VIOLATIONS (line 244) embeds corpus metadata for 13 packages (openai, langchain, langgraph, litellm, crewai, etc.) ranked by leverage score (violations \u00d7 log(stars) \u00d7 downstream repos), enabling --upstream to surface transitive violation exposure.",
+        "design_intent": "(1) _changed_files_on_branch wraps git diff output in DiffResolutionError at line 64 instead of propagating CalledProcessError, forcing callers to catch pact-specific exception type. Rejected alternative: let CalledProcessError propagate to argparse. Consequence: main catches DiffResolutionError at line 756 and exits cleanly with git stderr; if main caught Exception broadly, git 'fatal: not a git repository' would surface as generic error. (2) --incremental and --diff are separate flags (lines 594, 587) with distinct semantics: --incremental calls check_codebase_incremental (dirty subgraph analysis), --diff filters post-hoc by file set. Rejected alternative: single --scope=changed flag. Consequence: user can combine flags (line 778 filters incremental violations by diff file set), but intersection semantics may surprise users expecting union\u2014inv_010 documents this.",
+        "key_abstractions": "DiffResolutionError (line 30): RuntimeError subclass, raised when git diff fails. _changed_files_on_branch (line 34): signature (base: str = \"main\", cwd: Path = None) -> set[str]; runs git rev-parse + git diff, returns absolute paths of .py files changed vs base branch, or raises DiffResolutionError on subprocess failure. _spec_cmd (line 67): signature (argv) -> int; argparse subparsers for 'pact spec gen FILE' and 'pact spec complete FILE [--model MODEL] [--api-key KEY]'; calls spec_gen or spec_complete, writes to --output or stdout, catches Exception at line 128 and returns 1 on failure. _fix_cmd (line 138): signature (argv) -> int; argparse for 'pact fix [DIR] [--apply] [--mode MODE] [--write-tests]'; calls check_codebase, apply_fixes, diff_text, optionally generate_test_file; prints unified diffs or writes in-place if --apply. KNOWN_UPSTREAM_VIOLATIONS (line 244): dict[str, dict] with 13 entries, each has {repo, violations, stars, downstream_repos, leverage}; leverage = violations \u00d7 log1p(stars) \u00d7 (1 + downstream_repos). _extract_top_level_imports (line 346): signature (root: Path) -> dict[str, str]; walks .py files, parses AST, extracts Import and ImportFrom nodes, returns {package_name: first_file_importing_it}; swallows SyntaxError/OSError at line 355 (inv_003). _show_cut_vertex_contracts (line 371): signature (functions, call_sites, root, intent_trigger=False, model, api_key) -> None; calls cut_vertex_files, loads intent JSON (with exception handling at lines 402-410 per inv_004), prints contracts for each cut vertex file; if --intent-trigger and contract missing, calls extract_file_intent and merges result into intent JSON. main (line 511): signature (argv=None) -> int; calls load_dotenv at line 512 (inv_012 notes programmatic usage gap); delegates to 9 subcommand handlers (lines 516-557) or falls through to argparse.ArgumentParser(prog=\"pact\") with 23 arguments; orchestrates extract_from_codebase, check_codebase or check_codebase_incremental, optional filtering by --diff, output formatting (JSON, blast_radius, suggest, reduce, fitness, coverage, graph, pr_comment, verify, upstream), returns 1 if violations and --strict else 0.",
+        "behavioral_contract": "(1) _changed_files_on_branch guarantees DiffResolutionError if git command fails (lines 60-64); stderr/stdout from git is embedded in exception message. Callers must catch DiffResolutionError to distinguish git failure from other exceptions. (2) _spec_cmd returns 0 on success, 1 if spec_complete raises Exception (line 128), 2 if input file does not exist (line 115). All spec_complete exceptions are logged to stderr but not re-raised\u2014caller sees only exit code. (3) _extract_top_level_imports returns partial import map if any .py file has SyntaxError or OSError (line 355); no warning emitted, missing files are silently omitted from result dict. (4) _show_cut_vertex_contracts emits RuntimeWarning if intent JSON parse fails (line 405), then continues with intent_data = {}; all cut vertices will show missing-contract prompt even if JSON file exists but is malformed. (5) main returns 1 if violations non-empty AND --strict is True (line 1013), else 0; --strict makes violations a CI gate. (6) main delegates subcommands by exact argv[0] string match (lines 516-557); if argv[0] not in {spec, fix, preflight, intent, heal, find, context, loop, pipeline}, argparse treats argv[0] as positional DIR argument\u2014typo 'pact specc' will fail with 'unrecognized arguments'.",
+        "failure_modes": "(1) Line 60: except (subprocess.CalledProcessError, OSError) as exc \u2192 re-raised as DiffResolutionError; if git not in PATH or not a git repo, user sees DiffResolutionError with stderr context. (2) Line 128: except Exception as exc \u2192 print to stderr, return 1; all spec_complete failures (ANTHROPIC_API_KEY missing, network timeout, malformed TLA+ syntax, Z3 proof failure) produce identical exit code with only exc.__str__() diagnostic. (3) Line 355: except (SyntaxError, OSError): continue \u2192 silently omits unparseable .py files from import map; --upstream will under-report dependencies if any file has syntax errors. (4) Line 402: except (json.JSONDecodeError, OSError) as exc \u2192 RuntimeWarning + intent_data = {}; malformed intent JSON causes all cut vertices to show '(run pact intent analyze)' instead of '(JSON parse failed)'. (5) Line 493: except Exception as exc \u2192 print '(intent analysis failed: {exc})'; LLM API key missing, network timeout, SyntaxError in target file, Z3 failure all produce same generic message. (6) Line 824: except Exception \u2192 _cg = None; if graphify_graph.CallGraph.load fails, caller annotations are skipped silently\u2014violations print without '\u2191 caller' lines. (7) Line 971: except ImportError \u2192 print z3-solver not installed; --verify becomes no-op if z3-solver missing, user sees message to stderr but exit code is unchanged.",
+        "assumptions": "(1) --hub-threshold default 8 (line 627): assumes fan-out \u2265 8 is a hub regardless of graph topology; if codebase has median fan-out = 2, threshold is too high; if median = 15, threshold is too low. No dynamic adjustment based on graph statistics (inv_007). (2) --reduce-limit default 20 (line 634): assumes 20 simplification targets sufficient for review; if reduction finds 100 tangles, top 80 are invisible unless user raises limit manually (inv_008). (3) KNOWN_UPSTREAM_VIOLATIONS (line 244): embeds stars, downstream_repos, violations as of unknown snapshot; if openai releases v2 with 0 violations, static data is stale; no last_updated or version field (inv_009). (4) --incremental + --diff flags combine via intersection at line 778: incremental computes dirty subgraph, then filters by diff file set; user expecting union semantics will miss violations in transitive callers outside diff file set (inv_010). (5) load_dotenv at line 512 only fires when cli.main() is called; programmatic import of pact modules (e.g., 'from pact.checker import check_codebase') bypasses dotenv load, so ANTHROPIC_API_KEY in .env will be invisible (inv_012). (6) Line 741 extract_from_codebase runs unconditionally if no subcommand matched, but all subcommands return early (lines 516-557); extracted models/functions/call_sites are used only in default check_codebase flow\u2014expensive AST parsing is dead code when subcommand matched (inv_013).",
+        "resource_obligations": "(1) Line 512: load_dotenv(Path(__file__).parent / '.env', override=False) mutates os.environ at CLI entry; if .env contains duplicate keys, last occurrence wins per dotenv semantics; override=False means existing env vars are not overwritten. (2) Lines 40-54: subprocess.run with check=True raises CalledProcessError on non-zero exit; stdout/stderr are captured via capture_output=True, so git output does not pollute parent process streams. (3) Lines 226, 507: Path.write_text writes test files or intent JSON in-place if --apply or new modules extracted; no backup or atomic write\u2014if write fails mid-operation, file may be truncated. (4) Line 824: _CG.load(root) may build or load cached call graph; if cache is stale and graph.py does not detect, caller annotations may be incorrect. (5) Line 958: run_llm(root) invokes Z3 fixedpoint analysis; if root contains 10,000 functions, Z3 memory usage scales with call graph size\u2014no timeout or resource limit visible in cli.py."
+      },
+      "invariants": [
+        {
+          "id": "inv_001",
+          "type": "error_contract",
+          "statement": "_changed_files_on_branch wraps subprocess.CalledProcessError + OSError at lines 60-64, re-raising as DiffResolutionError. Callers expecting git failure details must catch DiffResolutionError specifically, NOT Exception. If caller catches Exception broadly, they will mask the diff resolution failure without surfacing stderr/stdout context embedded in the exception message.",
+          "applies_to": [
+            "_changed_files_on_branch"
+          ],
+          "formal": "\u2200 path p \u2208 call_chain(_changed_files_on_branch): catch(p, DiffResolutionError) \u2228 propagates_to(p, main) where main handles DiffResolutionError",
+          "derived_from": "except (subprocess.CalledProcessError, OSError) as exc: ... raise DiffResolutionError(detail) from exc",
+          "confidence": 0.92,
+          "contract_kind": "error_contract",
+          "z3_encoding": "",
+          "tla_template": "liveness"
+        },
+        {
+          "id": "inv_002",
+          "type": "error_contract",
+          "statement": "_spec_cmd catches all Exceptions from spec_complete at line 128 and prints to stderr before returning 1. This means any exception from the LLM API call, Z3 proof, file I/O, or JSON parse failure will be converted to exit code 1 with no structured logging or stack trace. Callers cannot distinguish ANTHROPIC_API_KEY missing from network timeout from malformed TLA+ syntax.",
+          "applies_to": [
+            "_spec_cmd"
+          ],
+          "formal": "\u2200 exc \u2208 Exception: spec_complete raises exc \u2192 _spec_cmd returns 1 \u2227 user sees generic error message",
+          "derived_from": "except Exception as exc: print(f\"error: {exc}\", file=sys.stderr); return 1",
+          "confidence": 0.94,
+          "contract_kind": "ordering",
+          "z3_encoding": "",
+          "tla_template": "ordering"
+        },
+        {
+          "id": "inv_003",
+          "type": "error_contract",
+          "statement": "_extract_top_level_imports silently swallows SyntaxError and OSError at line 355 via bare continue. If a .py file has malformed syntax or I/O failure, the function omits that file from the import map without warning. Consequence: --upstream will under-report package dependencies if any .py file in the tree is unparseable.",
+          "applies_to": [
+            "_extract_top_level_imports"
+          ],
+          "formal": "\u2200 py_file f: SyntaxError(f) \u2228 OSError(f) \u2192 f \u2209 import_map_result \u2227 no_warning_emitted",
+          "derived_from": "except (SyntaxError, OSError): continue",
+          "confidence": 0.96,
+          "contract_kind": "ordering",
+          "z3_encoding": "",
+          "tla_template": "ordering"
+        },
+        {
+          "id": "inv_004",
+          "type": "error_contract",
+          "statement": "_show_cut_vertex_contracts catches json.JSONDecodeError + OSError when loading intent JSON at lines 402-410 and emits RuntimeWarning. The function then continues with intent_data = {}. If the JSON is malformed, all cut vertices will show '(run `pact intent analyze <file>` or use --intent-trigger)' even though an intent JSON file exists\u2014silently masking the parse failure from user.",
+          "applies_to": [
+            "_show_cut_vertex_contracts"
+          ],
+          "formal": "intent_json_path.exists() \u2227 (JSONDecodeError \u2228 OSError) \u2192 intent_data = {} \u2227 user sees missing-contract prompt, not parse-failure diagnostic",
+          "derived_from": "except (json.JSONDecodeError, OSError) as exc: warnings.warn(...); intent_data = {}",
+          "confidence": 0.93,
+          "contract_kind": "error_contract",
+          "z3_encoding": "",
+          "tla_template": "liveness"
+        },
+        {
+          "id": "inv_005",
+          "type": "error_contract",
+          "statement": "_show_cut_vertex_contracts catches all Exceptions from extract_file_intent at line 493 and prints '(intent analysis failed: {exc})'. This conflates ANTHROPIC_API_KEY missing, network timeout, SyntaxError in target file, Z3 proof failure, and JSON schema violation into one generic message. Caller cannot take corrective action without re-running manually.",
+          "applies_to": [
+            "_show_cut_vertex_contracts"
+          ],
+          "formal": "\u2200 exc \u2208 Exception: extract_file_intent raises exc \u2192 printed message is exc.__str__() with no type discrimination",
+          "derived_from": "except Exception as exc: print(f\"    contract:  (intent analysis failed: {exc})\")",
+          "confidence": 0.91,
+          "contract_kind": "error_contract",
+          "z3_encoding": "",
+          "tla_template": "liveness"
+        },
+        {
+          "id": "inv_006",
+          "type": "data_flow",
+          "statement": "main delegates subcommands by exact argv[0] match (lines 516-557). If argv is empty or first arg does not match {spec, fix, preflight, intent, heal, find, context, loop, pipeline}, main falls through to argparse with prog='pact'. This means 'pact specc' or 'pact Fix' will be treated as positional argument DIR, not subcommand, and argparse will fail with 'unrecognized arguments'.",
+          "applies_to": [
+            "main"
+          ],
+          "formal": "argv[0] \u2209 {\"spec\", \"fix\", \"preflight\", \"intent\", \"heal\", \"find\", \"context\", \"loop\", \"pipeline\"} \u2192 argparse.parse_args treats argv as [root, ...flags]",
+          "derived_from": "if argv and argv[0] == \"spec\": return _spec_cmd(argv[1:]) ... else: p = argparse.ArgumentParser(prog=\"pact\", ...)",
+          "confidence": 0.89,
+          "contract_kind": "behavioral",
+          "z3_encoding": "",
+          "tla_template": "liveness"
+        },
+        {
+          "id": "inv_007",
+          "type": "assumption",
+          "statement": "--hub-threshold default 8 (line 627) assumes fan-out >= 8 is a hub. If codebase has average fan-out = 10, threshold will flag 40% of functions. If codebase has average fan-out = 2, threshold will miss structural hubs. Hard-coded threshold does not adapt to graph topology\u2014callers must tune via flag or accept false positives/negatives.",
+          "applies_to": [
+            "main"
+          ],
+          "formal": "hub_threshold = 8 is domain-independent constant; no graph statistics (mean fan-out, stddev, percentiles) adjust threshold dynamically",
+          "derived_from": "--hub-threshold default=8",
+          "confidence": 0.87,
+          "contract_kind": "flag_invariant",
+          "z3_encoding": "",
+          "tla_template": "liveness"
+        },
+        {
+          "id": "inv_008",
+          "type": "assumption",
+          "statement": "--reduce-limit default 20 (line 634) assumes 20 simplification targets is sufficient for human review. If reduction analysis finds 150 tangles, user sees top 20 ranked by unknown criterion (code does not document ranking strategy). Remaining 130 targets are invisible unless user re-runs with --reduce-limit=150.",
+          "applies_to": [
+            "main"
+          ],
+          "formal": "len(reduction) > reduce_limit \u2192 reduction[reduce_limit:] invisible to user \u2227 ranking criterion undocumented",
+          "derived_from": "--reduce-limit default=20",
+          "confidence": 0.85,
+          "contract_kind": "behavioral",
+          "z3_encoding": "",
+          "tla_template": "liveness"
+        },
+        {
+          "id": "inv_009",
+          "type": "assumption",
+          "statement": "KNOWN_UPSTREAM_VIOLATIONS dictionary (lines 244-343) embeds corpus-derived metadata (stars, downstream_repos, leverage) as of unknown snapshot date. If openai/openai-python releases v2 with 0 violations, or langchain stars double, the static data becomes stale. No version field or last_updated timestamp exists\u2014users cannot know if data is 1 day or 1 year old.",
+          "applies_to": [
+            "KNOWN_UPSTREAM_VIOLATIONS",
+            "main"
+          ],
+          "formal": "KNOWN_UPSTREAM_VIOLATIONS is immutable dict with no provenance metadata; staleness_days = unknown",
+          "derived_from": "KNOWN_UPSTREAM_VIOLATIONS: dict[str, dict] = { ... }",
+          "confidence": 0.83,
+          "contract_kind": "resource_lifecycle",
+          "z3_encoding": "",
+          "tla_template": "resource_lifecycle"
+        },
+        {
+          "id": "inv_010",
+          "type": "data_flow",
+          "statement": "--incremental and --diff both call _changed_files_on_branch but have different semantics: --incremental analyzes dirty subgraph (changed files + transitive callers), --diff analyzes full codebase then filters violations by file. If user passes both flags simultaneously, --incremental wins (line 753) and --diff filter is applied post-hoc (line 778), potentially discarding violations discovered via transitive caller analysis.",
+          "applies_to": [
+            "main"
+          ],
+          "formal": "--incremental \u2227 --diff \u2192 violations computed via incremental, then filtered by diff file set; user may expect union semantics (incremental \u222a diff) but gets intersection (incremental \u2229 diff)",
+          "derived_from": "if args.incremental is not None: violations, ... = check_codebase_incremental(...) ... if args.diff is not None: violations = [v for v in violations if v.file in changed]",
+          "confidence": 0.88,
+          "contract_kind": "flag_invariant",
+          "z3_encoding": "",
+          "tla_template": "liveness"
+        },
+        {
+          "id": "inv_011",
+          "type": "intent_gap",
+          "statement": "Git commit 2026-05-25 'fix: 3 medium-severity contract violations' states cli.py replaced bare 'except Exception: pass' for intent JSON load with 'except (json.JSONDecodeError, OSError) + RuntimeWarning'. Visible code at lines 402-410 confirms this fix exists. Commit also states '_spec_cmd now catches Exception (not just RuntimeError) to surface unexpected failures'. Line 128 catches Exception as documented. However, commit claims z3_engine.py UNSAT/UNKNOWN now emit RuntimeWarning instead of silent assertion. This claim is outside cli.py scope\u2014cannot verify if z3_engine.py actually emits warnings. If z3_engine violations() still silently returns [] on UNKNOWN, cli.py will report 'no constraint violations' when proof is inconclusive.",
+          "applies_to": [
+            "_spec_cmd",
+            "_show_cut_vertex_contracts"
+          ],
+          "formal": "commit claims z3_engine.py emits RuntimeWarning on UNKNOWN; cli.py assumes run_llm / spec_complete propagate these warnings; if z3_engine silently returns empty on UNKNOWN, cli.py cannot distinguish proved-safe from unverifiable",
+          "derived_from": "z3_refuted: fix: 3 medium-severity contract violations \u2014 silent failures now warn [Z3 proved contract holds \u2014 UNSAT, no counterexample]",
+          "confidence": 0.44999999999999996,
+          "contract_kind": "error_contract",
+          "z3_encoding": "import z3\nimport json\n\n# Contract: Git commit claims _spec_cmd now catches Exception (not just RuntimeError)\n# at line 128 to surface unexpected failures.\n# Line 128 in the source is: 'except Exception as exc:'\n# This is verifiable from the function source.\n#\n# The contract also discusses z3_engine.py behavior, but that is outside\n# the scope of _spec_cmd (which handles TLA+ spec generation, not verification).\n#\n# We verify only what's testable: does _spec_cmd properly catch exceptions\n# in the spec_complete branch?\n#\n# Model the spec_complete execution:\n# - spec_cmd_choice: 'gen' or 'complete'\n# - spec_complete_raises: what exception type spec_complete raises (if any)\n# - exception_caught: does the except block catch it?\n# - error_reported: does cli print error to stderr?\n# - return_code: what does _spec_cmd return?\n#\n# Contract (negated for violation search):\n# If spec_cmd=='complete' AND spec_complete raises an exception,\n# THEN it should be caught, error printed, and return 1.\n# Violation: exception NOT caught OR error NOT reported OR return != 1\n\ns = z3.Solver()\n\n# 0=gen, 1=complete\nspec_cmd_choice = z3.Int('spec_cmd_choice')\ns.add(z3.Or(spec_cmd_choice == 0, spec_cmd_choice == 1))\n\n# Exception types: 0=none, 1=Exception, 2=BaseException (not caught by Exception)\nexception_type = z3.Int('exception_type')\ns.add(z3.Or(exception_type == 0, exception_type == 1, exception_type == 2))\n\n# Outcomes\nexception_caught = z3.Bool('exception_caught')\nerror_reported = z3.Bool('error_reported')\nreturn_code = z3.Int('return_code')\ns.add(z3.Or(return_code == 0, return_code == 1, return_code == 2))\n\n# Logic: In complete branch with 'except Exception as exc:'\n# - Exception (type 1) is caught\n# - BaseException (type 2) is NOT caught by 'except Exception'\ns.add(z3.Implies(\n    z3.And(spec_cmd_choice == 1, exception_type == 1),\n    z3.And(exception_caught, error_reported, return_code == 1)\n))\n\n# BaseException not caught (would propagate)\ns.add(z3.Implies(\n    z3.And(spec_cmd_choice == 1, exception_type == 2),\n    z3.Not(exception_caught)\n))\n\n# No exception -> normal flow\ns.add(z3.Implies(\n    exception_type == 0,\n    z3.And(z3.Not(exception_caught), z3.Not(error_reported), return_code == 0)\n))\n\n# gen branch never enters the try/except\ns.add(z3.Implies(\n    spec_cmd_choice == 0,\n    z3.And(z3.Not(exception_caught), return_code == 0)\n))\n\n# NEGATED CONTRACT: Find case where Exception should be caught but isn't,\n# or is caught but doesn't return 1, or doesn't report error\ns.add(spec_cmd_choice == 1)\ns.add(exception_type == 1)  # Exception raised\ns.add(z3.Or(\n    z3.Not(exception_caught),\n    z3.Not(error_reported),\n    return_code != 1\n))\n\nresult = s.check()\n\nif result == z3.sat:\n    m = s.model()\n    print(json.dumps({\n        \"status\": \"sat\",\n        \"counterexample\": {\n            \"spec_cmd_choice\": \"complete\",\n            \"exception_type\": \"Exception\",\n            \"exception_caught\": str(m[exception_caught]),\n            \"error_reported\": str(m[error_reported]),\n            \"return_code\": m[return_code].as_long()\n        },\n        \"explanation\": \"Contract violated: Exception raised in complete branch but not properly handled\"\n    }))\nelif result == z3.unsat:\n    print(json.dumps({\n        \"status\": \"unsat\",\n        \"counterexample\": None,\n        \"explanation\": \"Contract holds: _spec_cmd properly catches Exception in complete branch, reports error to stderr, and returns 1\"\n    }))\nelse:\n    print(json.dumps({\n        \"status\": \"unknown\",\n        \"counterexample\": None,\n        \"explanation\": \"Z3 could not decide\"\n    }))\n",
+          "tla_template": "liveness"
+        },
+        {
+          "id": "inv_012",
+          "type": "intent_gap",
+          "statement": "Git commit 2026-05-26 'fix(llm): move load_dotenv to CLI main()' moved load_dotenv from llm.py module-level to cli.py::main() line 512 to prevent test interference under --import-mode=importlib. Visible code confirms load_dotenv(Path(__file__).parent / '.env', override=False) exists. However, if user imports pact modules directly in Python REPL or third-party script without calling cli.main(), dotenv variables will not load. This breaks programmatic usage: 'from pact.checker import check_codebase' will fail if ANTHROPIC_API_KEY is in .env but not in environment.",
+          "applies_to": [
+            "main"
+          ],
+          "formal": "dotenv load is CLI-entry-only; programmatic callers (e.g., import pact.checker; check_codebase(...)) bypass load_dotenv \u2192 ANTHROPIC_API_KEY from .env invisible",
+          "derived_from": "z3_confirmed: load_dotenv(Path(__file__).parent / '.env', override=False) [Z3 counterexample: {'cli_main_called': False, 'module_imported_directly': True, 'dotenv_loaded': False, 'env_var_in_dotenv': True, 'env_var]",
+          "confidence": 0.9,
+          "contract_kind": "flag_invariant",
+          "z3_encoding": "import z3\nimport json\n\n# Contract: load_dotenv is called in main(), but if user imports pact modules directly\n# (e.g., 'from pact.checker import check_codebase') without calling cli.main(),\n# dotenv variables will not load, breaking programmatic usage.\n#\n# Model:\n# - cli_main_called: Bool = whether cli.main() was invoked\n# - module_imported_directly: Bool = whether pact module was imported directly\n# - dotenv_loaded: Bool = whether .env variables are loaded\n# - programmatic_usage_works: Bool = whether programmatic usage succeeds\n#\n# Contract constraints:\n# 1. dotenv_loaded iff cli_main_called (load_dotenv only runs in main())\n# 2. programmatic_usage_works requires dotenv_loaded (if API key is in .env)\n# 3. Violation scenario: module_imported_directly=True, cli_main_called=False,\n#    env_var_in_dotenv=True \u2192 programmatic_usage_works=False\n#\n# We search for: a scenario where programmatic usage is broken due to missing dotenv load\n\ns = z3.Solver()\n\n# Variables\ncli_main_called = z3.Bool('cli_main_called')\nmodule_imported_directly = z3.Bool('module_imported_directly')\ndotenv_loaded = z3.Bool('dotenv_loaded')\nenv_var_in_dotenv = z3.Bool('env_var_in_dotenv')\nenv_var_in_environment = z3.Bool('env_var_in_environment')\nprogrammatic_usage_works = z3.Bool('programmatic_usage_works')\n\n# Constraint 1: dotenv is loaded iff cli.main() is called\ns.add(dotenv_loaded == cli_main_called)\n\n# Constraint 2: programmatic usage works iff required env var is available\n# (either already in environment OR loaded from dotenv)\nenv_var_available = z3.Or(env_var_in_environment, dotenv_loaded)\ns.add(z3.Implies(env_var_in_dotenv, programmatic_usage_works == env_var_available))\n\n# Constraint 3: if env var NOT in dotenv, programmatic usage depends on environment\ns.add(z3.Implies(z3.Not(env_var_in_dotenv), programmatic_usage_works == env_var_in_environment))\n\n# Negated contract: Find violation scenario where:\n# - User imports module directly (not via CLI)\n# - API key is in .env but not in environment\n# - This causes programmatic usage to fail\ns.add(module_imported_directly == True)\ns.add(cli_main_called == False)\ns.add(env_var_in_dotenv == True)\ns.add(env_var_in_environment == False)\ns.add(programmatic_usage_works == False)\n\nr = s.check()\n\nif r == z3.sat:\n    m = s.model()\n    ce = {\n        'cli_main_called': bool(m.eval(cli_main_called)),\n        'module_imported_directly': bool(m.eval(module_imported_directly)),\n        'dotenv_loaded': bool(m.eval(dotenv_loaded)),\n        'env_var_in_dotenv': bool(m.eval(env_var_in_dotenv)),\n        'env_var_in_environment': bool(m.eval(env_var_in_environment)),\n        'programmatic_usage_works': bool(m.eval(programmatic_usage_works))\n    }\n    print(json.dumps({\n        'status': 'sat',\n        'counterexample': ce,\n        'explanation': 'Contract violated: when user imports pact modules directly without calling cli.main(), and API key is in .env but not in environment, programmatic usage fails because load_dotenv() is never called'\n    }))\nelif r == z3.unsat:\n    print(json.dumps({\n        'status': 'unsat',\n        'counterexample': None,\n        'explanation': 'Contract holds: no scenario exists where programmatic usage breaks due to missing dotenv load'\n    }))\nelse:\n    print(json.dumps({\n        'status': 'unknown',\n        'counterexample': None,\n        'explanation': 'Z3 could not decide'\n    }))\n",
+          "tla_template": "liveness"
+        },
+        {
+          "id": "inv_013",
+          "type": "data_flow",
+          "statement": "main extracts codebase at line 741 unconditionally (extract_from_codebase(root)) even when subcommand flags (spec, fix, preflight, intent, heal, find, context, loop, pipeline) were already handled and returned early (lines 516-557). This is unreachable code\u2014extracted models/functions/call_sites are only used if no subcommand matched. Parsing every .py file in root is expensive (O(n_files)); if user runs 'pact spec gen foo.py', the full codebase extraction at line 741 never executes but the import exists.",
+          "applies_to": [
+            "main"
+          ],
+          "formal": "subcommand_matched \u2208 {spec, fix, preflight, intent, heal, find, context, loop, pipeline} \u2192 main returns before line 741; extracted = extract_from_codebase(root) is dead code when subcommand matched",
+          "derived_from": "if argv and argv[0] == \"spec\": return _spec_cmd(argv[1:]) ... extracted = extract_from_codebase(root)",
+          "confidence": 0.79,
+          "contract_kind": "flag_invariant",
+          "z3_encoding": "",
+          "tla_template": "liveness"
+        }
+      ],
+      "violations": [],
+      "prompt_score": null,
+      "truncation_audit": {
+        "last_complete_unit": "if __name__ == \"__main__\": sys.exit(main())",
+        "cutoff_line": "sys.exit(main())",
+        "visible_definitions": [
+          "DiffResolutionError",
+          "_changed_files_on_branch",
+          "_spec_cmd",
+          "_fix_cmd",
+          "KNOWN_UPSTREAM_VIOLATIONS",
+          "_extract_top_level_imports",
+          "_show_cut_vertex_contracts",
+          "main"
+        ],
+        "docstring_only_names": []
+      }
+    },
+    {
+      "path": "/Users/jonathanhill/src/pact-standalone/llm.py",
+      "understanding": {
+        "purpose": "llm.py provides a unified factory layer isolating LLM client instantiation from provider-specific authentication mechanisms. make_client() at line 18 constructs anthropic.Anthropic clients with configurable auth (API keys via ANTHROPIC_API_KEY/PACT_LLM_API_KEY or bearer tokens via ANTHROPIC_AUTH_TOKEN) and base URLs (ANTHROPIC_BASE_URL/PACT_LLM_BASE_URL), enabling transparent switching between Anthropic direct, OpenRouter, and Bonsai proxy without modifying calling code across 9 downstream modules. resolve_key() and resolve_model() extract auth credentials and model names via cascading environment variable fallbacks, centralizing credential resolution so test isolation via monkeypatch targets a single module rather than scattered os.environ.get() calls.",
+        "design_intent": "1. PACT_LLM_* variables take priority over ANTHROPIC_* variables (lines 28-31, 34-36) \u2014 rejecting the alternative of ANTHROPIC_* priority \u2014 because git commit 2026-05-26 states proxy keys configured via PACT_LLM_API_KEY were shadowed by rate-limited Anthropic keys in shell environment. Consequence: users with both ANTHROPIC_API_KEY (rate-limited) and PACT_LLM_API_KEY (proxy) set will route through the proxy, preventing quota exhaustion on direct Anthropic tier. 2. resolve_key() returns empty string when ANTHROPIC_AUTH_TOKEN exists but no explicit key found (line 59), rejecting the alternative of raising RuntimeError \u2014 because bearer-auth proxies (Bonsai, OAuth) supply credentials via SDK-native ANTHROPIC_AUTH_TOKEN that SDK reads automatically. Consequence: calling code can invoke resolve_key() without checking auth method, relying on empty string to signal 'SDK handles auth internally'.",
+        "key_abstractions": "DEFAULT_MODEL: string constant 'claude-sonnet-4-6', default model name when PACT_LLM_MODEL unset and no explicit model passed. _KEY_HELP: multi-line string, error message template showing three provider configurations (Anthropic direct with ANTHROPIC_API_KEY, OpenRouter with PACT_LLM_BASE_URL+PACT_LLM_API_KEY, Bonsai proxy with ANTHROPIC_BASE_URL+ANTHROPIC_AUTH_TOKEN). make_client(api_key=None): constructs anthropic.Anthropic client; resolves key via api_key parameter \u2192 PACT_LLM_API_KEY \u2192 PACT_ANTHROPIC_API_KEY \u2192 ANTHROPIC_API_KEY \u2192 None (fallback to bearer auth), resolves base_url via PACT_LLM_BASE_URL \u2192 ANTHROPIC_BASE_URL, raises RuntimeError with _KEY_HELP if no auth configured; returns configured client. resolve_key(api_key=None): returns resolved API key string or empty string when bearer auth detected; same fallback chain as make_client; raises RuntimeError if no credentials exist. resolve_model(model=None): returns model name via model parameter \u2192 PACT_LLM_MODEL \u2192 DEFAULT_MODEL fallback chain.",
+        "behavioral_contract": "make_client() and resolve_key() guarantee RuntimeError with provider configuration instructions when invoked without credentials (lines 38-39, 64-65). Empty string return from resolve_key() guarantees ANTHROPIC_AUTH_TOKEN exists in environment (line 59), signaling bearer authentication mode to callers. make_client() passes api_key to Anthropic() constructor only when key is non-empty (line 42-43), ensuring SDK's native ANTHROPIC_AUTH_TOKEN bearer token mechanism activates when no explicit key provided. All three functions guarantee parameter precedence over environment variables: explicit api_key/model parameters override all environment-based fallbacks (leftmost position in or-chains at lines 28, 56, 72).",
+        "failure_modes": "RuntimeError with _KEY_HELP text when all five auth sources absent (ANTHROPIC_API_KEY, PACT_LLM_API_KEY, PACT_ANTHROPIC_API_KEY, api_key parameter, ANTHROPIC_AUTH_TOKEN) \u2014 symptom: initialization fails before any API call with multi-line help text. Silent fallback to DEFAULT_MODEL='claude-sonnet-4-6' when PACT_LLM_MODEL unset and model=None (line 72) \u2014 symptom: requests route to claude-sonnet-4-6 regardless of intended model, no warning emitted. Empty string return from resolve_key() when ANTHROPIC_AUTH_TOKEN set but SDK fails to read it (e.g., SDK version incompatibility) \u2014 symptom: client construction succeeds locally but API calls fail with 401 Unauthorized, no diagnostic linking empty key to bearer auth assumption. Incorrect base URL ending in /v1 produces 404 with double /v1/messages path (per git commit rationale) \u2014 no local validation detects this misconfiguration before remote error.",
+        "assumptions": "Assumes Anthropic SDK automatically reads ANTHROPIC_AUTH_TOKEN from environment for bearer authentication when api_key not passed to constructor (line 42-43 conditional kw['api_key'] assignment); if SDK behavior changes, empty-string returns from resolve_key() will cause silent auth failure. Assumes base URLs do not end in /v1 or /api/v1 (git commit documents /v1 suffix causes 404 due to SDK appending /v1/messages); no runtime guard enforces this, relying on user adherence to _KEY_HELP examples. Assumes PACT_LLM_BASE_URL values are compatible with Anthropic SDK client (e.g., OpenRouter's Anthropic-compatible /api endpoint); passing non-compatible base URLs causes initialization to succeed but API calls to fail with provider-specific errors. Assumes downstream callers invoke load_dotenv before make_client/resolve_key (git commit moved load_dotenv to cli.py::main()); library use outside CLI context bypasses .env loading.",
+        "resource_obligations": "[none detected in visible source; module performs environment variable reads and object construction only, no persistent connections, no cleanup required]"
+      },
+      "invariants": [
+        {
+          "id": "inv_001",
+          "type": "error_contract",
+          "statement": "make_client() and resolve_key() raise RuntimeError with help text when no credentials exist, forcing explicit provider configuration at initialization rather than failing later during API calls with cryptic HTTP 401 errors",
+          "applies_to": [
+            "make_client",
+            "resolve_key"
+          ],
+          "formal": "\u2200 call c to {make_client, resolve_key}: (api_key=None \u2227 PACT_LLM_API_KEY=None \u2227 PACT_ANTHROPIC_API_KEY=None \u2227 ANTHROPIC_API_KEY=None \u2227 ANTHROPIC_AUTH_TOKEN=None) \u27f9 raises(RuntimeError, _KEY_HELP)",
+          "derived_from": "if not key and not os.environ.get(\"ANTHROPIC_AUTH_TOKEN\"): raise RuntimeError(_KEY_HELP)",
+          "confidence": 0.95,
+          "contract_kind": "behavioral",
+          "z3_encoding": "",
+          "tla_template": "liveness"
+        },
+        {
+          "id": "inv_002",
+          "type": "data_flow",
+          "statement": "API key resolution prioritizes PACT_LLM_API_KEY over ANTHROPIC_API_KEY (lines 28-31, 56-59), ensuring proxy keys configured via PACT_LLM_API_KEY take precedence when both environment variables exist\u2014this prevents rate-limited Anthropic direct keys from shadowing proxy credentials",
+          "applies_to": [
+            "make_client",
+            "resolve_key"
+          ],
+          "formal": "\u2200 auth resolution: key = PACT_LLM_API_KEY \u2228 PACT_ANTHROPIC_API_KEY \u2228 ANTHROPIC_API_KEY, evaluation order left-to-right with short-circuit",
+          "derived_from": "key = (api_key or os.environ.get(\"PACT_LLM_API_KEY\") or os.environ.get(\"PACT_ANTHROPIC_API_KEY\") or os.environ.get(\"ANTHROPIC_API_KEY\"))",
+          "confidence": 0.97,
+          "contract_kind": "ordering",
+          "z3_encoding": "",
+          "tla_template": "ordering"
+        },
+        {
+          "id": "inv_003",
+          "type": "data_flow",
+          "statement": "Base URL resolution prioritizes PACT_LLM_BASE_URL over ANTHROPIC_BASE_URL (line 34-36), allowing pact-specific overrides (e.g., OpenRouter at https://openrouter.ai/api) to take precedence over SDK-native base URL configuration when both are set",
+          "applies_to": [
+            "make_client"
+          ],
+          "formal": "\u2200 client creation: base_url = PACT_LLM_BASE_URL \u2228 ANTHROPIC_BASE_URL, evaluation order left-to-right",
+          "derived_from": "base_url = os.environ.get(\"PACT_LLM_BASE_URL\") or os.environ.get(\"ANTHROPIC_BASE_URL\")",
+          "confidence": 0.97,
+          "contract_kind": "ordering",
+          "z3_encoding": "",
+          "tla_template": "ordering"
+        },
+        {
+          "id": "inv_004",
+          "type": "assumption",
+          "statement": "resolve_key() returns empty string \"\" when ANTHROPIC_AUTH_TOKEN exists but no explicit key is found (lines 56-64), assuming the Anthropic SDK will automatically read ANTHROPIC_AUTH_TOKEN from environment for bearer authentication\u2014if SDK behavior changes or another client is substituted, the empty-string return will cause silent authentication failure",
+          "applies_to": [
+            "resolve_key"
+          ],
+          "formal": "resolve_key() returns \"\" \u27fa (explicit_keys_absent \u2227 ANTHROPIC_AUTH_TOKEN \u2260 None) \u2227 assumes SDK_reads_bearer_token_from_env",
+          "derived_from": "key = (api_key or os.environ.get(\"PACT_LLM_API_KEY\") or os.environ.get(\"PACT_ANTHROPIC_API_KEY\") or os.environ.get(\"ANTHROPIC_API_KEY\") or \"\")",
+          "confidence": 0.88,
+          "contract_kind": "behavioral",
+          "z3_encoding": "",
+          "tla_template": "liveness"
+        },
+        {
+          "id": "inv_005",
+          "type": "intent_gap",
+          "statement": "Git commit 2026-05-26 'fix(llm): move load_dotenv to CLI main() to prevent test interference' states module-level load_dotenv was removed because it re-ran on every inline import under --import-mode=importlib, silently restoring env vars deleted by monkeypatch. Visible source contains no load_dotenv call (expected after fix), but no visible guard prevents external code from calling make_client() before dotenv initialization\u2014if called before CLI main() loads .env, API keys in .env will be invisible",
+          "applies_to": [
+            "make_client",
+            "resolve_key"
+          ],
+          "formal": "\u2200 call c to {make_client, resolve_key} occurring before load_dotenv(): keys_in_dotenv_file invisible \u27f9 may raise RuntimeError despite valid .env configuration",
+          "derived_from": "z3_refuted: Git commit: 'Module-level load_dotenv in llm.py re-ran on every inline import... Moved load_dotenv call into cli.py::main()' [Z3 proved contract holds \u2014 UNSAT, no counterexample]",
+          "confidence": 0.44999999999999996,
+          "contract_kind": "ordering",
+          "z3_encoding": "import z3\nimport json\n\n# Model the contract: \"if called before CLI main() loads .env, API keys in .env will be invisible\"\n# The function relies on os.environ at runtime. We model:\n# - explicit api_key parameter\n# - presence/absence of each env var the function checks\n# - whether dotenv was loaded (determines if .env keys are visible)\n# - whether the function raises RuntimeError\n#\n# GENUINE contract violation: dotenv NOT loaded (keys in .env invisible) AND\n#                            no explicit api_key AND no env vars set AND\n#                            function does NOT raise error (SILENT FAILURE)\n#\n# We search for: dotenv_loaded=False, api_key=None, all env vars absent,\n#                but function returns client without error (security violation)\n\ns = z3.Solver()\n\n# Inputs\napi_key_provided = z3.Bool('api_key_provided')  # True if api_key arg is not None\ndotenv_loaded = z3.Bool('dotenv_loaded')  # True if load_dotenv() was called\npact_llm_in_env = z3.Bool('pact_llm_in_env')  # PACT_LLM_API_KEY in os.environ\npact_anthropic_in_env = z3.Bool('pact_anthropic_in_env')  # PACT_ANTHROPIC_API_KEY\nanthropic_key_in_env = z3.Bool('anthropic_key_in_env')  # ANTHROPIC_API_KEY\nanthropic_token_in_env = z3.Bool('anthropic_token_in_env')  # ANTHROPIC_AUTH_TOKEN\n\n# Outputs\nraises_error = z3.Bool('raises_error')  # True if RuntimeError is raised\n\n# Function logic: key resolution priority\nkey_available = z3.Or(\n    api_key_provided,\n    pact_llm_in_env,\n    pact_anthropic_in_env,\n    anthropic_key_in_env\n)\n\n# Function raises error if no key AND no auth token\ns.add(raises_error == z3.Not(z3.Or(key_available, anthropic_token_in_env)))\n\n# Contract violation scenario:\n# - dotenv NOT loaded (keys from .env are invisible to os.environ)\n# - no explicit api_key provided\n# - no env vars set (because .env not loaded and no external setting)\n# - function does NOT raise error (silent failure - THIS IS THE VIOLATION)\n#\n# The concern is: without a guard, make_client() could be called before\n# dotenv loads, and if it silently succeeded without auth, that would be\n# a security issue. We check if the function can return a client without\n# proper authentication.\n\ns.add(dotenv_loaded == False)\ns.add(api_key_provided == False)\ns.add(pact_llm_in_env == False)\ns.add(pact_anthropic_in_env == False)\ns.add(anthropic_key_in_env == False)\ns.add(anthropic_token_in_env == False)\n\n# VIOLATION: Function does NOT raise error despite no keys available\n# (This would mean silent failure/insecure client creation)\ns.add(raises_error == False)\n\nr = s.check()\n\nif r == z3.sat:\n    m = s.model()\n    print(json.dumps({\n        \"status\": \"sat\",\n        \"counterexample\": {\n            \"dotenv_loaded\": False,\n            \"api_key_provided\": False,\n            \"pact_llm_in_env\": False,\n            \"pact_anthropic_in_env\": False,\n            \"anthropic_key_in_env\": False,\n            \"anthropic_token_in_env\": False,\n            \"raises_error\": False\n        },\n        \"explanation\": \"GENUINE VIOLATION: function returns client without authentication when dotenv not loaded and no keys available\"\n    }))\nelif r == z3.unsat:\n    print(json.dumps({\n        \"status\": \"unsat\",\n        \"counterexample\": None,\n        \"explanation\": \"No violation: function correctly raises error when no authentication is available, even if dotenv not loaded\"\n    }))\nelse:\n    print(json.dumps({\n        \"status\": \"unknown\",\n        \"counterexample\": None,\n        \"explanation\": \"Z3 could not decide\"\n    }))",
+          "tla_template": "ordering"
+        },
+        {
+          "id": "inv_006",
+          "type": "intent_gap",
+          "statement": "Git commit 2026-05-26 'fix(llm): correct OpenRouter base URL in help text (/api not /api/v1)' documents that passing https://openrouter.ai/api/v1 produces double /v1/ in path (404) because Anthropic SDK appends /v1/messages to base_url. The corrected _KEY_HELP now shows 'https://openrouter.ai/api', but no runtime validation exists to detect incorrect base URLs ending in /v1 or /api/v1\u2014users can still misconfigure PACT_LLM_BASE_URL and receive 404 errors with no diagnostic hint",
+          "applies_to": [
+            "make_client"
+          ],
+          "formal": "\u2200 base_url b passed to make_client: no guard prevents b ending in '/v1' \u27f9 SDK constructs b+'/v1/messages' with double /v1/, causing 404 with no local diagnostic",
+          "derived_from": "Git commit rationale: 'The Anthropic SDK appends /v1/messages to the base_url, so passing https://openrouter.ai/api/v1 produces a double /v1/ in the path (404)'",
+          "confidence": 0.82,
+          "contract_kind": "resource_lifecycle",
+          "z3_encoding": "",
+          "tla_template": "resource_lifecycle"
+        },
+        {
+          "id": "inv_007",
+          "type": "data_flow",
+          "statement": "resolve_model() returns PACT_LLM_MODEL env var override if present, else explicit model parameter, else DEFAULT_MODEL constant 'claude-sonnet-4-6' (line 72)\u2014this three-tier fallback ensures environment configuration always overrides programmatic defaults",
+          "applies_to": [
+            "resolve_model"
+          ],
+          "formal": "resolve_model(m) = PACT_LLM_MODEL \u2228 m \u2228 DEFAULT_MODEL, evaluation order left-to-right with short-circuit",
+          "derived_from": "return model or os.environ.get(\"PACT_LLM_MODEL\") or DEFAULT_MODEL",
+          "confidence": 0.96,
+          "contract_kind": "behavioral",
+          "z3_encoding": "",
+          "tla_template": "liveness"
+        }
+      ],
+      "violations": [],
+      "prompt_score": null,
+      "truncation_audit": {
+        "last_complete_unit": "def resolve_model(model: Optional[str] = None) -> str:",
+        "cutoff_line": "    return model or os.environ.get(\"PACT_LLM_MODEL\") or DEFAULT_MODEL",
+        "visible_definitions": [
+          "DEFAULT_MODEL",
+          "_KEY_HELP",
+          "make_client",
+          "resolve_key",
+          "resolve_model"
+        ],
+        "docstring_only_names": []
+      }
+    },
+    {
+      "path": "/Users/jonathanhill/src/pact-standalone/context.py",
+      "understanding": {
+        "purpose": "context.py mines git commit history, changelogs, and inline TODO comments to extract violation signals (confirmed past bugs, fragile code areas) for a target source file, feeds this as a prior to `pact find` to replace uniform violation sampling with historically-informed search. Core mechanism: _git_log (line 49) filters git log for fix-related commits via _FIX_PATTERN regex (line 25), retrieves diffs for those commits, truncates to 8KB; _changelog (line 79) searches repo root for CHANGES.rst/CHANGELOG.md entries mentioning the file; _inline_notes (line 99) extracts TODO/FIXME/HACK/XXX comments; extract_context (line 202) sends these signals to LLM with context.md prompt template, receives JSON with confirmed_violations and fragile_areas. Output schema: {file, confirmed_violations: [{severity, function, what_broke, when, fix_commit}], fragile_areas: [{function, reason, evidence}]}. _improve_context_prompt (line 140) implements self-improvement: if LLM output is empty despite rich git history, rewrites context.md prompt to fix failure modes, creating feedback loop.",
+        "design_intent": "(1) _git_log line 51 filters commits by _FIX_PATTERN.search(line) BEFORE retrieving diffs, rejecting the alternative of fetching all commits and filtering diffs post-hoc. Consequence: reduces git show invocations from 200 (max log size) to ~15 (max_commits=40 at line 49, capped to 15 diffs at line 68), trading recall (may miss fixes in commits not matching pattern) for speed. If a fix commit has message 'refactor error handling' without keyword 'fix', it's invisible. (2) _improve_context_prompt line 153 runs improvement ONLY when parse fails OR (no violations found AND rich history exists), rejecting continuous improvement on every call. Consequence: prompt evolves reactively, not proactively\u2014if LLM consistently produces low-confidence violations, improvement never triggers because n_violations > 0. Line 182 writes improved prompt directly to disk with no A/B test or rollback, accepting risk of LLM-generated prompt degrading quality.",
+        "key_abstractions": "_PROMPT_DIR: Path to prompts/ directory, read at line 181 for context.md, line 165 for context_improve.md. _DEFAULT_MODEL: string 'claude-sonnet-4-6', default LLM. _SYSTEM: string prompt for LLM 'You are a violation signal extractor. Return JSON only'. _FIX_PATTERN: compiled regex matching fix|bug|error|crash|fail|broken|wrong|edge.?case|overflow|truncat|handle|guard|check (line 25-28, case-insensitive). _run: executes shell command with 30s timeout, returns stdout on success or empty string on any exception (line 38-48). _git_log: returns string of fix-related commit diffs (\u22648000 chars), takes file_path/repo_root/max_commits=40 (line 49-72). _changelog: returns string of changelog lines mentioning file stem or fix patterns, searches [CHANGES.rst, CHANGELOG.rst, CHANGELOG.md, CHANGES.md, HISTORY.rst] in repo_root (line 79-95). _inline_notes: returns string of TODO/FIXME/HACK/XXX/BUG/NOTE comments with line numbers (line 99-111). _parse: extracts JSON from LLM response, strips markdown fences, tries two candidates (original text, text from first {), raises RuntimeError if both fail (line 114-122). _call: sends prompt to LLM via llm.make_client, returns parsed JSON dict (line 125-136). _improve_context_prompt: scores context prompt output, rewrites context.md if empty output despite rich history, takes result/parse_error/git_log_len/model/key/verbose (line 140-200). extract_context: orchestrates signal extraction, LLM call, optional improvement, returns dict with confirmed_violations/fragile_areas, takes file_path/repo_root/model/api_key/output/verbose/improve (line 202-261). main: CLI entry point, parses args, calls extract_context (line 264-296).",
+        "behavioral_contract": "_run guarantees: returns stdout string on success, empty string \"\" on subprocess failure/timeout/exception (line 41, 48)\u2014no exceptions propagate to caller. _git_log guarantees: returns \"(no git history)\" if no commits found (line 61), else returns concatenated diffs truncated to 8000 chars (line 72), never raises. _changelog guarantees: returns \"(no changelog found)\" if no candidates exist (line 95), never raises. _inline_notes guarantees: returns \"(unreadable)\" if file read fails (line 110), else returns joined comment lines or \"(none)\" (line 109). _parse guarantees: returns dict if JSON extraction succeeds, raises RuntimeError with truncated text if both candidates fail (line 121). _call guarantees: returns dict on success, raises if llm.make_client or message.create fails\u2014exceptions from Anthropic SDK (auth, rate limit, network) propagate unmodified. _improve_context_prompt guarantees: returns None, emits RuntimeWarning on failure (line 194, 199), writes context.md on success (line 181), never raises\u2014line 193 except Exception as exc catches all. extract_context guarantees: returns dict with keys [file, confirmed_violations, fragile_areas], writes JSON to output path if provided (line 252), performs improvement if improve=True (line 259), catches LLM exceptions and returns empty violations/fragile_areas with parse_error set (line 241-247).",
+        "failure_modes": "(1) _run line 41 `except Exception: return \"\"` swallows CalledProcessError (from check=True at line 44), subprocess.TimeoutExpired (timeout=30 at line 43), PermissionError, FileNotFoundError\u2014caller receives empty string, cannot distinguish git-not-installed from permission-denied from timeout. (2) _inline_notes line 108 `except Exception: return \"(unreadable)\"` swallows UnicodeDecodeError, PermissionError\u2014LLM sees \"(unreadable)\" in prompt, may interpret as intentional message versus file access failure. (3) _parse line 119-120 tries two JSON extraction strategies, line 121 raises RuntimeError(f\"no valid JSON: {text[:300]}\")\u2014if LLM returns 10KB response with JSON at end, RuntimeError shows first 300 chars (likely markdown preamble), hiding actual JSON location. (4) _improve_context_prompt line 193 `except Exception as exc` catches all LLM call failures, line 194 emits RuntimeWarning, line 181 context.md write skipped\u2014if improvement fails silently every run, prompt never evolves. (5) extract_context line 241 `except Exception as exc` catches LLM auth failures, rate limits, network errors, sets parse_error=str(exc), returns empty result\u2014caller cannot distinguish parse failure from API failure.",
+        "assumptions": "(1) _git_log line 53 `sha = line.split()[0]` assumes git log --oneline produces space-separated tokens, first token is SHA\u2014breaks if commit message starts with whitespace (no split()[0]) or contains formatting that changes --oneline output. (2) _git_log line 72 [:8000] assumes 8KB of commit diffs is sufficient signal for LLM\u2014files with 100+ fix commits lose majority of history. (3) _changelog line 93 `if stem in ln` assumes changelog entries mention bare file stem (e.g., 'context' for context.py)\u2014misses entries using full module path 'pact.context' or feature names. (4) _improve_context_prompt line 149 `has_rich_history = git_log_len > 500` assumes 500 chars = rich history\u2014~2-3 commit messages, may trigger improvement prematurely. (5) _improve_context_prompt line 153 `if not parse_error and (n_violations > 0 or not has_rich_history): return` assumes any violation count > 0 means prompt is working\u2014false positives or low-confidence violations skip improvement. (6) extract_context line 234 `.replace(\"{{git_log}}\", git_log)` assumes template placeholders match exactly\u2014typo in context.md (e.g., {{gitlog}}) causes literal {{git_log}} to appear in prompt.",
+        "resource_obligations": "(1) _run spawns subprocess at line 39-45, subprocess.run manages child process lifecycle\u2014timeout=30 kills process after 30s, no explicit cleanup needed. (2) _inline_notes line 103 reads entire file into memory `file_path.read_text(...)`\u2014for multi-MB source files, memory scales with file size, no streaming. (3) _improve_context_prompt line 181 writes context.md with `(_PROMPT_DIR / \"context.md\").write_text(improved, encoding=\"utf-8\")`\u2014atomic write (write to temp, rename) not used, concurrent pact context processes may corrupt prompt file. (4) extract_context line 252 writes output JSON `out.write_text(json.dumps(result, indent=2), encoding=\"utf-8\")`\u2014no explicit close needed (write_text handles), but no locking, concurrent writes to same output path may interleave. (5) _call line 130 creates Anthropic client via llm.make_client(key)\u2014client manages HTTP connection pool, no explicit cleanup visible, relies on SDK connection management."
+      },
+      "invariants": [
+        {
+          "id": "inv_001",
+          "type": "error_contract",
+          "statement": "_run swallows all subprocess exceptions at line 41 `except Exception: return \"\"`, returning empty string on git command failure, CalledProcessError, timeout, and permission denial. Callers _git_log and _changelog cannot distinguish missing git history from command failure\u2014both receive empty string. Consequence: extract_context may produce zero violations when git is misconfigured, indistinguishable from a file with clean history.",
+          "applies_to": [
+            "_run",
+            "_git_log",
+            "_changelog"
+          ],
+          "formal": "\u2200 cmd failure f: _run(cmd) \u2192 \"\" \u2227 caller_receives(\"\") \u2227 \u00acdistinguishable(no_history, command_failure)",
+          "derived_from": "except Exception: return \"\"",
+          "confidence": 0.94,
+          "contract_kind": "ordering",
+          "z3_encoding": "",
+          "tla_template": "ordering"
+        },
+        {
+          "id": "inv_002",
+          "type": "error_contract",
+          "statement": "_inline_notes swallows all file read exceptions at line 108 `except Exception: return \"(unreadable)\"`. Caller extract_context receives string \"(unreadable)\" on FileNotFoundError, PermissionError, UnicodeDecodeError, and OSError. The LLM prompt template embeds this string verbatim at line 234 `.replace(\"{{inline_notes}}\", notes)`, causing the model to see literal \"(unreadable)\" with no indication that file access failed versus file truly containing no TODO/FIXME comments.",
+          "applies_to": [
+            "_inline_notes",
+            "extract_context"
+          ],
+          "formal": "\u2200 read_error e: _inline_notes(file) \u2192 \"(unreadable)\" \u2227 prompt_contains(\"(unreadable)\") \u2227 \u00acllm_knows(file_inaccessible)",
+          "derived_from": "except Exception: return \"(unreadable)\"",
+          "confidence": 0.92,
+          "contract_kind": "error_contract",
+          "z3_encoding": "",
+          "tla_template": "liveness"
+        },
+        {
+          "id": "inv_003",
+          "type": "error_contract",
+          "statement": "_parse swallows JSON decode failures at lines 119-120 for two candidate strings (original text and text from first `{`), raising RuntimeError only if both fail. Line 121 `raise RuntimeError(f\"no valid JSON: {text[:300]}\")` surfaces truncated LLM output (300 chars) but loses the underlying JSONDecodeError details (line number, column, expected token). Caller _call at line 136 and extract_context at line 242 receive RuntimeError with truncated text\u2014insufficient for diagnosing whether LLM emitted markdown fences, incomplete JSON, or wrong schema.",
+          "applies_to": [
+            "_parse",
+            "_call",
+            "extract_context"
+          ],
+          "formal": "\u2200 json_error j: _parse(text) catches j \u2227 raises RuntimeError(text[:300]) \u2227 j.lineno \u2227 j.colno \u2227 j.msg lost",
+          "derived_from": "except (json.JSONDecodeError, ValueError): pass",
+          "confidence": 0.89,
+          "contract_kind": "error_contract",
+          "z3_encoding": "",
+          "tla_template": "liveness"
+        },
+        {
+          "id": "inv_004",
+          "type": "error_contract",
+          "statement": "_improve_context_prompt swallows all LLM call exceptions at line 193 `except Exception as exc`, emitting RuntimeWarning and optional verbose print but never re-raising. Lines 180-192 show context.md is rewritten only on success\u2014but the exception path at line 194 `warnings.warn(...)` prevents extract_context from knowing whether improvement succeeded, failed due to API key, failed due to rate limit, or failed due to prompt syntax. Caller extract_context line 259 receives no signal; if improve=True and improvement silently fails every run, the prompt never evolves despite repeated violations.",
+          "applies_to": [
+            "_improve_context_prompt",
+            "extract_context"
+          ],
+          "formal": "\u2200 llm_error e: _improve_context_prompt catches e \u2227 warns(e) \u2227 \u00acraises(e) \u2227 caller_continues \u2227 context.md unchanged",
+          "derived_from": "except Exception as exc: warnings.warn(...)",
+          "confidence": 0.91,
+          "contract_kind": "error_contract",
+          "z3_encoding": "",
+          "tla_template": "liveness"
+        },
+        {
+          "id": "inv_005",
+          "type": "data_flow",
+          "statement": "_FIX_PATTERN regex at lines 25-28 uses `\\b` word boundaries, matching 'fix' and 'bug' as whole words. Line 52 `if _FIX_PATTERN.search(line):` in _git_log will miss commit messages containing 'bugfix' (no boundary between 'bug' and 'fix'), 'prefixed', 'suffix', or camelCase 'hasBug'. Git commit at 2026-05-21 mentions 'fix(demons):' and 'fix(' \u2014the parenthesis after 'fix' satisfies word boundary, but patterns like 'fixed:' or 'fixes:' (colon is boundary) are matched while 'quickfix' (no boundary) is missed.",
+          "applies_to": [
+            "_FIX_PATTERN",
+            "_git_log"
+          ],
+          "formal": "\u2200 commit c where c.message contains 'bugfix' \u2228 'quickfix' \u2228 'prefixed': _FIX_PATTERN.search(c.message) \u2192 False \u2227 c \u2209 fix_shas",
+          "derived_from": "r\"\\b(fix|fixes|fixed|bug|...)\",",
+          "confidence": 0.87,
+          "contract_kind": "ordering",
+          "z3_encoding": "",
+          "tla_template": "ordering"
+        },
+        {
+          "id": "inv_006",
+          "type": "assumption",
+          "statement": "_git_log line 53 `sha = line.split()[0]` assumes git log --oneline format produces lines with space-separated tokens, taking first token as SHA. If a commit message starts with whitespace or contains no spaces, split()[0] raises IndexError. Line 41 _run's blanket `except Exception: return \"\"` will swallow this, returning empty string\u2014_git_log line 47 sees empty log and returns \"(no git history)\" at line 61, indistinguishable from repository with zero commits.",
+          "applies_to": [
+            "_git_log",
+            "_run"
+          ],
+          "formal": "\u2200 commit_line L where L.startswith(' ') \u2228 ' ' \u2209 L: L.split()[0] raises IndexError \u2227 _run catches \u2192 \"\" \u2227 _git_log returns \"(no git history)\"",
+          "derived_from": "sha = line.split()[0]",
+          "confidence": 0.82,
+          "contract_kind": "error_contract",
+          "z3_encoding": "",
+          "tla_template": "liveness"
+        },
+        {
+          "id": "inv_007",
+          "type": "assumption",
+          "statement": "_git_log truncates each commit diff to 1500 characters at line 70 `diff[:1500]`, then truncates concatenated output to 8000 characters at line 72. For file with 15 fix commits, first 5 diffs consume 7500 chars (5\u00d71500), leaving 500 chars for next 10 diffs. If recent fix commits appear after position 5, their diffs are truncated to ~50 chars each or omitted entirely. LLM receives chronologically skewed history: verbose early fixes, truncated recent fixes. Git commit 2026-05-25 'fix: 3 more Z3-confirmed structural gaps' appears in visible history\u2014if this were commit #10 in fix_shas, its diff would be truncated to ~50 chars, losing the rationale '_improve_context_prompt silently dropped exceptions when verbose=False'.",
+          "applies_to": [
+            "_git_log"
+          ],
+          "formal": "\u2200 fix_sha s where position(s) > 5: char_budget(s) \u2264 (8000 - 7500)/(len(fix_shas) - 5) \u2227 diff(s) severely truncated",
+          "derived_from": "out.append(diff[:1500]); return \"\\n---\\n\".join(out)[:8000]",
+          "confidence": 0.85,
+          "contract_kind": "ordering",
+          "z3_encoding": "",
+          "tla_template": "ordering"
+        },
+        {
+          "id": "inv_008",
+          "type": "assumption",
+          "statement": "_changelog line 86 searches for files [CHANGES.rst, CHANGELOG.rst, CHANGELOG.md, CHANGES.md, HISTORY.rst] in repo_root only. Projects using docs/CHANGELOG.md, .github/CHANGELOG.md, or RELEASE_NOTES.md are invisible. Line 93 `relevant = [ln for ln in lines if stem in ln or _FIX_PATTERN.search(ln)]` assumes file stem (e.g., 'context' from context.py) appears in changelog entries about that file\u2014but changelog lines often use module paths ('pact.context') or feature names ('context extraction'), missing the bare stem match. For context.py, line 93 would miss changelog entry 'feat(context): git history as intent prior' because 'context' appears inside 'feat(context):' but the stem match is case-sensitive exact substring.",
+          "applies_to": [
+            "_changelog"
+          ],
+          "formal": "\u2200 changelog c where c \u2208 [docs/CHANGELOG.md, RELEASE_NOTES.md]: _changelog finds none \u2227 \u2200 entry e where e contains module_path(file) \u2227 stem(file) \u2209 e: e \u2209 relevant",
+          "derived_from": "candidates = [\"CHANGES.rst\", \"CHANGELOG.rst\", \"CHANGELOG.md\", \"CHANGES.md\", \"HISTORY.rst\"]; relevant = [ln for ln in lines if stem in ln or _FIX_PATTERN.search(ln)]",
+          "confidence": 0.79,
+          "contract_kind": "resource_lifecycle",
+          "z3_encoding": "",
+          "tla_template": "resource_lifecycle"
+        },
+        {
+          "id": "inv_009",
+          "type": "assumption",
+          "statement": "_inline_notes line 102 searches for tags [TODO, FIXME, HACK, XXX, BUG, NOTE] with `\\b` word boundaries. Line 106 `if tags.search(line): hits.append(f\"line {i:4d}: {line.strip()}\")` captures entire line containing tag but does not extract multi-line TODO blocks. If source contains 'TODO: refactor' on line 50 followed by indented explanation on lines 51-53, only line 50 is captured. LLM receives 'line 50: # TODO: refactor' with no context about what refactoring entails.",
+          "applies_to": [
+            "_inline_notes"
+          ],
+          "formal": "\u2200 comment c spanning lines [L, L+n] where c.first_line contains tag \u2227 c.continuation_lines \u2209 tag_pattern: hits contains only L \u2227 c.context lost",
+          "derived_from": "if tags.search(line): hits.append(f\"line {i:4d}: {line.strip()}\")",
+          "confidence": 0.81,
+          "contract_kind": "behavioral",
+          "z3_encoding": "",
+          "tla_template": "liveness"
+        },
+        {
+          "id": "inv_010",
+          "type": "data_flow",
+          "statement": "extract_context line 234 embeds git_log into prompt template with `.replace(\"{{git_log}}\", git_log)` after git_log is already truncated by _git_log to 8000 chars. If original git history is 50KB, _git_log returns 8KB sample, losing 42KB. Line 217 shows verbose output 'git: {len(git_log)} chars' reports post-truncation size, not original size\u2014user cannot distinguish between file with 8KB history versus file with 50KB history truncated to 8KB. LLM receives no signal about truncation severity.",
+          "applies_to": [
+            "extract_context",
+            "_git_log"
+          ],
+          "formal": "\u2200 file f where git_history_size(f) > 8000: git_log = truncate(history, 8000) \u2227 len(git_log) reported = 8000 \u2227 original_size(history) unknown",
+          "derived_from": "return \"\\n---\\n\".join(out)[:8000]; print(f\"  git: {len(git_log)} chars\")",
+          "confidence": 0.83,
+          "contract_kind": "ordering",
+          "z3_encoding": "",
+          "tla_template": "ordering"
+        },
+        {
+          "id": "inv_011",
+          "type": "intent_gap",
+          "statement": "Git commit 2026-05-25 'fix: 3 more Z3-confirmed structural gaps \u2014 detectors, sheaf, context' states 'context.py: _improve_context_prompt silently dropped exceptions when verbose=False. Now emits RuntimeWarning regardless of verbosity'. Visible code at line 194 shows `warnings.warn(...)` with `stacklevel=2` is now unconditional, satisfying the 'emits RuntimeWarning regardless' claim. However, commit message claims this is a 'Z3-confirmed structural gap'\u2014implying formal verification detected the silent exception as a violation. No Z3 constraint or formal spec is visible in context.py documenting the verified property 'all exceptions in _improve_context_prompt must warn'. If Z3 proof exists, it lives in external checker.py/z3_engine.py\u2014module cannot self-verify the 'Z3-confirmed' claim.",
+          "applies_to": [
+            "_improve_context_prompt"
+          ],
+          "formal": "commit_claims(Z3_confirmed(exception_handling)) \u2227 \u2200 z3_constraint c: c \u2209 visible_source(context.py) \u2192 claim unverifiable_locally",
+          "derived_from": "z3_refuted: Git commit: 'fix: 3 more Z3-confirmed structural gaps'; line 194: warnings.warn(...) [Z3 proved contract holds \u2014 UNSAT, no counterexample]",
+          "confidence": 0.45999999999999996,
+          "contract_kind": "flag_invariant",
+          "z3_encoding": "import z3\nimport json\n\n# Model the contract: \"emits RuntimeWarning regardless of verbosity\"\n# The function has a try-except block that calls warnings.warn(..., RuntimeWarning)\n# Contract claim: if an exception occurs in the try block, warnings.warn is ALWAYS called\n# (i.e., the warn call is unconditional - not guarded by verbose flag)\n\n# We model the control flow symbolically:\n# - exception_occurs: Bool (did the try block raise?)\n# - verbose: Bool (the verbosity flag)\n# - warning_emitted: Bool (was warnings.warn called?)\n\n# The code shows: warnings.warn is called in the except block unconditionally\n# Contract: exception_occurs=True => warning_emitted=True (regardless of verbose)\n# Negated (to find violations): exception_occurs=True AND warning_emitted=False\n\ns = z3.Solver()\nexception_occurs = z3.Bool('exception_occurs')\nverbose = z3.Bool('verbose')\nwarning_emitted = z3.Bool('warning_emitted')\n\n# Model the function behavior:\n# In the except block, warnings.warn is called unconditionally (line ~194)\n# So: if exception_occurs, then warning_emitted must be True\ns.add(z3.Implies(exception_occurs, warning_emitted))\n\n# Negate the contract to find violations:\n# We want to find a case where an exception occurs but no warning is emitted\ns.add(exception_occurs == True)\ns.add(warning_emitted == False)\n\nr = s.check()\n\nif r == z3.sat:\n    m = s.model()\n    ce = {\n        'exception_occurs': str(m[exception_occurs]),\n        'verbose': str(m.eval(verbose)),\n        'warning_emitted': str(m[warning_emitted])\n    }\n    print(json.dumps({\n        'status': 'sat',\n        'counterexample': ce,\n        'explanation': 'found execution where exception occurs but warning not emitted'\n    }))\nelif r == z3.unsat:\n    print(json.dumps({\n        'status': 'unsat',\n        'counterexample': None,\n        'explanation': 'contract holds \u2014 warnings.warn is always called when exception occurs, regardless of verbose flag'\n    }))\nelse:\n    print(json.dumps({\n        'status': 'unknown',\n        'counterexample': None,\n        'explanation': 'Z3 could not decide'\n    }))\n",
+          "tla_template": "liveness"
+        },
+        {
+          "id": "inv_012",
+          "type": "intent_gap",
+          "statement": "Git commit 2026-05-21 'fix(demons): exorcise all 19 remaining violations' states 'context.py: add check=True so failed git/other commands raise on non-zero exit'. Line 44 shows `check=True` added to subprocess.run, satisfying this claim\u2014but only for the success path where subprocess.run completes. Line 41 `except Exception: return \"\"` still swallows CalledProcessError raised by check=True, making the fix incomplete. Commit message implies check=True enables error detection; actual behavior is check=True raises CalledProcessError, which is immediately caught and converted to empty string, same as before the fix.",
+          "applies_to": [
+            "_run"
+          ],
+          "formal": "commit_claims(check=True enables_error_detection) \u2227 check=True raises CalledProcessError \u2227 except Exception catches CalledProcessError \u2192 return \"\" \u2227 error_detection = False",
+          "derived_from": "z3_confirmed: Git commit: 'add check=True so failed git/other commands raise'; line 44: check=True; line 41: except Exception: return \"\" [Z3 counterexample: {'subprocess_succeeds': 'False', 'subprocess_fails': 'True', 'returns_empty': 'True', 'raises_error': 'False'}]",
+          "confidence": 0.9,
+          "contract_kind": "ordering",
+          "z3_encoding": "import z3\nimport json\n\ns = z3.Solver()\n\n# Model the execution paths:\n# subprocess_succeeds: True if subprocess.run completes without raising\n# subprocess_fails: True if subprocess.run raises CalledProcessError (check=True)\nsubprocess_succeeds = z3.Bool('subprocess_succeeds')\nsubprocess_fails = z3.Bool('subprocess_fails')\n\n# Exactly one path is taken (mutually exclusive)\ns.add(z3.Or(subprocess_succeeds, subprocess_fails))\ns.add(z3.Not(z3.And(subprocess_succeeds, subprocess_fails)))\n\n# Model the return value:\n# returns_empty: True if function returns \"\"\n# raises_error: True if CalledProcessError propagates to caller\nreturns_empty = z3.Bool('returns_empty')\nraises_error = z3.Bool('raises_error')\n\n# Exactly one outcome\ns.add(z3.Or(returns_empty, raises_error))\ns.add(z3.Not(z3.And(returns_empty, raises_error)))\n\n# Encode actual behavior:\n# Success path: subprocess succeeds \u2192 return stdout (not empty string necessarily)\n# Failure path: subprocess raises CalledProcessError \u2192 caught by except \u2192 return \"\"\ns.add(z3.Implies(subprocess_succeeds, z3.Not(returns_empty)))\ns.add(z3.Implies(subprocess_fails, returns_empty))\ns.add(z3.Implies(subprocess_fails, z3.Not(raises_error)))\n\n# Contract claim: \"check=True enables error detection\"\n# Expected behavior: when subprocess fails, error should be detectable (raised or observable)\n# Actual behavior: check=True raises CalledProcessError, but except catches it \u2192 returns \"\"\n# Contract violation: subprocess_fails AND error is NOT raised (swallowed)\n\n# Negate the contract: find case where check=True should enable detection but doesn't\n# i.e., subprocess fails (check=True would raise) but error is not propagated\ns.add(subprocess_fails)\ns.add(z3.Not(raises_error))  # Error is NOT raised to caller\ns.add(returns_empty)  # Instead returns empty string\n\nr = s.check()\n\nif r == z3.sat:\n    m = s.model()\n    counterexample = {\n        \"subprocess_succeeds\": str(m.eval(subprocess_succeeds)),\n        \"subprocess_fails\": str(m.eval(subprocess_fails)),\n        \"returns_empty\": str(m.eval(returns_empty)),\n        \"raises_error\": str(m.eval(raises_error))\n    }\n    print(json.dumps({\n        \"status\": \"sat\",\n        \"counterexample\": counterexample,\n        \"explanation\": \"contract violated: check=True raises CalledProcessError when subprocess fails, but except block catches it and returns empty string, preventing error detection as claimed in commit message\"\n    }))\nelif r == z3.unsat:\n    print(json.dumps({\n        \"status\": \"unsat\",\n        \"counterexample\": None,\n        \"explanation\": \"contract holds \u2014 check=True enables error detection in all cases\"\n    }))\nelse:\n    print(json.dumps({\n        \"status\": \"unknown\",\n        \"counterexample\": None,\n        \"explanation\": \"Z3 could not decide\"\n    }))\n",
+          "tla_template": "ordering"
+        },
+        {
+          "id": "inv_013",
+          "type": "assumption",
+          "statement": "_improve_context_prompt line 153 decides whether to rewrite prompt based on `if not parse_error and (n_violations > 0 or not has_rich_history): return`. This returns early (skipping improvement) when parse succeeds AND (violations found OR history is sparse). Inverse: improvement runs when parse fails OR (parse succeeds AND no violations AND rich history). Line 149 `has_rich_history = git_log_len > 500` hardcodes 500 chars as 'rich'. For a file with 600-char git history and 0 violations, improvement triggers\u2014but 600 chars is ~3 commit messages, barely qualifying as 'rich'. Meanwhile, file with 8000-char history (max from _git_log) and 1 violation skips improvement due to n_violations > 0 check, even if that 1 violation is a false positive and prompt could be improved.",
+          "applies_to": [
+            "_improve_context_prompt"
+          ],
+          "formal": "\u2200 file f where git_log_len(f) = 600 \u2227 n_violations = 0: improvement_triggers \u2227 \u2200 file g where git_log_len(g) = 8000 \u2227 n_violations = 1: improvement_skipped",
+          "derived_from": "has_rich_history = git_log_len > 500; if not parse_error and (n_violations > 0 or not has_rich_history): return",
+          "confidence": 0.78,
+          "contract_kind": "behavioral",
+          "z3_encoding": "",
+          "tla_template": "liveness"
+        },
+        {
+          "id": "inv_014",
+          "type": "data_flow",
+          "statement": "_improve_context_prompt line 173 constructs good_samples as `result.get(\"confirmed_violations\", [])[:3]`, taking first 3 violations. If LLM response contains 10 violations, positions 0-2 are sent to improvement prompt as examples, positions 3-9 are discarded. If violations are ordered by severity (high to low), this is correct; if ordered chronologically or randomly, improvement prompt sees arbitrary sample. Line 181 shows improved prompt is written directly to disk `(_PROMPT_DIR / \"context.md\").write_text(improved, encoding=\"utf-8\")` with no validation\u2014if LLM returns malformed improved_prompt (e.g., empty string, markdown instead of plain text, or prompt requesting harmful output), it overwrites production prompt immediately.",
+          "applies_to": [
+            "_improve_context_prompt"
+          ],
+          "formal": "\u2200 violations V where |V| > 3: good_samples = V[:3] \u2227 V[3:] ignored \u2227 \u2200 improved_prompt p where validate(p) = False: write(context.md, p) \u2227 production_prompt = p",
+          "derived_from": "good_samples = result.get(\"confirmed_violations\", [])[:3]; (_PROMPT_DIR / \"context.md\").write_text(improved, encoding=\"utf-8\")",
+          "confidence": 0.84,
+          "contract_kind": "ordering",
+          "z3_encoding": "",
+          "tla_template": "ordering"
+        }
+      ],
+      "violations": [],
+      "prompt_score": null,
+      "truncation_audit": {
+        "last_complete_unit": "def main(argv=None)",
+        "cutoff_line": "    main()",
+        "visible_definitions": [
+          "_PROMPT_DIR",
+          "_DEFAULT_MODEL",
+          "_SYSTEM",
+          "_FIX_PATTERN",
+          "_run",
+          "_git_log",
+          "_changelog",
+          "_inline_notes",
+          "_parse",
+          "_call",
+          "_improve_context_prompt",
+          "extract_context",
+          "main"
+        ],
+        "docstring_only_names": []
+      }
+    },
+    {
+      "path": "/Users/jonathanhill/src/pact-standalone/tda.py",
+      "understanding": {
+        "purpose": "tda.py computes persistent homology (H0, H1) of a directed call graph by converting it to an undirected simplicial complex with filtration values derived from edge betweenness centrality. `compute_persistence(G, weight_attr='weight')` at line 336 is the sole public API \u2014 returns `PersistenceResult` with `total_persistence_h1` (sum of finite H1 bar lengths) as the primary fragility score, replacing raw \u03b2\u2081 counts in sheaf_summary. Uses gudhi SimplexTree (preferred) for full persistence diagrams or falls back to Euler-characteristic \u03b2\u2081 counting via Union-Find when gudhi unavailable. Filtration design: edge with high betweenness centrality appears early (low filtration value 1/(centrality+\u03b5)) because it carries structural load; triangles inserted at max(3 edge filtration values) per flag complex construction. Essential H1 classes (infinite bars) count toward \u03b2\u2081; finite bars measure cycle robustness.",
+        "design_intent": "**Decision 1:** `_edge_filtration` at line 183 defaults to `1.0 / (edge_betweenness_centrality + \u03b5)` when no custom weights exist (lines 188-199), rejecting the alternative of uniform edge weights. Consequence: high-centrality edges (architectural bottlenecks like dependency injection roots) appear early in filtration, making cycles through them form at low filtration values \u2014 `total_persistence_h1` becomes sensitive to architectural layering violations, not just cycle count. **Decision 2:** `_parse_gudhi_diagram` at line 255 uses `homology_coeff_field=2` (GF(2) arithmetic), rejecting integer coefficients (\u2124). Consequence: torsion in H1 becomes invisible \u2014 if call graph topology has \u2124\u2082-torsion (e.g., Klein bottle structure from mutual recursion), \u03b2\u2081 is undercounted. Chose GF(2) for performance (no modular reduction overhead) at cost of topological completeness.",
+        "key_abstractions": "**PersistencePair** (line 75): birth (float), death (float), dimension (int 0/1/2). Property `persistence` returns death\u2212birth or inf for essential classes. **PersistenceResult** (line 89): pairs (list[PersistencePair]), total_persistence_h1 (float, sum of finite H1 lengths), beta1 (int, count of infinite H1 bars), beta0 (int, connected components), backend (str 'gudhi'/'nx_fallback'). Methods: `h1_pairs()` filters dimension=1, `render()` markdown summary, `to_dict()` JSON-serializable with None for inf values. **_edge_filtration** (line 167): returns dict[tuple,float] mapping undirected edge (min(u,v), max(u,v)) to filtration value; checks weight_attr presence (line 185), else computes betweenness centrality and inverts. **_build_simplex_tree** (line 203): creates gudhi.SimplexTree, maps node labels to integer indices (line 210), inserts vertices at filtration=0 (line 215), edges at computed filtration (line 218), enumerates all 3-cliques via nx.enumerate_all_cliques (line 229), inserts triangles at max of 3 edge filtrations (line 233). **_parse_gudhi_diagram** (line 242): calls st.compute_persistence(homology_coeff_field=2, persistence_dim_max=True) line 255, iterates dimensions 0-1 via persistence_intervals_in_dimension (line 260), sums finite H1 persistence (line 265), counts infinite H1 bars as beta1 (line 266). **_nx_fallback** (line 280): Union-Find on undirected edges (lines 295-303), computes \u03b2\u2081 = max(E\u2212V+\u03b2\u2080, 0) line 307, synthesizes trivial infinite bars (lines 312-316), sets total_persistence_h1=float(beta1) line 318 (no actual persistence available). **compute_persistence** (line 336): entry point, raises ImportError if networkx unavailable (line 347), returns empty result for 0 nodes (line 350), delegates to _nx_fallback if no gudhi (line 356), calls _edge_filtration (line 358), handles edge-free graphs (line 360), builds SimplexTree via _build_simplex_tree (line 369), returns _parse_gudhi_diagram(st) line 370.",
+        "behavioral_contract": "**Guarantee 1:** `compute_persistence` returns PersistenceResult with \u03b2\u2081 \u2265 0 and \u03b2\u2080 \u2265 1 for non-empty graphs (line 268 `beta0 = max(beta0, 1)`; line 307 `beta1 = max(E - V + beta0, 0)`). **Guarantee 2:** PersistenceResult.to_dict replaces inf with None for JSON compatibility (lines 147-155). **Guarantee 3:** _edge_filtration handles parallel directed edges by taking minimum filtration value (line 194 `raw[e] = min(raw.get(e,w), w)`; line 197 same for betweenness path). **Guarantee 4:** PersistencePair.persistence returns math.inf for essential classes via `self.death - self.birth` where death=math.inf (line 83). **Guarantee 5:** compute_persistence raises ImportError if networkx unavailable (line 348); no silent failure. **Limitation:** _nx_fallback produces no actual bars \u2014 synthesizes trivial infinite bars (lines 312-316) so pairs list non-empty but all have birth=0, death=inf; total_persistence_h1 is float(beta1) proxy (line 318), not sum of filtration-derived lengths.",
+        "failure_modes": "**Mode 1:** If gudhi unavailable, fallback to _nx_fallback loses all filtration information \u2014 total_persistence_h1 becomes integer \u03b2\u2081 count (line 318), indistinguishable between graphs with short-lived noise cycles vs. essential robust cycles, violating docstring claim 'weights long-lived cycles heavily'. **Mode 2:** _edge_filtration uses \u03b5=1e-6 at line 199; if betweenness_centrality maliciously returns exactly \u22121e-6, denominator becomes zero \u2192 ZeroDivisionError. **Mode 3:** _build_simplex_tree enumerates all cliques (line 229); for dense call graphs (e.g., K_100), enumerate_all_cliques is O(3^(n/3)), potentially minutes of CPU before persistence starts \u2014 no timeout or early abort. **Mode 4:** PersistenceResult.to_dict at line 150 checks `not math.isinf(p.death)` but not `math.isnan(p.death)` \u2014 if gudhi returns NaN (corrupt filtration), NaN propagates into dict and json.dumps raises ValueError. **Mode 5:** compute_persistence at line 347 raises ImportError when networkx missing, but module imports networkx at line 50 with `except ImportError: _HAS_NX=False` \u2014 import succeeds, function call fails, masking dependency in import-only CI tests.",
+        "assumptions": "**Assumption 1:** _edge_filtration line 199 `val = 1.0 / (centrality + eps)` assumes betweenness_centrality \u2265 0 \u2014 if negative centrality (impossible for standard NetworkX but possible for custom Graph subclass overriding edge_betweenness_centrality), \u03b5 can fail to prevent sign flip. **Assumption 2:** _parse_gudhi_diagram line 255 uses GF(2) coefficients, assuming call-graph topology has no torsion requiring \u2124 \u2014 if mutual recursion creates Klein-bottle structure, \u03b2\u2081 undercounted. **Assumption 3:** _build_simplex_tree line 210 `node_to_idx = {n: i for i, n in enumerate(G.nodes())}` assumes G.nodes() iteration order stable \u2014 if non-deterministic (pre-3.7 dict ordering), node_to_idx mapping changes across runs, breaking reproducibility of SimplexTree integer vertex IDs. **Assumption 4:** compute_persistence line 350 returns beta0=0 for empty graphs, assuming caller interprets 0 components as valid (geometrically, empty space has \u03b2\u2080=0, but some topological conventions use \u03b2\u2080=1 for 'space exists'). **Assumption 5:** _nx_fallback line 307 `beta1 = max(E - V + beta0, 0)` assumes E\u2212V+\u03b2\u2080 can go negative only due to bugs (clamps to 0), not structural property \u2014 masks corrupted graphs with double-counted edges or undercounted nodes.",
+        "resource_obligations": "[none detected in visible source; no database transactions, file I/O, async task spawning, or global state mutation visible. _build_simplex_tree at line 229 calls nx.enumerate_all_cliques which allocates O(3^(n/3)) memory for clique list in worst case, but this is heap allocation, not an external resource requiring cleanup. gudhi.SimplexTree at line 212 allocates C++ objects via pybind11; relies on Python GC for deallocation, no explicit close/free required.]"
+      },
+      "invariants": [
+        {
+          "id": "inv_001",
+          "type": "data_flow",
+          "statement": "_edge_filtration computes filtration_value = 1.0 / (centrality + 1e-6) at line 199; the epsilon constant 1e-6 prevents division by zero for edges with zero betweenness centrality but produces filtration_value = 1000000.0 for isolated edges \u2014 these edges appear extremely late in the filtration, potentially delaying cycle detection. If betweenness_centrality returns exactly -1e-6 (malicious graph adapter), denominator becomes zero and raises ZeroDivisionError.",
+          "applies_to": [
+            "_edge_filtration"
+          ],
+          "formal": "\u2200 edge e: centrality(e) = 0 \u2192 filtration_value(e) = 1000000.0 \u2227 centrality(e) = -\u03b5 \u2192 ZeroDivisionError",
+          "derived_from": "val = 1.0 / (centrality + eps)",
+          "confidence": 0.92,
+          "contract_kind": "behavioral",
+          "z3_encoding": "",
+          "tla_template": "liveness"
+        },
+        {
+          "id": "inv_002",
+          "type": "assumption",
+          "statement": "_build_simplex_tree at line 229 iterates nx.enumerate_all_cliques(undirected) to find all triangles; enumerate_all_cliques has exponential worst-case complexity O(3^(n/3)) for dense graphs. For a complete graph K_100 (4950 edges), this produces ~161,700 3-cliques. If the call graph is densely connected (e.g., utility modules imported by everything), triangle enumeration can consume minutes of CPU and exhaust memory before persistence computation begins.",
+          "applies_to": [
+            "_build_simplex_tree"
+          ],
+          "formal": "\u2200 G: edges(G) = O(n\u00b2) \u2192 clique_enumeration_time = O(3^(n/3))",
+          "derived_from": "for clique in nx.enumerate_all_cliques(undirected):",
+          "confidence": 0.88,
+          "contract_kind": "ordering",
+          "z3_encoding": "",
+          "tla_template": "ordering"
+        },
+        {
+          "id": "inv_003",
+          "type": "data_flow",
+          "statement": "_parse_gudhi_diagram at line 255 calls st.compute_persistence(homology_coeff_field=2, persistence_dim_max=True); homology_coeff_field=2 uses GF(2) arithmetic (mod-2 coefficients). In GF(2), every cycle has order 2, meaning 2\u00b7c = 0 for any cycle c. This makes all torsion invisible: if the call graph has a Klein bottle topology (requiring \u2124 coefficients to detect 2-torsion in H1), the result will report \u03b2\u2081 = 1 instead of the true \u03b2\u2081 = 2 with \u2124\u2082 torsion. Module docstring does not document this limitation.",
+          "applies_to": [
+            "_parse_gudhi_diagram"
+          ],
+          "formal": "\u2200 topology T: torsion(H1(T)) \u2260 0 \u2192 compute_persistence(coeff=2) loses torsion information",
+          "derived_from": "st.compute_persistence(homology_coeff_field=2, persistence_dim_max=True)",
+          "confidence": 0.85,
+          "contract_kind": "ordering",
+          "z3_encoding": "",
+          "tla_template": "ordering"
+        },
+        {
+          "id": "inv_004",
+          "type": "assumption",
+          "statement": "_nx_fallback at line 316 computes beta1 = max(E - V + beta0, 0); the max(\u00b7, 0) clamp assumes E - V + \u03b2\u2080 can go negative (geometrically impossible for valid graphs). This guards against implementation bugs but masks corrupt graph structures: if G.edges() double-counts edges or G.nodes() undercounts nodes due to hash collisions, the clamp silently returns \u03b2\u2081=0 instead of raising an error, causing compute_persistence to report 'robust topology' for a corrupted graph.",
+          "applies_to": [
+            "_nx_fallback"
+          ],
+          "formal": "\u2200 G: (E - V + \u03b2\u2080 < 0) \u2192 data_corruption \u2227 result.beta1 = 0 (silent)",
+          "derived_from": "beta1 = max(E - V + beta0, 0)",
+          "confidence": 0.9,
+          "contract_kind": "ordering",
+          "z3_encoding": "",
+          "tla_template": "ordering"
+        },
+        {
+          "id": "inv_005",
+          "type": "intent_gap",
+          "statement": "Module docstring line 37 states 'total_persistence_h1 \u2014 the sum of finite H1 persistences \u2014 replaces the raw \u03b2\u2081 count used previously in sheaf_summary. It weights long-lived cycles heavily (structural fragility) and discounts transient noise cycles.' However, _nx_fallback at line 318 sets total_persistence_h1 = float(beta1) when gudhi unavailable, making it identical to the raw \u03b2\u2081 count. The docstring claim 'weights long-lived cycles heavily' is false for the fallback path \u2014 a graph with 3 short-lived cycles (persistence 0.01 each) and a graph with 3 essential cycles (persistence \u221e) both report total_persistence_h1=3.0 under fallback, indistinguishable despite vastly different fragility.",
+          "applies_to": [
+            "_nx_fallback",
+            "compute_persistence"
+          ],
+          "formal": "backend='nx_fallback' \u2192 total_persistence_h1 = \u03b2\u2081 \u2227 \u00ac(long_lived_cycles_weighted_heavily)",
+          "derived_from": "z3_confirmed: total_persistence_h1=float(beta1),  # proxy: no filtration available [Z3 counterexample: {'beta1_A': 3, 'persistence_sum_A': 0.03, 'total_persistence_h1_A': 3.0, 'beta1_B': 3, 'persistence_sum_B': 1001.0, 'tot]",
+          "confidence": 0.94,
+          "contract_kind": "behavioral",
+          "z3_encoding": "import z3\nimport json\n\n# Model the contract claim: the fallback must distinguish graphs by cycle persistence,\n# not just count. We encode two scenarios:\n# Scenario A: 3 short-lived cycles (low persistence each)\n# Scenario B: 3 essential cycles (infinite persistence)\n# Under the true contract, total_persistence_h1 should differ vastly.\n# Under _nx_fallback, both return float(beta1) = 3.0.\n\ns = z3.Solver()\n\n# Graph A: 3 cycles, low persistence (e.g., 0.01 each)\nbeta1_A = z3.Int('beta1_A')\npersistence_sum_A = z3.Real('persistence_sum_A')\ntotal_persistence_h1_A = z3.Real('total_persistence_h1_A')\n\n# Graph B: 3 cycles, infinite persistence (essential cycles)\nbeta1_B = z3.Int('beta1_B')\npersistence_sum_B = z3.Real('persistence_sum_B')\ntotal_persistence_h1_B = z3.Real('total_persistence_h1_B')\n\n# Both graphs have 3 cycles\ns.add(beta1_A == 3)\ns.add(beta1_B == 3)\n\n# Graph A: 3 short-lived cycles, persistence 0.01 each \u2192 sum = 0.03\ns.add(persistence_sum_A == 0.03)\n\n# Graph B: 3 essential cycles, infinite persistence \u2192 sum is unbounded/very large\n# Model as persistence_sum_B >> persistence_sum_A\ns.add(persistence_sum_B > 1000.0)  # vastly larger\n\n# The fallback implementation sets total_persistence_h1 = float(beta1)\n# So both return the same value:\ns.add(total_persistence_h1_A == z3.ToReal(beta1_A))\ns.add(total_persistence_h1_B == z3.ToReal(beta1_B))\n\n# Contract claim: \"weights long-lived cycles heavily\" implies\n# total_persistence_h1 should reflect persistence_sum, not just count.\n# If the contract held, we'd expect:\n#   total_persistence_h1_B >> total_persistence_h1_A\n# But under fallback, both equal 3.0, so they are indistinguishable.\n\n# Negated contract (find violation): \n# The fallback makes total_persistence_h1 identical despite vastly different persistence\ns.add(total_persistence_h1_A == total_persistence_h1_B)\n\n# Additionally, verify that persistence differs vastly\ns.add(persistence_sum_B > 10 * persistence_sum_A)\n\n# This should be SAT: we can find graphs with different fragility but same total_persistence_h1\nr = s.check()\n\nif r == z3.sat:\n    m = s.model()\n    ce = {\n        \"beta1_A\": m[beta1_A].as_long(),\n        \"persistence_sum_A\": float(m[persistence_sum_A].as_decimal(6).rstrip('?')),\n        \"total_persistence_h1_A\": float(m[total_persistence_h1_A].as_decimal(6).rstrip('?')),\n        \"beta1_B\": m[beta1_B].as_long(),\n        \"persistence_sum_B\": float(m[persistence_sum_B].as_decimal(6).rstrip('?')),\n        \"total_persistence_h1_B\": float(m[total_persistence_h1_B].as_decimal(6).rstrip('?'))\n    }\n    print(json.dumps({\n        \"status\": \"sat\",\n        \"counterexample\": ce,\n        \"explanation\": \"contract violated: two graphs with vastly different cycle persistence (0.03 vs 1000+) both report total_persistence_h1=3.0 under fallback, indistinguishable despite different structural fragility\"\n    }))\nelif r == z3.unsat:\n    print(json.dumps({\n        \"status\": \"unsat\",\n        \"counterexample\": None,\n        \"explanation\": \"contract holds \u2014 fallback correctly weights long-lived cycles\"\n    }))\nelse:\n    print(json.dumps({\n        \"status\": \"unknown\",\n        \"counterexample\": None,\n        \"explanation\": \"Z3 could not decide\"\n    }))\n",
+          "tla_template": "liveness"
+        },
+        {
+          "id": "inv_006",
+          "type": "error_contract",
+          "statement": "compute_persistence at line 347 raises ImportError('networkx is required for compute_persistence') if _HAS_NX is False; however, the module imports nx at line 50 with except ImportError that sets _HAS_NX=False, meaning the import block already caught the exception. If a caller imports tda.py in an environment without networkx, the import succeeds (module loads) but any call to compute_persistence fails with ImportError. The deferred error makes tda.py appear importable in CI tests that only check 'import tda' without calling functions, masking the dependency.",
+          "applies_to": [
+            "compute_persistence"
+          ],
+          "formal": "\u2200 env: networkx \u2209 env \u2192 import_tda_succeeds \u2227 compute_persistence_raises_ImportError",
+          "derived_from": "if not _HAS_NX:\n        raise ImportError(\"networkx is required for compute_persistence\")",
+          "confidence": 0.91,
+          "contract_kind": "error_contract",
+          "z3_encoding": "",
+          "tla_template": "liveness"
+        },
+        {
+          "id": "inv_007",
+          "type": "assumption",
+          "statement": "PersistenceResult.to_dict at line 147 serializes death/persistence as None when math.isinf, enabling JSON output. However, line 150 checks 'if not math.isinf(p.death)' \u2014 for NaN deaths (possible if gudhi returns corrupted data), math.isinf(NaN)=False so NaN propagates into the JSON as a numeric value. JSON.parse in JavaScript converts NaN literals to null, but Python json.dumps raises ValueError: Out of range float values are not JSON compliant. If gudhi.SimplexTree produces a NaN birth/death (e.g., from filtration_value=inf/inf), to_dict crashes during json.dumps.",
+          "applies_to": [
+            "PersistenceResult.to_dict"
+          ],
+          "formal": "\u2200 p: math.isnan(p.death) \u2192 math.isinf(p.death)=False \u2192 json.dumps raises ValueError",
+          "derived_from": "\"death\": p.death if not math.isinf(p.death) else None,",
+          "confidence": 0.78,
+          "contract_kind": "error_contract",
+          "z3_encoding": "",
+          "tla_template": "liveness"
+        }
+      ],
+      "violations": [
+        {
+          "invariant_id": "",
+          "file": "/Users/jonathanhill/src/pact-standalone/tda.py",
+          "line": 0,
+          "evidence": "",
+          "severity": "medium",
+          "explanation": ""
+        },
+        {
+          "invariant_id": "",
+          "file": "/Users/jonathanhill/src/pact-standalone/tda.py",
+          "line": 0,
+          "evidence": "",
+          "severity": "medium",
+          "explanation": ""
+        },
+        {
+          "invariant_id": "",
+          "file": "/Users/jonathanhill/src/pact-standalone/tda.py",
+          "line": 0,
+          "evidence": "",
+          "severity": "medium",
+          "explanation": ""
+        }
+      ],
+      "prompt_score": null,
+      "truncation_audit": {
+        "last_complete_unit": "def compute_persistence(G: \"nx.DiGraph\", weight_attr: str = \"weight\") -> PersistenceResult:",
+        "cutoff_line": "    )",
+        "visible_definitions": [
+          "PersistencePair",
+          "PersistencePair.dimension",
+          "PersistencePair.birth",
+          "PersistencePair.death",
+          "PersistencePair.persistence",
+          "PersistenceResult",
+          "PersistenceResult.pairs",
+          "PersistenceResult.total_persistence_h1",
+          "PersistenceResult.beta1",
+          "PersistenceResult.beta0",
+          "PersistenceResult.backend",
+          "PersistenceResult.h1_pairs",
+          "PersistenceResult.render",
+          "PersistenceResult.to_dict",
+          "_edge_filtration",
+          "_build_simplex_tree",
+          "_parse_gudhi_diagram",
+          "_nx_fallback",
+          "compute_persistence"
+        ],
+        "docstring_only_names": []
+      }
+    }
+  ]
+}
