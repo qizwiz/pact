@@ -161,25 +161,42 @@ class IntentCoverage:
     adrs: list[tuple[str, str]] = field(default_factory=list)  # (ref, title)
     issues: list[tuple[int, str]] = field(default_factory=list)  # (number, title)
     prs: list[tuple[int, str]] = field(default_factory=list)  # (number, title)
+    # L1.5: test function descriptions extracted by _extract_test_intent
+    test_signals: list[str] = field(default_factory=list)
+
+    @property
+    def effective_level(self) -> float:
+        """Return 1.5 when test coverage exists but no issue/PR/ADR coverage."""
+        if self.level >= 2:
+            return float(self.level)
+        if self.test_signals and self.level < 2:
+            return 1.5
+        return float(self.level)
 
     def label(self) -> str:
         if self.level == 3:
             return "ADR-backed"
         if self.level == 2:
             return "issue/PR-referenced"
+        if self.test_signals and self.level < 2:
+            return "test-covered"
         if self.level == 1:
             return "commit-body-only"
         return "inferred"
 
     def render(self) -> str:
-        lines: list[str] = [f"**Intent coverage: {self.label()} (L{self.level})**"]
+        eff = self.effective_level
+        level_str = "1.5" if eff == 1.5 else str(int(eff))
+        lines: list[str] = [f"**Intent coverage: {self.label()} (L{level_str})**"]
         for ref, title in self.adrs[:4]:
             lines.append(f"  ADR: {title} ({ref.split(':')[0]})")
         for num, title in self.issues[:4]:
             lines.append(f"  Issue #{num}: {title}")
         for num, title in self.prs[:3]:
             lines.append(f"  PR #{num}: {title}")
-        if self.level == 0:
+        for desc in self.test_signals[:8]:
+            lines.append(f"  test: {desc}")
+        if self.level == 0 and not self.test_signals:
             lines.append(
                 "  No stated intent found — invariants are inferred from code structure only."
             )
@@ -282,6 +299,7 @@ class IntentContext:
     file_commits: dict[str, list[CommitEntry]]  # file → commits touching it
     github: Optional[GithubContext] = None
     tornhill: Optional[TornhillMetrics] = None  # hotspots, coupling, silos
+    root: Optional[Path] = None  # project root for test-file discovery (L1.5)
 
 
 # ---------------------------------------------------------------------------
@@ -337,6 +355,7 @@ def gather(root: Path, max_commits: int = 400, github: bool = True) -> IntentCon
         file_commits=file_commits,
         github=gh_ctx,
         tornhill=tornhill,
+        root=root,
     )
 
 
@@ -502,7 +521,7 @@ def render_file_context(
 
     # --- Structural intent coverage (graph-derived, works without ADRs) ---
     if ctx.github:
-        coverage = get_file_intent_coverage(ctx.github, file_path)
+        coverage = get_file_intent_coverage(ctx.github, file_path, root=ctx.root)
         # Upgrade to L1 if commit bodies exist
         if coverage.level == 0 and churn > 0:
             coverage.level = 1
@@ -984,11 +1003,17 @@ def build_intent_graph(
     return G
 
 
-def get_file_intent_coverage(ctx: GithubContext, file_path: str) -> IntentCoverage:
-    """
-    Return the structural intent coverage for a file.
+def get_file_intent_coverage(
+    ctx: GithubContext,
+    file_path: str,
+    root: Optional[Path] = None,
+) -> IntentCoverage:
+    """Return the structural intent coverage for a file.
+
     Uses the NetworkX intent graph when available; falls back to ADR lookup only.
     Works for any project — ADRs are just one source.
+
+    When *root* is provided, also scans for test files to add L1.5 coverage signals.
     """
     # --- ADR coverage (L3) ---
     adrs = get_file_adr_coverage(ctx, file_path)
@@ -1040,7 +1065,30 @@ def get_file_intent_coverage(ctx: GithubContext, file_path: str) -> IntentCovera
     else:
         level = 0  # caller sets L1 if commit bodies exist (enrich knows churn)
 
-    return IntentCoverage(level=level, adrs=adrs, issues=issues_found, prs=prs_found)
+    # --- L1.5: test-name intent signals ---
+    test_sigs: list[str] = []
+    if root is not None and level < 2:
+        try:
+            from .intent import (
+                _extract_test_intent,
+                _find_test_files,
+                _match_tests_for_module,
+            )
+
+            test_files = _find_test_files(root)
+            all_signals = _extract_test_intent(test_files)
+            matched = _match_tests_for_module(Path(file_path), all_signals)
+            test_sigs = [s["description"] for s in matched]
+        except Exception:
+            pass
+
+    return IntentCoverage(
+        level=level,
+        adrs=adrs,
+        issues=issues_found,
+        prs=prs_found,
+        test_signals=test_sigs,
+    )
 
 
 def _build_adr_coverage(

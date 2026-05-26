@@ -573,6 +573,11 @@ class InterProcViolation:
     line: int
     violation_type: str
     propagation_depth: int  # 0 = direct, 1+ = transitive
+    taint_flows: list[dict] = None  # variable-level flows from defuse, if available
+
+    def __post_init__(self):
+        if self.taint_flows is None:
+            self.taint_flows = []
 
 
 def analyze_codebase(root: Path, verbose: bool = False) -> list[InterProcViolation]:
@@ -610,6 +615,33 @@ def analyze_codebase(root: Path, verbose: bool = False) -> list[InterProcViolati
 
     z3_viols = _interproc_z3(all_facts)
 
+    # Build per-file defuse graphs lazily for variable-level taint enrichment.
+    # Guarded by try/except so missing beniget never breaks the analysis.
+    _defuse_cache: dict[str, object] = {}
+
+    def _get_defuse(file_path: str) -> object:
+        """Return a DefUseGraph for file_path, cached per file."""
+        if file_path not in _defuse_cache:
+            try:
+                from pact.defuse import DefUseGraph
+
+                source = Path(file_path).read_text(encoding="utf-8", errors="replace")
+                _defuse_cache[file_path] = DefUseGraph(source, filename=file_path)
+            except Exception:  # noqa: BLE001
+                _defuse_cache[file_path] = None
+        return _defuse_cache[file_path]
+
+    _SENSITIVE_NAMES = ["api_key", "token", "secret", "password", "key"]
+
+    def _taint_flows_for(file_path: str) -> list[dict]:
+        dug = _get_defuse(file_path)
+        if dug is None:
+            return []
+        try:
+            return [tf.to_dict() for tf in dug.taint_flows(_SENSITIVE_NAMES)]
+        except Exception:  # noqa: BLE001
+            return []
+
     results: list[InterProcViolation] = []
     for fid in z3_viols.get("json", []):
         f = fact_by_id.get(fid)
@@ -638,6 +670,24 @@ def analyze_codebase(root: Path, verbose: bool = False) -> list[InterProcViolati
                     line=f.line,
                     violation_type="subprocess_unchecked_transitive",
                     propagation_depth=depth,
+                )
+            )
+
+    for fid in z3_viols.get("api_key", []):
+        f = fact_by_id.get(fid)
+        if f and f.func_name != "<module>":
+            direct_api = {g.func_id for g in all_facts if g.api_key_unchecked}
+            depth = 0 if fid in direct_api else 1
+            flows = _taint_flows_for(f.file)
+            results.append(
+                InterProcViolation(
+                    func_id=fid,
+                    file=f.file,
+                    func_name=f.func_name,
+                    line=f.line,
+                    violation_type="api_key_unchecked_transitive",
+                    propagation_depth=depth,
+                    taint_flows=flows,
                 )
             )
 
