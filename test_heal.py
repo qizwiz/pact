@@ -3,8 +3,6 @@
 import json
 from pathlib import Path
 
-import pytest
-
 from .heal import HealResult, _autodetect_test_cmd, _func_body_at_line, heal_project
 
 
@@ -97,7 +95,7 @@ class TestOracleBaselineSanityCheck:
 
 class TestFuncBodyAtLine:
     def _lines(self, source: str) -> list[str]:
-        return [l + "\n" for l in source.splitlines()]
+        return [ln + "\n" for ln in source.splitlines()]
 
     def test_returns_enclosing_function(self):
         src = "def foo():\n    x = 1\n    return x\n\ndef bar():\n    y = 2\n"

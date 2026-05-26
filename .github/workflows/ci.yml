@@ -18,7 +18,7 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - name: Install dependencies
-        run: pip install z3-solver hypothesis pytest networkx requests black ruff
+        run: pip install z3-solver hypothesis pytest networkx requests black ruff anthropic pydriller
       - name: Run test suite
         run: PYTHONPATH=. pytest . -q --ignore=go --ignore=test_go_checker.py --tb=short
       - name: pact self-analysis (dogfood)
