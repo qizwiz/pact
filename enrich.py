@@ -336,21 +336,8 @@ def mine_tornhill(
 
 
 def _is_git_root(root: Path) -> bool:
-    """Return True only if root itself is inside a git repo that considers root its worktree."""
-    try:
-        result = subprocess.run(
-            ["git", "rev-parse", "--show-toplevel"],
-            cwd=root,
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-        if result.returncode != 0:
-            return False
-        toplevel = Path(result.stdout.strip()).resolve()
-        return toplevel == root.resolve() or root.resolve().is_relative_to(toplevel)
-    except Exception:
-        return False
+    """Return True only if root has its own .git directory (is a project root, not a subdir of an unrelated repo)."""
+    return (root / ".git").is_dir()
 
 
 def gather(root: Path, max_commits: int = 400, github: bool = True) -> IntentContext:
