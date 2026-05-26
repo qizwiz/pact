@@ -773,7 +773,8 @@ def _mine_pydriller(
     all_commits_ordered: list[object] = []  # store for SZZ pass
 
     try:
-        _commits_iter = _PyDrillerRepo(str(root), num_workers=4).traverse_commits()
+        _repo = _PyDrillerRepo(str(root), num_workers=4)
+        _commits_iter = list(_repo.traverse_commits())
     except Exception:
         # Not a git repository (e.g. installed package directory) — return empty metrics.
         return TornhillMetrics(hotspots=[], temporal_coupling=[], knowledge_silos=[])
