@@ -1205,21 +1205,72 @@ def sheaf_summary(path: str, *, call_graph: object = None) -> dict:
     # = 0: cyclomatic complexity perfectly accounts for all guard violations
     max_tda_beta1 = max((v["beta1"] for v in tda_scores.values()), default=0)
 
-    # guard_deficit: the meaningful call-graph topological gap when available
-    # (h1_sem - tda_beta1_max); falls back to h1_sem when no call graph / pact_tda.
+    # Persistent homology via tda.compute_persistence — richer fragility score.
+    # total_persistence_h1 weights long-lived cycles heavily and discounts noise.
+    # Falls back to float(beta1) when gudhi is unavailable (backward-compatible).
+    persistence_result: dict = {}
+    if call_graph is not None:
+        try:
+            import networkx as _nx
+            from .tda import compute_persistence as _compute_persistence
+
+            # Build a networkx DiGraph from the call_graph object
+            # call_graph is a graphify CallGraph with _out_edges / _func_index
+            _cg_nodes = list(getattr(call_graph, "_func_index", {}).values())
+            _cg_edges = [
+                (src, tgt)
+                for src, tgts in getattr(call_graph, "_out_edges", {}).items()
+                for tgt in tgts
+            ]
+            if _cg_nodes or _cg_edges:
+                _nx_graph = _nx.DiGraph()
+                _nx_graph.add_nodes_from(_cg_nodes)
+                _nx_graph.add_edges_from(_cg_edges)
+                _pr = _compute_persistence(_nx_graph)
+                persistence_result = _pr.to_dict()
+        except Exception:
+            pass
+
+    # total_persistence_h1: primary fragility score (replaces raw β₁ count).
+    # If persistence computation succeeded, use it; otherwise fall back to β₁.
+    total_persistence_h1: float = persistence_result.get(
+        "total_persistence_h1", float(max_tda_beta1)
+    )
+
+    # guard_deficit: the meaningful call-graph topological gap when available.
+    # Now uses total_persistence_h1 (persistence-weighted) rather than raw β₁.
     # The site-graph β₁ is always 0 (the site graph is a DAG), so using
     # h1_sem - h1_topo would just equal h1_sem and never surface topology.
-    guard_deficit = h1_sem - max_tda_beta1
+    guard_deficit = h1_sem - total_persistence_h1
 
-    return {
+    # Sheaf Laplacian spectral gap — continuous fragility score via Fiedler value
+    spectral: dict = {}
+    if call_graph is not None:
+        try:
+            from .reduce import compute_spectral_gap as _csg
+
+            sr = _csg(call_graph)
+            if sr is not None:
+                spectral = sr.to_dict()
+        except Exception:
+            pass
+
+    result: dict = {
         "h1_semantic": h1_sem,
         "h1_topological": h1_topo,  # always 0 — site graph is a DAG
         "guard_deficit": guard_deficit,
         "guard_deficit_callgraph": guard_deficit,  # alias — same source
-        "tda_beta1_max": max_tda_beta1,
+        "tda_beta1_max": max_tda_beta1,  # backward-compat: raw β₁ count
+        "total_persistence": total_persistence_h1,  # richer fragility score
         "tda_scores": tda_scores,
+        "persistence": persistence_result,  # full persistence diagram dict
         "n_error_sites": n_error,
         "n_violations": n_error - n_guarded,
         "n_guarded": n_guarded,
         "using_z3": _HAS_Z3,
     }
+    if spectral:
+        result["spectral_gap"] = spectral.get("spectral_gap")
+        result["fragility_label"] = spectral.get("fragility_label")
+        result["spectral_detail"] = spectral
+    return result

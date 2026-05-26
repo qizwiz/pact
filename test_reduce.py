@@ -14,6 +14,7 @@ from .reduce import (
     apply_full_reduction,
     compute_blast_radii,
     compute_module_metrics,
+    compute_spectral_gap,
     contract_sccs,
     eliminate_dead,
     find_bridge_violations,
@@ -22,6 +23,7 @@ from .reduce import (
     find_passthroughs,
     find_sccs,
     ModuleMetrics,
+    SpectralResult,
     _build_digraph,
     _func_for_violation,
 )
@@ -34,6 +36,13 @@ try:
     _HAS_NX = True
 except ImportError:
     _HAS_NX = False
+
+try:
+    import scipy  # noqa: F401
+
+    _HAS_SCIPY = True
+except ImportError:
+    _HAS_SCIPY = False
 
 pytestmark = pytest.mark.skipif(not _HAS_NX, reason="networkx not installed")
 
@@ -1109,3 +1118,168 @@ class TestModuleMetrics:
         results = compute_module_metrics(tmp_path)
         distances = [m.distance for m in results]
         assert distances == sorted(distances, reverse=True)
+
+
+# ---------------------------------------------------------------------------
+# Sheaf Laplacian spectral gap
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.skipif(not _HAS_SCIPY, reason="scipy not installed")
+class TestSpectralGap:
+    """Tests for compute_spectral_gap and SpectralResult."""
+
+    def _K4(self):
+        """Complete graph K4 — maximally well-connected, robust."""
+        import networkx as nx
+
+        return nx.complete_graph(4)
+
+    def _P5(self):
+        """Path graph P5 — chain A-B-C-D-E, fragile (one bridge removal disconnects)."""
+        import networkx as nx
+
+        return nx.path_graph(5)
+
+    def _disconnected(self):
+        """Two disjoint edges: {0-1} and {2-3} — two components."""
+        import networkx as nx
+
+        G = nx.Graph()
+        G.add_edges_from([(0, 1), (2, 3)])
+        return G
+
+    # ------------------------------------------------------------------
+    # Robust graph (K4)
+    # ------------------------------------------------------------------
+
+    def test_complete_graph_is_robust(self):
+        """K4 has a high Fiedler value and is labelled 'robust'."""
+        sr = compute_spectral_gap(self._K4())
+        assert sr is not None
+        assert sr.fragility_label == "robust"
+        assert sr.fiedler_value >= 0.30
+
+    def test_complete_graph_single_component(self):
+        sr = compute_spectral_gap(self._K4())
+        assert sr is not None
+        assert sr.n_components == 1
+
+    # ------------------------------------------------------------------
+    # Fragile graph (path P5)
+    # ------------------------------------------------------------------
+
+    def test_path_graph_is_fragile_or_moderate(self):
+        """P5 has a low Fiedler value — fragile or moderate (not robust)."""
+        sr = compute_spectral_gap(self._P5())
+        assert sr is not None
+        assert sr.fragility_label in ("fragile", "moderate")
+        assert sr.fiedler_value < 0.30
+
+    def test_path_graph_fiedler_less_than_complete(self):
+        """P5 must have strictly lower Fiedler value than K4."""
+        sr_path = compute_spectral_gap(self._P5())
+        sr_k4 = compute_spectral_gap(self._K4())
+        assert sr_path is not None and sr_k4 is not None
+        assert sr_path.fiedler_value < sr_k4.fiedler_value
+
+    # ------------------------------------------------------------------
+    # Disconnected graph
+    # ------------------------------------------------------------------
+
+    def test_disconnected_graph_label(self):
+        """A graph with 2 components is labelled 'disconnected'."""
+        sr = compute_spectral_gap(self._disconnected())
+        assert sr is not None
+        assert sr.fragility_label == "disconnected"
+        assert sr.n_components > 1
+
+    # ------------------------------------------------------------------
+    # Single-node / tiny-graph safe fallback
+    # ------------------------------------------------------------------
+
+    def test_single_node_returns_robust_fallback(self):
+        """A single-node graph (< 3 nodes) returns the safe fallback."""
+        import networkx as nx
+
+        G = nx.Graph()
+        G.add_node(0)
+        sr = compute_spectral_gap(G)
+        assert sr is not None
+        assert sr.fiedler_value == 1.0
+        assert sr.spectral_gap == 1.0
+        assert sr.fragility_label == "robust"
+
+    def test_two_node_graph_returns_robust_fallback(self):
+        """Two-node graph (< 3 nodes) returns the safe fallback."""
+        import networkx as nx
+
+        G = nx.Graph()
+        G.add_edge(0, 1)
+        sr = compute_spectral_gap(G)
+        assert sr is not None
+        assert sr.fiedler_value == 1.0
+
+    # ------------------------------------------------------------------
+    # SpectralResult.to_dict()
+    # ------------------------------------------------------------------
+
+    def test_to_dict_has_required_keys(self):
+        sr = compute_spectral_gap(self._K4())
+        assert sr is not None
+        d = sr.to_dict()
+        assert "fiedler_value" in d
+        assert "spectral_gap" in d
+        assert "fragility_label" in d
+        assert "n_components" in d
+
+    def test_to_dict_values_match_fields(self):
+        sr = compute_spectral_gap(self._K4())
+        assert sr is not None
+        d = sr.to_dict()
+        assert d["fiedler_value"] == pytest.approx(sr.fiedler_value, rel=1e-4)
+        assert d["spectral_gap"] == pytest.approx(sr.spectral_gap, rel=1e-4)
+        assert d["fragility_label"] == sr.fragility_label
+        assert d["n_components"] == sr.n_components
+
+    # ------------------------------------------------------------------
+    # SpectralResult.render()
+    # ------------------------------------------------------------------
+
+    def test_render_contains_label(self):
+        """render() output must include the fragility label."""
+        sr = compute_spectral_gap(self._K4())
+        assert sr is not None
+        rendered = sr.render()
+        assert sr.fragility_label in rendered
+
+    def test_render_contains_fiedler(self):
+        """render() output must include the numeric Fiedler value."""
+        sr = compute_spectral_gap(self._K4())
+        assert sr is not None
+        rendered = sr.render()
+        # The value should appear rounded to 4 decimal places
+        assert f"{sr.fiedler_value:.4f}" in rendered
+
+    # ------------------------------------------------------------------
+    # DiGraph input (pact's native graph type)
+    # ------------------------------------------------------------------
+
+    def test_digraph_accepted(self):
+        """compute_spectral_gap must accept nx.DiGraph (pact's call graph type)."""
+        import networkx as nx
+
+        G = nx.DiGraph()
+        G.add_edges_from([("A", "B"), ("B", "C"), ("C", "A"), ("A", "C")])
+        sr = compute_spectral_gap(G)
+        assert sr is not None
+        assert isinstance(sr, SpectralResult)
+
+    # ------------------------------------------------------------------
+    # Graceful degradation: None input
+    # ------------------------------------------------------------------
+
+    def test_none_graph_returns_none(self):
+        """Non-graph input returns None gracefully."""
+        sr = compute_spectral_gap(None)
+        assert sr is None
