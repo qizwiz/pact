@@ -28,6 +28,10 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Optional
 
+from .enrich import IntentContext as _IntentContext
+from .enrich import gather as _enrich_gather
+from .enrich import render_file_context as _enrich_file_ctx
+from .enrich import render_project_context as _enrich_project_ctx
 from .llm import resolve_model as _resolve_model
 
 # ---------------------------------------------------------------------------
@@ -421,17 +425,22 @@ def _triage(
     key: str,
     verbose: bool,
     improve: bool = False,
+    enrich_ctx: Optional[_IntentContext] = None,
 ) -> tuple[str, list[str]]:
     """Return (project_essence, ordered_key_files)."""
     if verbose:
         print("[intent] step 1: triage — identifying key files...")
+
+    historical_context = (
+        _enrich_project_ctx(enrich_ctx) if enrich_ctx else _collect_readme(root)
+    )
 
     template = _load_prompt("triage")
     prompt = _render(
         template,
         project_name=root.name,
         file_listing=_file_listing(root),
-        readme_excerpt=_collect_readme(root),
+        readme_excerpt=historical_context,
     )
 
     raw = _call(prompt, model, key, max_tokens=8192)
@@ -739,6 +748,7 @@ def _understand_module(
     key: str,
     verbose: bool,
     graphify_rationale: str = "",
+    enrich_ctx: Optional[_IntentContext] = None,
 ) -> ModuleIntent:
     raw_bytes = path.read_bytes()
     full_source = raw_bytes.decode("utf-8", errors="replace")
@@ -769,6 +779,10 @@ def _understand_module(
 
     # Intent signals always derived from full source, not sig map
     git_log = _extract_git_log(path)
+    if enrich_ctx:
+        enriched = _enrich_file_ctx(enrich_ctx, str(path))
+        if enriched:
+            git_log = enriched + "\n\n---\n\n" + git_log
     intent_signals = _extract_intent_signals(full_source)
 
     template = _load_prompt("understand")
@@ -1383,13 +1397,14 @@ def extract_file_intent(
     improve: bool = False,
     verbose: bool = False,
     graphify_rationale: str = "",
+    enrich_ctx: Optional[_IntentContext] = None,
 ) -> ModuleIntent:
     """Extract world model + invariants + violations from one Python file."""
     key = _get_key(api_key)
     source, _ = _read_truncated(path)
 
     module = _understand_module(
-        path, project_essence, model, key, verbose, graphify_rationale
+        path, project_essence, model, key, verbose, graphify_rationale, enrich_ctx
     )
 
     if improve:
@@ -1594,6 +1609,16 @@ def extract_project_intent(
 
     key = _get_key(api_key)
 
+    # Gather stated intent before any LLM call: docs + git history with bodies
+    if verbose:
+        print("[intent] gathering stated intent (docs, git history)...")
+    enrich_ctx = _enrich_gather(root)
+    if verbose:
+        ndocs = len(enrich_ctx.project_docs)
+        ncommits = len(enrich_ctx.commit_log)
+        nfiles = len(enrich_ctx.file_commits)
+        print(f"  {ndocs} doc files, {ncommits} commits, {nfiles} files with history")
+
     intent = ProjectIntent(
         project=str(root.resolve()),
         generated_at=datetime.datetime.utcnow().isoformat() + "Z",
@@ -1602,7 +1627,7 @@ def extract_project_intent(
 
     # Step 1: triage
     try:
-        essence, key_files = _triage(root, model, key, verbose)
+        essence, key_files = _triage(root, model, key, verbose, enrich_ctx=enrich_ctx)
         intent.project_summary = essence
         intent.key_files = key_files
     except Exception as exc:
@@ -1674,6 +1699,7 @@ def extract_project_intent(
                 improve=False,
                 verbose=verbose,
                 graphify_rationale=rat,
+                enrich_ctx=enrich_ctx,
             )
             # Classify contract_kind for all invariants so the pipeline can use
             # typed templates even for non-intent_gap invariants.
