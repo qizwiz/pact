@@ -113,15 +113,10 @@ def _call_llm(prompt: str, model: str, key: str) -> list[dict]:
         result = json.loads(text)
         return result if isinstance(result, list) else []
     except json.JSONDecodeError as exc:
-        import warnings
-
-        warnings.warn(
-            f"pipeline: LLM returned malformed JSON — plan will be empty "
-            f"({exc}); raw response: {text[:200]!r}",
-            RuntimeWarning,
-            stacklevel=2,
-        )
-        return []
+        raise RuntimeError(
+            f"pipeline: LLM returned malformed JSON ({exc}); "
+            f"raw response: {text[:200]!r}"
+        ) from exc
 
 
 def _intent_summary(intent: dict) -> str:
@@ -220,6 +215,7 @@ def _execute_z3(
     source_file = step.get("module_path")
     if not source_file or not Path(source_file).exists():
         import warnings
+
         warnings.warn(
             f"pipeline: source_file precondition violated: {source_file!r} — "
             "verify_contract result would be unreliable; returning error",
@@ -275,6 +271,15 @@ def _execute_hypothesis(
         "pact.hypothesis_generator"
     )
 
+    if z3_counterexample is None:
+        import warnings
+
+        warnings.warn(
+            "pipeline: z3_counterexample is None — Hypothesis will run without "
+            "contract-guided seeding, violating the 'adversarial inputs from contract' guarantee",
+            RuntimeWarning,
+            stacklevel=2,
+        )
     result = _hg_mod.stress_contract(
         contract=step.get("contract", ""),
         function_source=source,
@@ -604,7 +609,7 @@ def _load_source(module_path: str) -> str:
 
         warnings.warn(
             f"pipeline: cannot read source for {module_path} ({exc}); "
-            "Z3/Hypothesis steps will run without function source context",
+            "verification step will be skipped (status='error') to avoid vacuous result",
             RuntimeWarning,
             stacklevel=2,
         )
@@ -623,34 +628,38 @@ def _execute_heal(
     module_path = step.get("module_path", "")
     project_root = _find_project_root(Path(module_path)) if module_path else None
     test_cmd = _autodetect_test_cmd(project_root) if project_root else None
-    apply = test_cmd is not None
+
+    if test_cmd is None:
+        import warnings
+
+        warnings.warn(
+            "pipeline: heal step skipped — no test oracle detected; "
+            "CEGIS-verified patches require an oracle (test suite) to confirm candidates",
+            RuntimeWarning,
+            stacklevel=3,
+        )
+        return StepResult(
+            step=step["step"],
+            tool="heal",
+            module_path=module_path,
+            status="skipped",
+            summary="heal skipped: no test oracle detected — CEGIS verification guarantee requires an oracle",
+            details={"oracle": "none", "applied": False},
+        )
 
     result = heal_project(
         violations_path=intent_path,
         model=model,
         api_key=key,
         severity_filter=["critical", "high", "medium"],
-        apply=apply,
+        apply=True,
         verbose=verbose,
         project_root=project_root,
     )
     accepted = result.patches_accepted
     attempted = result.violations_attempted
-    if apply:
-        summary = f"{accepted}/{attempted} patch(es) applied and oracle-verified (cmd: {test_cmd})"
-        heal_status = "verified" if accepted > 0 else "unknown"
-    else:
-        import warnings
-        warnings.warn(
-            "pipeline: heal step running in dry-run mode (no test oracle detected) — "
-            "patches are NOT oracle-verified; CEGIS guarantee does not hold",
-            RuntimeWarning,
-            stacklevel=3,
-        )
-        summary = (
-            f"{accepted}/{attempted} patch(es) proposed (dry-run — no oracle detected; NOT CEGIS-verified)"
-        )
-        heal_status = "unknown"
+    summary = f"{accepted}/{attempted} patch(es) applied and oracle-verified (cmd: {test_cmd})"
+    heal_status = "verified" if accepted > 0 else "unknown"
     return StepResult(
         step=step["step"],
         tool="heal",
@@ -661,8 +670,8 @@ def _execute_heal(
             "patches_accepted": accepted,
             "patches_rejected": result.patches_rejected,
             "violations_attempted": attempted,
-            "oracle": test_cmd or "none",
-            "applied": apply,
+            "oracle": test_cmd,
+            "applied": True,
         },
     )
 
@@ -729,6 +738,16 @@ def _execute_step(
                 if pr and pr.tool == "z3" and pr.counterexample:
                     z3_ce = pr.counterexample
                     break
+            if z3_ce is None:
+                return StepResult(
+                    step=step["step"],
+                    tool="hypothesis",
+                    module_path=module_path,
+                    status="error",
+                    summary="Precondition violated: no Z3 counterexample available — "
+                    "Hypothesis cannot run with contract-guided adversarial seeding; "
+                    "ensure a z3 step with a violated dependency precedes this step",
+                )
             r = _execute_hypothesis(step, source, key, model, z3_counterexample=z3_ce)
             if verbose:
                 icon = {"verified": "✓", "violated": "✗", "unknown": "?"}.get(
