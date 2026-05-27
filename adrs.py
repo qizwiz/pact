@@ -405,7 +405,7 @@ def draft_adrs(
 
     def _draft_one(kind: str, evidence_block: str) -> Optional[Path]:
         nonlocal drafted_files
-        n = _next_adr_number(adr_dir) + len(written)
+        n = _next_adr_number(adr_dir)
         prompt = _ADR_PROMPT.format(
             kind=kind,
             evidence_block=evidence_block,
