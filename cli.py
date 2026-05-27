@@ -519,6 +519,103 @@ def _show_cut_vertex_contracts(
             print(f"  ↳ {len(added)} module(s) added to {intent_json_path.name}")
 
 
+def _adrs_cmd(argv) -> int:
+    """Entry point for `pact adrs [DIR] [options]`."""
+    import os
+
+    p = argparse.ArgumentParser(
+        prog="pact adrs",
+        description=(
+            "Draft prospective Architecture Decision Records from structural evidence "
+            "(cut vertices, Tornhill hotspots, Z3 violations). "
+            "Writes ADR-NNN-*.md files to docs/adr/ by default."
+        ),
+    )
+    p.add_argument(
+        "root",
+        nargs="?",
+        default=".",
+        metavar="DIR",
+        help="Root directory to analyze (default: current directory)",
+    )
+    p.add_argument(
+        "--violations",
+        metavar="FILE",
+        default=None,
+        help="Path to violations JSON (e.g. intent_pact_self.json) for contract-gap ADRs",
+    )
+    p.add_argument(
+        "--out",
+        metavar="DIR",
+        default=None,
+        help="Output directory for ADR files (default: <root>/docs/adr/)",
+    )
+    p.add_argument(
+        "--top",
+        type=int,
+        default=10,
+        metavar="N",
+        help="Maximum number of ADRs to draft (default: 10)",
+    )
+    p.add_argument(
+        "--model",
+        default="claude-haiku-4-5-20251001",
+        metavar="MODEL",
+        help="Claude model to use (default: claude-haiku-4-5-20251001)",
+    )
+    p.add_argument(
+        "--api-key",
+        default=None,
+        metavar="KEY",
+        help="Anthropic API key (default: $ANTHROPIC_API_KEY)",
+    )
+    p.add_argument("-v", "--verbose", action="store_true", help="Verbose output")
+
+    args = p.parse_args(argv)
+
+    root = Path(args.root).resolve()
+    if not root.is_dir():
+        print(f"error: {root} is not a directory", file=sys.stderr)
+        return 2
+
+    violations_json = Path(args.violations).resolve() if args.violations else None
+    out_dir = Path(args.out).resolve() if args.out else None
+
+    key = args.api_key or os.environ.get("ANTHROPIC_API_KEY", "")
+    if not key:
+        print(
+            "error: ANTHROPIC_API_KEY not set (use --api-key or set the env var)",
+            file=sys.stderr,
+        )
+        return 1
+
+    from .adrs import draft_adrs
+
+    try:
+        written = draft_adrs(
+            root,
+            violations_json=violations_json,
+            out_dir=out_dir,
+            model=args.model,
+            api_key=key,
+            verbose=args.verbose,
+            top_n=args.top,
+        )
+    except Exception as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+
+    if written:
+        print(f"✓  pact adrs: wrote {len(written)} ADR(s)")
+        for p in written:
+            print(f"   {p}")
+    else:
+        print(
+            "  pact adrs: no ADR candidates found (no cut vertices, hotspots, or violations)"
+        )
+    return 0
+
+
 def main(argv=None) -> int:
     load_dotenv(Path(__file__).parent / ".env", override=False)
     # Top-level: if first arg is "spec", "fix", "preflight", or "intent", delegate
@@ -566,6 +663,9 @@ def main(argv=None) -> int:
         from .pipeline import main as _pipeline_main
 
         return _pipeline_main(argv[1:])
+
+    if argv and argv[0] == "adrs":
+        return _adrs_cmd(argv[1:])
 
     p = argparse.ArgumentParser(
         prog="pact",
