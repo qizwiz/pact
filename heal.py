@@ -437,12 +437,8 @@ def _z3_verify(
                     if replacement and replacement[:40] in body_src:
                         func_name = node.name
                         break
-            if not func_name:
-                # Fall back to first function in file
-                for node in _ast.walk(tree):
-                    if isinstance(node, (_ast.FunctionDef, _ast.AsyncFunctionDef)):
-                        func_name = node.name
-                        break
+            # Do NOT fall back to first function in file — verifying an
+            # unrelated function against this invariant produces vacuous ACCEPT.
         except SyntaxError:
             pass
     if not func_name:
@@ -728,6 +724,17 @@ def _verify(
             "REJECT",
             f"Patch failed to apply — original block not found verbatim in source.\n"
             f"Original block to match:\n{result.patch.original[:300]}",
+        )
+
+    # Reject no-op patches immediately — a patch that makes no textual change
+    # cannot fix anything; accepting it produces vacuous Z3 results.
+    if patched == source:
+        return (
+            0.0,
+            "REJECT",
+            "Patch makes no textual change to the source — the original and "
+            "replacement are identical (or both empty). Provide a concrete code "
+            "change that addresses the invariant violation.",
         )
 
     still_present, new_viols = _check_patched(patched, result.line)
