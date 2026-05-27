@@ -370,16 +370,41 @@ def format_pr_comment(
     call_sites: list[CallSite],
     *,
     include_test_coverage: bool = True,
+    cut_vertex_risk: dict[str, list[str]] | None = None,
 ) -> str:
     """
     Build a full GitHub PR comment body with the call graph and
     animated reduction sequence as collapsible Mermaid blocks.
+
+    cut_vertex_risk: mapping of file path → list of articulation-point function
+    names that appear in this PR's changed files. When provided, a structural
+    risk section is prepended so reviewers see load-bearing joints immediately.
     """
-    if not violations and not suggestions:
-        return "✓ **pact**: no violations found."
+    if not violations and not suggestions and not cut_vertex_risk:
+        return "✓ **pact**: no violations found in this PR's changed files."
 
     n_v = len(violations)
     n_s = len(suggestions)
+    n_cv = sum(len(fns) for fns in (cut_vertex_risk or {}).values())
+
+    risk_parts: list[str] = []
+    if cut_vertex_risk:
+        risk_parts.append("### ⚠️ Structural risk — load-bearing joints in this PR\n")
+        risk_parts.append(
+            "_These functions are articulation points: removing or breaking them "
+            "disconnects the call graph. Changes here require extra care._\n"
+        )
+        for file_path, func_names in sorted(cut_vertex_risk.items()):
+            short = file_path.split("/")[-1]
+            fns_md = ", ".join(f"`{fn}`" for fn in func_names[:6])
+            risk_parts.append(f"- **`{short}`** — {fns_md}")
+        risk_parts.append("")
+
+    cv_suffix = (
+        f" · **{n_cv} structural joint{'s' if n_cv != 1 else ''}** touched"
+        if n_cv
+        else ""
+    )
     header = (
         f"## pact analysis\n\n"
         f"**{n_v} violation{'s' if n_v != 1 else ''}** found"
@@ -388,20 +413,22 @@ def format_pr_comment(
             if n_s
             else ""
         )
+        + cv_suffix
         + "\n"
     )
 
     if not functions or not call_sites:
-        # No graph to draw — just the header
-        return header
+        return header + ("\n" + "\n".join(risk_parts) if risk_parts else "")
 
     frames = render_reduction_sequence(suggestions, violations, functions, call_sites)
     if not frames:
-        # Just the static graph
         static = render_mermaid(violations, functions, call_sites)
-        return header + "\n```mermaid\n" + static + "\n```\n"
+        risk_block = ("\n" + "\n".join(risk_parts)) if risk_parts else ""
+        return header + risk_block + "\n```mermaid\n" + static + "\n```\n"
 
     parts = [header]
+    if risk_parts:
+        parts.append("\n".join(risk_parts))
 
     # First frame inline (baseline)
     label0, diagram0 = frames[0]

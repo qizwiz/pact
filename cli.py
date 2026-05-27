@@ -1062,7 +1062,32 @@ def main(argv=None) -> int:
         print("```\n")
 
     if args.pr_comment and not args.json_mode:
-        print(format_pr_comment(suggestions, violations, functions, call_sites))
+        # Compute cut-vertex risk for files changed in this PR.
+        # We run this regardless of whether --diff was used so the structural
+        # risk section always reflects the full call graph topology.
+        cv_risk: dict[str, list[str]] | None = None
+        try:
+            all_cv = cut_vertex_files(functions, call_sites)
+            if all_cv:
+                if args.diff is not None:
+                    # Filter to only files that appear in the diff
+                    diff_changed = _changed_files_on_branch(args.diff, cwd=root)
+                    cv_risk = {
+                        fp: fns for fp, fns in all_cv.items() if fp in diff_changed
+                    }
+                else:
+                    cv_risk = all_cv
+        except Exception:
+            cv_risk = None
+        print(
+            format_pr_comment(
+                suggestions,
+                violations,
+                functions,
+                call_sites,
+                cut_vertex_risk=cv_risk or None,
+            )
+        )
 
     if args.verify and not args.json_mode:
         try:
