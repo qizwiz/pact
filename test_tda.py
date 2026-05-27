@@ -16,6 +16,7 @@ from __future__ import annotations
 import math
 
 import networkx as nx
+import pytest
 
 from . import tda
 from .tda import PersistencePair, PersistenceResult, compute_persistence
@@ -106,7 +107,9 @@ def test_triangle_flag_complex_contractible():
     persistence and is not reported.  A 3-clique is contractible; beta1=0.
 
     The nx_fallback path (Euler formula, no 2-simplices) reports beta1=1.
+    Requires gudhi — skipped when not installed.
     """
+    pytest.importorskip("gudhi")
     G = nx.DiGraph()
     G.add_edges_from([(0, 1), (1, 2), (2, 0)])
     result = compute_persistence(G)
@@ -130,7 +133,9 @@ def test_four_cycle_shortcut_has_h1_persistence():
     4-node cycle 0→1→2→3→0 with shortcut 1→3 at higher filtration.
     The shortcut triangle 1-2-3 is filled at 0.8, giving H1 bar (0.2, 0.8).
     total_persistence_h1 should be positive.
+    Requires gudhi for weighted filtration — skipped when not installed.
     """
+    pytest.importorskip("gudhi")
     G = nx.DiGraph()
     G.add_edge(0, 1, weight=0.2)
     G.add_edge(1, 2, weight=0.2)

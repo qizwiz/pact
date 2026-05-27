@@ -1365,5 +1365,5 @@ class TestMetricsCmd:
         assert rc == 0
         out = capsys.readouterr().out
         # Only 2 pain modules shown even though there are 5
-        lines = [l for l in out.splitlines() if l.startswith("   ")]
+        lines = [ln for ln in out.splitlines() if ln.startswith("   ")]
         assert len(lines) == 2
