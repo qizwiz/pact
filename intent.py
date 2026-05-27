@@ -592,11 +592,20 @@ def _call_with_tools(
             messages.append({"role": "assistant", "content": response.content})
             messages.append({"role": "user", "content": tool_results})
 
-        elif response.stop_reason in ("end_turn", "stop_sequence", None):
+        elif response.stop_reason in ("end_turn", "stop_sequence", "max_tokens", None):
             text = "".join(
                 block.text for block in response.content if hasattr(block, "text")
             )
             _dbg(f"_call_with_tools total {_time.monotonic() - t_total:.1f}s")
+            if response.stop_reason == "max_tokens":
+                import warnings
+
+                warnings.warn(
+                    f"_call_with_tools: max_tokens reached after round {rnd + 1} — "
+                    "output may be truncated; attempting partial parse",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
             return _parse_text(text)
 
         else:
@@ -1132,7 +1141,7 @@ def _understand_module(
     )
 
     # Use tool-enabled call — model reads specific function bodies on demand.
-    raw = _call_with_tools(prompt, model, key, max_tokens=6000)
+    raw = _call_with_tools(prompt, model, key, max_tokens=8192)
 
     u = raw.get("understanding", {})
     understanding = ProjectUnderstanding(
@@ -1196,6 +1205,31 @@ def _understand_module(
 # Step 5: Prompt self-improvement
 # ---------------------------------------------------------------------------
 
+_IMPROVE_PROMPT_RE = re.compile(
+    r"---BEGIN IMPROVED PROMPT---\n(.*?)\n---END IMPROVED PROMPT---",
+    re.DOTALL,
+)
+
+
+def _parse_improve_response(raw_text: str) -> tuple[dict, str]:
+    """Parse the two-part improve.md response into (scores_dict, improved_prompt_text)."""
+    # Extract the improved prompt from its delimited section first (avoids JSON escaping issues)
+    improved = ""
+    m = _IMPROVE_PROMPT_RE.search(raw_text)
+    if m:
+        improved = m.group(1).strip()
+
+    # Parse the JSON scores block — strip the improved-prompt section before parsing
+    scores_text = raw_text
+    if m:
+        scores_text = raw_text[: m.start()] + raw_text[m.end() :]
+    try:
+        scores_dict = _parse_text(scores_text.strip())
+    except RuntimeError:
+        scores_dict = {}
+
+    return scores_dict, improved
+
 
 def _improve_prompt(
     prompt_name: str,
@@ -1219,12 +1253,22 @@ def _improve_prompt(
     )
 
     try:
-        raw = _call(prompt, model, key, max_tokens=8192)
+        from .llm import make_client
+
+        client = make_client(key)
+        response = client.messages.create(
+            model=model,
+            max_tokens=8192,
+            system=_SYSTEM,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        raw_text = response.content[0].text if response.content else ""
     except Exception as exc:
         if verbose:
             print(f"    improvement scoring failed: {exc}")
         return None
 
+    raw, improved = _parse_improve_response(raw_text)
     scores_raw = raw.get("scores", {})
 
     def _s(key_: str) -> float:
@@ -1250,7 +1294,6 @@ def _improve_prompt(
         )
 
     # Rewrite prompt if overall score < 0.8
-    improved = raw.get("improved_prompt", "")
     if improved and score.overall < 0.8:
         _save_prompt(prompt_name, improved)
         if verbose:
@@ -1312,14 +1355,25 @@ def _batch_improve(
     )
 
     try:
-        raw = _call(prompt, model, key, max_tokens=8192)
-        improved = raw.get("improved_prompt", "")
+        from .llm import make_client
+
+        client = make_client(key)
+        response = client.messages.create(
+            model=model,
+            max_tokens=8192,
+            system=_SYSTEM,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        raw_text = response.content[0].text if response.content else ""
+        _, improved = _parse_improve_response(raw_text)
         if improved:
             _save_prompt("understand", improved)
             if verbose:
                 print(
                     f"  ✓ understand prompt rewritten (batch, worst score {worst[0][0]:.2f})"
                 )
+        elif verbose:
+            print("  batch improve: no improved prompt extracted from response")
     except Exception as exc:
         if verbose:
             print(f"  batch improve failed: {exc}")

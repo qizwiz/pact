@@ -97,7 +97,11 @@ actual behavior is the most actionable finding possible.
    - Do not make the prompt longer unless the length adds precision
    - Every sentence in the rewritten prompt must earn its place
 
-Return JSON only:
+Return your response in TWO parts — do not merge them.
+
+**PART 1** — a JSON block (compact, no long strings):
+
+```json
 {
   "scores": {
     "specificity": {"score": 0, "justification": "..."},
@@ -113,6 +117,16 @@ Return JSON only:
       "example": "quote from output showing the problem",
       "better_version": "what it should have said"
     }
-  ],
-  "improved_prompt": "full text of the rewritten prompt — complete, ready to use"
+  ]
 }
+```
+
+**PART 2** — the complete rewritten prompt, between these exact delimiters (no JSON escaping needed):
+
+```
+---BEGIN IMPROVED PROMPT---
+full text of the rewritten prompt here — complete, ready to use as-is
+---END IMPROVED PROMPT---
+```
+
+The rewritten prompt goes in PART 2 only. Do NOT put it inside the JSON in PART 1.

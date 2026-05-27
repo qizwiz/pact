@@ -614,3 +614,45 @@ class TestTestIntent:
             ctx, tmp_path, key="key", model="m", verbose=False
         )
         assert result == []
+
+
+# ---------------------------------------------------------------------------
+# _parse_improve_response
+# ---------------------------------------------------------------------------
+
+
+class TestParseImproveResponse:
+    def _fn(self, text: str):
+        from .intent import _parse_improve_response
+
+        return _parse_improve_response(text)
+
+    def test_extracts_improved_prompt_from_delimiters(self):
+        text = (
+            '```json\n{"scores": {"specificity": {"score": 8, "justification": "ok"}}}\n```\n\n'
+            "---BEGIN IMPROVED PROMPT---\n# New Prompt\nDo better things.\n---END IMPROVED PROMPT---\n"
+        )
+        scores, improved = self._fn(text)
+        assert improved == "# New Prompt\nDo better things."
+        assert scores.get("scores", {}).get("specificity", {}).get("score") == 8
+
+    def test_returns_empty_improved_when_no_delimiter(self):
+        text = '{"scores": {"specificity": {"score": 5, "justification": "x"}}}'
+        scores, improved = self._fn(text)
+        assert improved == ""
+        assert scores.get("scores", {}).get("specificity", {}).get("score") == 5
+
+    def test_scores_dict_empty_when_no_valid_json(self):
+        text = "just plain text\n---BEGIN IMPROVED PROMPT---\nhello\n---END IMPROVED PROMPT---"
+        scores, improved = self._fn(text)
+        assert improved == "hello"
+        assert scores == {}
+
+    def test_improved_prompt_with_backticks_and_quotes_survives(self):
+        prompt_body = '# Title\n```python\nprint("hello")\n```\nUse `x` not "y".'
+        text = (
+            '{"scores": {}}\n'
+            f"---BEGIN IMPROVED PROMPT---\n{prompt_body}\n---END IMPROVED PROMPT---\n"
+        )
+        _, improved = self._fn(text)
+        assert improved == prompt_body
