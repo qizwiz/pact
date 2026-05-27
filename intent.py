@@ -23,7 +23,10 @@ from __future__ import annotations
 
 import ast
 import json
+import os as _os
 import re
+import sys as _sys
+import time as _time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Optional
@@ -150,6 +153,51 @@ class ModuleIntent:
     violations: list[Violation] = field(default_factory=list)
     prompt_score: Optional[ImprovementScore] = None
     truncation_audit: Optional[TruncationAudit] = None
+
+
+def _module_intent_from_dict(d: dict) -> "ModuleIntent":
+    u = d.get("understanding", {})
+    understanding = ProjectUnderstanding(
+        purpose=u.get("purpose", ""),
+        design_intent=u.get("design_intent", ""),
+        key_abstractions=u.get("key_abstractions", ""),
+        behavioral_contract=u.get("behavioral_contract", ""),
+        failure_modes=u.get("failure_modes", ""),
+        assumptions=u.get("assumptions", ""),
+        resource_obligations=u.get("resource_obligations", ""),
+    )
+    invariants = [
+        Invariant(
+            id=i.get("id", ""),
+            type=i.get("type", ""),
+            statement=i.get("statement", ""),
+            applies_to=i.get("applies_to", []),
+            formal=i.get("formal", ""),
+            derived_from=i.get("derived_from", ""),
+            confidence=float(i.get("confidence", 0.0)),
+            contract_kind=i.get("contract_kind", ""),
+            z3_encoding=i.get("z3_encoding", ""),
+            tla_template=i.get("tla_template", ""),
+        )
+        for i in d.get("invariants", [])
+    ]
+    violations = [
+        Violation(
+            invariant_id=v.get("invariant_id", ""),
+            file=v.get("file", ""),
+            line=int(v.get("line", 0)),
+            evidence=v.get("evidence", ""),
+            severity=v.get("severity", "low"),
+            explanation=v.get("explanation", ""),
+        )
+        for v in d.get("violations", [])
+    ]
+    return ModuleIntent(
+        path=d.get("path", ""),
+        understanding=understanding,
+        invariants=invariants,
+        violations=violations,
+    )
 
 
 @dataclass
@@ -457,15 +505,34 @@ def _parse_text(text: str) -> dict:
     raise RuntimeError(f"Non-JSON response (no valid JSON found): {text[:500]}")
 
 
+_DEBUG = _os.environ.get("PACT_DEBUG", "").strip() not in ("", "0")
+
+
+def _dbg(msg: str) -> None:
+    if _DEBUG:
+        _sys.stderr.write(f"[pact:debug] {msg}\n")
+        _sys.stderr.flush()
+
+
 def _call(prompt: str, model: str, key: str, max_tokens: int = 4096) -> dict:
     from .llm import make_client
 
     client = make_client(key)
+    _dbg(f"_call prompt={len(prompt):,}ch max_tokens={max_tokens}")
+    t0 = _time.monotonic()
     response = client.messages.create(
         model=model,
         max_tokens=max_tokens,
         system=_SYSTEM,
         messages=[{"role": "user", "content": prompt}],
+    )
+    elapsed = _time.monotonic() - t0
+    usage = getattr(response, "usage", None)
+    in_tok = getattr(usage, "input_tokens", "?")
+    out_tok = getattr(usage, "output_tokens", "?")
+    _dbg(
+        f"_call done {elapsed:.1f}s stop={response.stop_reason} "
+        f"in={in_tok} out={out_tok}"
     )
     if not response.content:
         raise RuntimeError("API returned empty content")
@@ -484,8 +551,11 @@ def _call_with_tools(
 
     client = make_client(key)
     messages: list[dict] = [{"role": "user", "content": prompt}]
+    _dbg(f"_call_with_tools prompt={len(prompt):,}ch max_tokens={max_tokens}")
+    t_total = _time.monotonic()
 
-    for _ in range(max_tool_rounds):
+    for rnd in range(max_tool_rounds):
+        t0 = _time.monotonic()
         response = client.messages.create(
             model=model,
             max_tokens=max_tokens,
@@ -493,16 +563,30 @@ def _call_with_tools(
             tools=[_READ_FILE_TOOL],
             messages=messages,
         )
+        elapsed = _time.monotonic() - t0
+        usage = getattr(response, "usage", None)
+        in_tok = getattr(usage, "input_tokens", "?")
+        out_tok = getattr(usage, "output_tokens", "?")
+        _dbg(
+            f"  round {rnd + 1} {elapsed:.1f}s stop={response.stop_reason} "
+            f"in={in_tok} out={out_tok}"
+        )
 
         if response.stop_reason == "tool_use":
             tool_results = []
             for block in response.content:
                 if block.type == "tool_use":
+                    result = _execute_read_file(block.input)
+                    _dbg(
+                        f"  tool read_file path={block.input.get('path','?')} "
+                        f"lines={block.input.get('start_line','?')}-{block.input.get('end_line','?')} "
+                        f"=> {len(result):,}ch"
+                    )
                     tool_results.append(
                         {
                             "type": "tool_result",
                             "tool_use_id": block.id,
-                            "content": _execute_read_file(block.input),
+                            "content": result,
                         }
                     )
             messages.append({"role": "assistant", "content": response.content})
@@ -512,6 +596,7 @@ def _call_with_tools(
             text = "".join(
                 block.text for block in response.content if hasattr(block, "text")
             )
+            _dbg(f"_call_with_tools total {_time.monotonic() - t_total:.1f}s")
             return _parse_text(text)
 
         else:
@@ -1046,8 +1131,8 @@ def _understand_module(
         graphify_rationale=graphify_section,
     )
 
-    # Use tool-enabled call — model reads specific function bodies on demand
-    raw = _call_with_tools(prompt, model, key, max_tokens=8192)
+    # Use tool-enabled call — model reads specific function bodies on demand.
+    raw = _call_with_tools(prompt, model, key, max_tokens=6000)
 
     u = raw.get("understanding", {})
     understanding = ProjectUnderstanding(
@@ -2082,11 +2167,37 @@ def extract_project_intent(
     if adr_rules:
         intent.__dict__["adr_import_rules"] = adr_rules
 
-    # Step 1: triage
+    # Step 1: triage — cached by file listing + model so re-runs skip the 60s LLM call
+    import hashlib as _hl
+
+    _triage_stages = root / ".pact_stages"
+    _triage_stages.mkdir(parents=True, exist_ok=True)
+    _triage_key = _hl.sha256((_file_listing(root) + model).encode()).hexdigest()[:16]
+    _triage_cache = _triage_stages / f"triage_{_triage_key}.json"
+    _triage_hit = False
     try:
-        essence, key_files = _triage(root, model, key, verbose, enrich_ctx=enrich_ctx)
-        intent.project_summary = essence
-        intent.key_files = key_files
+        if _triage_cache.exists():
+            _tc = json.loads(_triage_cache.read_text())
+            essence = _tc.get("essence", "")
+            key_files = _tc.get("key_files", [])
+            intent.project_summary = essence
+            intent.key_files = key_files
+            _triage_hit = True
+            if verbose:
+                print("[intent] step 1: triage — (cached)")
+                print(f"  essence: {essence[:180].replace(chr(10), ' ')}...")
+                print(
+                    f"  key files ({len(key_files)}): {', '.join(key_files[:5])}{'...' if len(key_files) > 5 else ''}"
+                )
+        if not _triage_hit:
+            essence, key_files = _triage(
+                root, model, key, verbose, enrich_ctx=enrich_ctx
+            )
+            intent.project_summary = essence
+            intent.key_files = key_files
+            _triage_cache.write_text(
+                json.dumps({"essence": essence, "key_files": key_files}, indent=2)
+            )
     except Exception as exc:
         import warnings
 
@@ -2101,7 +2212,13 @@ def extract_project_intent(
         essence = ""
         key_files = []
 
-    # Resolve key files to paths; fall back to top-N by size
+    # Resolve key files to paths; fall back to top-N by size.
+    # Small files (<_SIGNATURE_ONLY_BYTES) are analyzed before large ones so
+    # violations appear quickly rather than waiting on God-class timeouts.
+    def _analysis_order(p: Path) -> tuple[int, int]:
+        sz = p.stat().st_size
+        return (1 if sz > _SIGNATURE_ONLY_BYTES else 0, sz)
+
     if key_files:
         resolved = []
         for rel in key_files:
@@ -2111,15 +2228,15 @@ def extract_project_intent(
         if not resolved:
             resolved = sorted(
                 [f for f in _iter_python_files(root) if f.stat().st_size > 500],
-                key=lambda f: f.stat().st_size,
-                reverse=True,
+                key=_analysis_order,
             )
+        else:
+            resolved.sort(key=_analysis_order)
         files = resolved[:max_files] if max_files > 0 else resolved
     else:
         all_py = sorted(
             [f for f in _iter_python_files(root) if f.stat().st_size > 500],
-            key=lambda f: f.stat().st_size,
-            reverse=True,
+            key=_analysis_order,
         )
         files = all_py[:max_files] if max_files > 0 else all_py
 
@@ -2135,47 +2252,120 @@ def extract_project_intent(
     except Exception:
         _call_graph = None
 
-    module_sources: dict[str, str] = {}
-    for f in files:
+    _MODULE_TIMEOUT = 120  # seconds per module
+    _MAX_WORKERS = 5  # concurrent LLM calls; bounded by API rate limits
+
+    def _build_task(f: Path) -> tuple[Path, str, str]:
+        src, _ = _read_truncated(f)
+        rat = ""
+        if _call_graph is not None:
+            comm_id = _call_graph.community_of(func_name="", source_file=f.name)
+            if comm_id is not None:
+                rat = _call_graph.community_label_for(comm_id)
+        return f, src, rat
+
+    import concurrent.futures as _cf
+    import hashlib as _hashlib
+
+    # Staged artifact cache — write each module result to disk as it completes.
+    # Lives in the target repo so cache persists across runs regardless of --out path.
+    # Key: sha256(file_bytes + essence + model). On re-run, hit = skip LLM call.
+    _stages_dir = root / ".pact_stages"
+    _stages_dir.mkdir(parents=True, exist_ok=True)
+    # Silently add to .gitignore if the target is a git repo and doesn't already ignore it
+    _gi = root / ".gitignore"
+    try:
+        _gi_text = _gi.read_text() if _gi.exists() else ""
+        if ".pact_stages" not in _gi_text:
+            with _gi.open("a") as _fh:
+                _fh.write("\n.pact_stages/\n")
+    except Exception:
+        pass
+
+    def _cache_key(f: Path, src: str) -> str:
+        # Keyed on file content + model only — not essence, which is non-deterministic
+        # across triage runs. Cache invalidates when the file itself changes.
+        raw = f"{src}{model}".encode()
+        return _hashlib.sha256(raw).hexdigest()[:16]
+
+    def _cache_load(key: str) -> Optional[ModuleIntent]:
+        p = _stages_dir / f"{key}.json"
+        if not p.exists():
+            return None
         try:
-            src, _ = _read_truncated(f)
-            module_sources[str(f)] = src
+            return _module_intent_from_dict(json.loads(p.read_text()))
+        except Exception:
+            return None
 
-            # Pull Graphify community rationale for this file (if available)
-            rat = ""
-            if _call_graph is not None:
-                comm_id = _call_graph.community_of(func_name="", source_file=f.name)
-                if comm_id is not None:
-                    rat = _call_graph.community_label_for(comm_id)
+    def _cache_save(key: str, module: ModuleIntent) -> None:
+        p = _stages_dir / f"{key}.json"
+        try:
+            p.write_text(json.dumps(asdict(module), indent=2))
+        except Exception:
+            pass
 
-            module = extract_file_intent(
-                f,
-                project_essence=essence,
-                model=model,
-                api_key=key,
-                improve=False,
-                verbose=verbose,
-                graphify_rationale=rat,
-                enrich_ctx=enrich_ctx,
-            )
-            # Classify contract_kind for all invariants so the pipeline can use
-            # typed templates even for non-intent_gap invariants.
-            for inv in module.invariants:
-                if not inv.contract_kind:
-                    kind, tla = _classify_contract_kind("", inv.statement)
-                    inv.contract_kind = kind
-                    inv.tla_template = tla
-            intent.modules.append(module)
-        except Exception as exc:
-            import warnings
+    tasks = [_build_task(f) for f in files]
+    module_sources: dict[str, str] = {str(f): src for f, src, _ in tasks}
 
-            warnings.warn(
-                f"extract_project_intent: skipped {f.name}: {exc}",
-                RuntimeWarning,
-                stacklevel=2,
-            )
+    def _analyze_module(f: Path, src: str, rat: str) -> ModuleIntent:
+        ck = _cache_key(f, src)
+        cached = _cache_load(ck)
+        if cached is not None:
             if verbose:
-                print(f"  skipped {f.name}: {exc}")
+                print(f"  → {f.name} (cached)")
+            return cached
+        module = extract_file_intent(
+            f,
+            project_essence=essence,
+            model=model,
+            api_key=key,
+            improve=False,
+            verbose=verbose,
+            graphify_rationale=rat,
+            enrich_ctx=enrich_ctx,
+        )
+        _cache_save(ck, module)
+        return module
+
+    future_to_file: dict = {}
+    # Use a thread pool; verbose printing from within threads is thread-safe on CPython.
+    with _cf.ThreadPoolExecutor(max_workers=_MAX_WORKERS) as pool:
+        for f, src, rat in tasks:
+            fut = pool.submit(_analyze_module, f, src, rat)
+            future_to_file[fut] = f
+
+        for fut in _cf.as_completed(
+            future_to_file, timeout=_MODULE_TIMEOUT * len(tasks)
+        ):
+            f = future_to_file[fut]
+            try:
+                module = fut.result(timeout=0)  # already done — no wait
+                for inv in module.invariants:
+                    if not inv.contract_kind:
+                        kind, tla = _classify_contract_kind("", inv.statement)
+                        inv.contract_kind = kind
+                        inv.tla_template = tla
+                intent.modules.append(module)
+            except _cf.TimeoutError:
+                import warnings
+
+                warnings.warn(
+                    f"extract_project_intent: skipped {f.name}: module analysis timed out after {_MODULE_TIMEOUT}s",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
+                if verbose:
+                    print(f"  skipped {f.name}: timed out after {_MODULE_TIMEOUT}s")
+            except Exception as exc:
+                import warnings
+
+                warnings.warn(
+                    f"extract_project_intent: skipped {f.name}: {exc}",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
+                if verbose:
+                    print(f"  skipped {f.name}: {exc}")
 
     # Step 5: project-level synthesis (oracle-validated invariants)
     if intent.modules:

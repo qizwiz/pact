@@ -780,7 +780,12 @@ def _mine_pydriller(
 
     try:
         _repo = _PyDrillerRepo(str(root), num_workers=4)
-        _commits_iter = list(_repo.traverse_commits())
+        _all = _repo.traverse_commits()
+        _commits_iter = []
+        for _c in _all:
+            _commits_iter.append(_c)
+            if len(_commits_iter) >= max_commits:
+                break
     except Exception:
         # Not a git repository (e.g. installed package directory) — return empty metrics.
         return TornhillMetrics(hotspots=[], temporal_coupling=[], knowledge_silos=[])
