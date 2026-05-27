@@ -48,6 +48,87 @@ def _error(id: Any, code: int, message: str) -> None:
 
 _TOOLS = [
     {
+        "name": "pact_topology",
+        "description": (
+            "Structural topology of a project's call graph — no LLM required. "
+            "Returns cut vertices (articulation points whose removal disconnects the "
+            "graph), betweenness centrality, strongly-connected components (call cycles), "
+            "and module-level R.C. Martin instability/abstractness metrics. "
+            "Use this first: cut_vertices are the load-bearing joints where contracts "
+            "matter most. Feed cut_vertex names into pact_z3_verify."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "root": {
+                    "type": "string",
+                    "description": "Absolute path to project root",
+                },
+                "top_n": {
+                    "type": "integer",
+                    "default": 20,
+                    "description": "Max functions to return by betweenness (after cut vertices)",
+                },
+            },
+            "required": ["root"],
+        },
+    },
+    {
+        "name": "pact_metrics",
+        "description": (
+            "R.C. Martin module-level coupling metrics — no LLM required. "
+            "Returns instability (I=Ce/(Ca+Ce)), abstractness (A), and distance from "
+            "the main sequence (D=|I+A-1|) per Python module. Zone-of-pain modules "
+            "(D>0.5, I<0.3) are concrete AND stable — hardest to change, highest "
+            "violation risk. Zone-of-uselessness modules (D>0.5, I>0.7) are abstract "
+            "AND unstable — unused abstractions. Use to prioritise which modules to "
+            "verify with pact_z3_verify or inspect with pact_check."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "root": {
+                    "type": "string",
+                    "description": "Absolute path to project root",
+                },
+                "zone": {
+                    "type": "string",
+                    "enum": ["pain", "uselessness", "main", "all"],
+                    "default": "all",
+                    "description": "Filter by architectural zone",
+                },
+                "top_n": {
+                    "type": "integer",
+                    "default": 20,
+                    "description": "Max modules to return, sorted by distance from main sequence",
+                },
+            },
+            "required": ["root"],
+        },
+    },
+    {
+        "name": "pact_z3_verify",
+        "description": (
+            "Z3-based formal contract verification — no LLM required. "
+            "Runs the pact Z3 engine on a project root: extracts behavioral contracts "
+            "from AST patterns (null-check ordering, field constraints, taint rules), "
+            "encodes them as SMT2, and returns proved_safe | counterexample_found | "
+            "unknown per contract. counterexample_found results include a concrete "
+            "input that violates the contract — feed these into pact_check or "
+            "use them to guide Hypothesis fuzzing."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "root": {
+                    "type": "string",
+                    "description": "Absolute path to project root",
+                },
+            },
+            "required": ["root"],
+        },
+    },
+    {
         "name": "pact_context",
         "description": (
             "Extract violation signals from git history, CHANGES.rst, and inline "
@@ -568,10 +649,148 @@ def _tool_pact_loop(params: dict) -> dict:
 def _api_key() -> str:
     import os
 
-    key = os.environ.get("ANTHROPIC_API_KEY", "")
-    if not key:
-        raise RuntimeError("ANTHROPIC_API_KEY not set in environment")
-    return key
+    return os.environ.get("ANTHROPIC_API_KEY", "")
+
+
+def _tool_pact_topology(params: dict) -> dict:
+
+    import networkx as nx
+
+    from .extractor import extract_from_codebase
+    from .reduce import (
+        _build_digraph,
+        compute_module_metrics,
+    )
+
+    root = Path(params["root"])
+    top_n = int(params.get("top_n", 20))
+
+    _, functions, call_sites = extract_from_codebase(root)
+    metrics = compute_module_metrics(root)
+
+    # Build call graph
+    G, func_by_name = _build_digraph(functions, call_sites)
+    cut_verts: list[dict] = []
+    top_by_btw: list[dict] = []
+    sccs: list[dict] = []
+
+    if G is not None:
+        G_u = G.to_undirected()
+        btw: dict[str, float] = nx.betweenness_centrality(G_u, normalized=True)
+        cv_set: set[str] = set(nx.articulation_points(G_u))
+
+        for name in sorted(cv_set, key=lambda n: btw.get(n, 0.0), reverse=True):
+            f = func_by_name.get(name)
+            if f is None:  # skip unresolved builtins/stdlib
+                continue
+            cut_verts.append(
+                {
+                    "function": name,
+                    "file": f.file,
+                    "betweenness": round(btw.get(name, 0.0), 4),
+                }
+            )
+
+        ranked = sorted(
+            (
+                (n, b)
+                for n, b in btw.items()
+                if n not in cv_set and func_by_name.get(n) is not None
+            ),
+            key=lambda x: x[1],
+            reverse=True,
+        )
+        for name, b in ranked[:top_n]:
+            f = func_by_name[name]
+            top_by_btw.append(
+                {
+                    "function": name,
+                    "file": f.file,
+                    "betweenness": round(b, 4),
+                }
+            )
+
+        for scc in nx.strongly_connected_components(G):
+            if len(scc) > 1:
+                sccs.append(sorted(scc))
+
+    return {
+        "root": str(root),
+        "n_functions": len(functions),
+        "cut_vertices": cut_verts,
+        "top_by_betweenness": top_by_btw,
+        "strongly_connected_components": sccs,
+        "module_count": len(metrics),
+        "note": (
+            "cut_vertices are load-bearing joints — removal disconnects the graph. "
+            "Feed these into pact_z3_verify to formally verify their contracts."
+        ),
+    }
+
+
+def _tool_pact_metrics(params: dict) -> dict:
+    from .reduce import compute_module_metrics
+
+    root = Path(params["root"])
+    zone_filter = params.get("zone", "all")
+    top_n = int(params.get("top_n", 20))
+
+    all_metrics = compute_module_metrics(root)
+    # Drop isolated modules (Ca=Ce=0 → D=1.0 by formula, not architecturally meaningful)
+    results = [m for m in all_metrics if (m.ca + m.ce) > 0]
+
+    _ZONE_MAP = {
+        "pain": "zone of pain",
+        "uselessness": "zone of uselessness",
+        "main": "main sequence",
+    }
+    if zone_filter != "all":
+        target_zone = _ZONE_MAP.get(zone_filter, zone_filter)
+        results = [m for m in results if m.zone == target_zone]
+
+    results.sort(key=lambda m: m.distance, reverse=True)
+    results = results[:top_n]
+
+    return {
+        "root": str(root),
+        "modules": [
+            {
+                "module": m.module,
+                "instability": round(m.instability, 3),
+                "abstractness": round(m.abstractness, 3),
+                "distance": round(m.distance, 3),
+                "zone": m.zone,
+                "ca": m.ca,
+                "ce": m.ce,
+            }
+            for m in results
+        ],
+        "zone_filter": zone_filter,
+        "note": (
+            "zone=pain: concrete+stable (hard to change, high violation risk). "
+            "zone=uselessness: abstract+unstable (unused abstractions). "
+            "zone=main: well-balanced."
+        ),
+    }
+
+
+def _tool_pact_z3_verify(params: dict) -> dict:
+    import dataclasses
+
+    from .z3_engine import run
+
+    root = Path(params["root"])
+    violations = run(root)
+
+    return {
+        "root": str(root),
+        "violations": [dataclasses.asdict(v) for v in violations],
+        "n_violations": len(violations),
+        "note": (
+            "counterexample_found violations include concrete inputs that break "
+            "the contract — use these to seed pact_check or Hypothesis fuzzing."
+        ),
+    }
 
 
 def _tool_pact_spec_learn(params: dict) -> dict:
@@ -630,13 +849,18 @@ def _tool_pact_spec_learn(params: dict) -> dict:
 
 
 _DISPATCH = {
+    # Zero-LLM structural tools — work without ANTHROPIC_API_KEY
+    "pact_topology": _tool_pact_topology,
+    "pact_metrics": _tool_pact_metrics,
+    "pact_z3_verify": _tool_pact_z3_verify,
+    "pact_check": _tool_pact_check,
+    "pact_sheaf": _tool_pact_sheaf,
+    "pact_tda": _tool_pact_tda,
+    # LLM-assisted tools — require ANTHROPIC_API_KEY in environment
     "pact_context": _tool_pact_context,
     "pact_find": _tool_pact_find,
     "pact_heal": _tool_pact_heal,
-    "pact_check": _tool_pact_check,
     "pact_loop": _tool_pact_loop,
-    "pact_tda": _tool_pact_tda,
-    "pact_sheaf": _tool_pact_sheaf,
     "pact_spec_learn": _tool_pact_spec_learn,
 }
 
@@ -669,6 +893,38 @@ def _handle(req: dict) -> None:
         fn = _DISPATCH.get(name)
         if fn is None:
             _error(rid, -32601, f"Unknown tool: {name}")
+            return
+        # LLM tools degrade gracefully when no API key is set
+        _LLM_TOOLS = {
+            "pact_context",
+            "pact_find",
+            "pact_heal",
+            "pact_loop",
+            "pact_spec_learn",
+        }
+        if name in _LLM_TOOLS and not _api_key():
+            _respond(
+                rid,
+                {
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": json.dumps(
+                                {
+                                    "error": "ANTHROPIC_API_KEY not set",
+                                    "tool": name,
+                                    "suggestion": (
+                                        f"{name} requires an LLM. Set ANTHROPIC_API_KEY "
+                                        "in the environment, or use the zero-LLM tools: "
+                                        "pact_topology, pact_metrics, pact_z3_verify, "
+                                        "pact_check, pact_sheaf."
+                                    ),
+                                }
+                            ),
+                        }
+                    ]
+                },
+            )
             return
         try:
             result = fn(args)
