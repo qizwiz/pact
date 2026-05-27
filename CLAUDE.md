@@ -208,6 +208,41 @@ cd ~/src/pact-standalone && .venv/bin/python -m pact reduce . --top 20
 cd ~/src/pact-standalone && .venv/bin/python -m pact pipeline intent_pact_self.json -v
 ```
 
+## SESSION START CHECKLIST
+
+Before writing any code, do these three things:
+
+1. **Check CI** — `gh run list --limit 5`. If red, fix before anything else.
+2. **Audit reduce.py vs CLI** — `grep -n "^def [a-z]" reduce.py` vs `grep -n "argv\[0\]" cli.py`. Any public function not reachable from a subcommand is an orphaned capability. Wire it or note it.
+3. **Check dogfood freshness** — `ls -la intent_pact_self.json`. If older than 2 hours, run `pact intent analyze . --out intent_pact_self.json --improve -v` before proceeding. The dogfood queue is the improvement queue.
+
+---
+
+## HARD-LEARNED PATTERNS
+
+**LLM output quality = evidence quality, not prompt quality.**
+Generic ADR output ("add behavioral contracts") means the evidence block is missing topology. Before tuning any prompt, print the exact dict reaching the LLM. If callers/callees/betweenness are absent, fix evidence collection upstream. Give the model the graph, not just the node list.
+
+**Argparse defaults must be `None` for any arg that participates in an env var chain.**
+`default="claude-haiku-..."` silently overrides `PACT_LLM_MODEL` because argparse fills it even when the flag is absent. `None` means "not set" — let `resolve_model()` / `resolve_key()` own the resolution. This applies to `--model` and `--api-key` in every subcommand.
+
+**Filter first, `--top N` last.**
+`compute_metrics(root, top_n=N)` slices before filters run, making `--top 5 --zone pain` return fewer than 5 results. Always: compute all → apply predicates → `results[:args.top]`. N means "N results after all filters."
+
+**Disk-scanning functions are authoritative counters — never add offsets.**
+`_next_adr_number()` scans the filesystem. After writing a file, re-scan; the disk already advanced. Never compute `_next_adr_number() + len(written)` — that double-counts.
+
+**Loop termination counters must increment unconditionally.**
+`if p: count += 1` with `count >= top_n` as exit condition → infinite loop on persistent failure. Increment always; use a second counter for successes if needed.
+
+**Optional deps need `pytest.importorskip`, not silent failures.**
+Tests for gudhi/optional heavy deps pass locally, fail CI. Every test that requires an optional dep must start with `pytest.importorskip("dep")`. Check the CI install manifest before writing such tests.
+
+**`D=1.0` is noise for `Ca=0, Ce=0` modules.**
+The R.C. Martin formula gives D=1.0 for any uncoupled module — mathematically correct, architecturally meaningless. Filter to `Ca+Ce > 0` before surfacing zone-of-pain results. Isolated scripts aren't painful; they're just disconnected.
+
+---
+
 ## RULES
 
 - `GITHUB_TOKEN=$(gh auth token)` env var only — never `--token` flag
