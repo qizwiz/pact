@@ -24,6 +24,8 @@ import traceback
 from pathlib import Path
 from typing import Any
 
+_PROMPTS_DIR = Path(__file__).parent / "prompts"
+
 # ---------------------------------------------------------------------------
 # Minimal MCP protocol (JSON-RPC 2.0 over stdio)
 # ---------------------------------------------------------------------------
@@ -878,13 +880,57 @@ def _handle(req: dict) -> None:
             rid,
             {
                 "protocolVersion": "2024-11-05",
-                "capabilities": {"tools": {}},
+                "capabilities": {"tools": {}, "prompts": {}},
                 "serverInfo": {"name": "pact", "version": "0.1.0"},
             },
         )
 
     elif method == "tools/list":
         _respond(rid, {"tools": _TOOLS})
+
+    elif method == "prompts/list":
+        prompts = []
+        for p in sorted(_PROMPTS_DIR.glob("*.md")):
+            if p.stem.endswith("_improve"):
+                continue  # internal — skip
+            prompts.append(
+                {
+                    "name": p.stem,
+                    "description": p.read_text(encoding="utf-8")
+                    .splitlines()[0]
+                    .lstrip("# ")
+                    .strip(),
+                    "arguments": [
+                        {
+                            "name": "context",
+                            "description": "Extra context injected before the prompt",
+                            "required": False,
+                        }
+                    ],
+                }
+            )
+        _respond(rid, {"prompts": prompts})
+
+    elif method == "prompts/get":
+        params = req.get("params", {})
+        name = params.get("name", "")
+        context = (params.get("arguments") or {}).get("context", "")
+        prompt_path = _PROMPTS_DIR / f"{name}.md"
+        if not prompt_path.exists():
+            _error(rid, -32602, f"Prompt not found: {name}")
+            return
+        text = prompt_path.read_text(encoding="utf-8")
+        if context:
+            text = f"{context}\n\n---\n\n{text}"
+        _respond(
+            rid,
+            {
+                "description": text.splitlines()[0].lstrip("# ").strip(),
+                "messages": [
+                    {"role": "user", "content": {"type": "text", "text": text}}
+                ],
+            },
+        )
 
     elif method == "tools/call":
         params = req.get("params", {})
