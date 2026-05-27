@@ -521,7 +521,6 @@ def _show_cut_vertex_contracts(
 
 def _adrs_cmd(argv) -> int:
     """Entry point for `pact adrs [DIR] [options]`."""
-    import os
 
     p = argparse.ArgumentParser(
         prog="pact adrs",
@@ -581,12 +580,15 @@ def _adrs_cmd(argv) -> int:
     violations_json = Path(args.violations).resolve() if args.violations else None
     out_dir = Path(args.out).resolve() if args.out else None
 
-    key = args.api_key or os.environ.get("ANTHROPIC_API_KEY", "")
-    if not key:
-        print(
-            "error: ANTHROPIC_API_KEY not set (use --api-key or set the env var)",
-            file=sys.stderr,
-        )
+    # Verify auth is available — let resolve_key check the full priority chain
+    # (PACT_LLM_API_KEY → PACT_ANTHROPIC_API_KEY → ANTHROPIC_API_KEY → bearer token)
+    # so that PACT_LLM_API_KEY / OpenRouter routing works without --api-key flag.
+    from .llm import resolve_key as _resolve_key
+
+    try:
+        _resolve_key(args.api_key)
+    except RuntimeError as exc:
+        print(f"error: {exc}", file=sys.stderr)
         return 1
 
     from .adrs import draft_adrs
@@ -597,7 +599,7 @@ def _adrs_cmd(argv) -> int:
             violations_json=violations_json,
             out_dir=out_dir,
             model=args.model,
-            api_key=key,
+            api_key=args.api_key,  # None unless --api-key flag given; env vars handled by llm.py
             verbose=args.verbose,
             top_n=args.top,
         )
