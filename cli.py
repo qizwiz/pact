@@ -558,15 +558,15 @@ def _adrs_cmd(argv) -> int:
     )
     p.add_argument(
         "--model",
-        default="claude-haiku-4-5-20251001",
+        default=None,
         metavar="MODEL",
-        help="Claude model to use (default: claude-haiku-4-5-20251001)",
+        help="Model to use (default: $PACT_LLM_MODEL or claude-haiku-4-5-20251001)",
     )
     p.add_argument(
         "--api-key",
         default=None,
         metavar="KEY",
-        help="Anthropic API key (default: $ANTHROPIC_API_KEY)",
+        help="API key (default: $PACT_LLM_API_KEY or $ANTHROPIC_API_KEY)",
     )
     p.add_argument("-v", "--verbose", action="store_true", help="Verbose output")
 

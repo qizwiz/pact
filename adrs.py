@@ -368,7 +368,7 @@ def draft_adrs(
     root: Path,
     violations_json: Optional[Path] = None,
     out_dir: Optional[Path] = None,
-    model: str = "claude-haiku-4-5-20251001",
+    model: Optional[str] = None,
     api_key: Optional[str] = None,
     verbose: bool = False,
     top_n: int = 10,
@@ -377,7 +377,9 @@ def draft_adrs(
 
     Returns list of written ADR file paths.
     """
-    from .llm import resolve_key
+    from .llm import resolve_key, resolve_model
+
+    model = resolve_model(model)
 
     key = resolve_key(api_key)
 
