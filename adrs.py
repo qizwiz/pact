@@ -23,9 +23,18 @@ from typing import Optional
 
 
 @dataclass
+class FunctionTopology:
+    name: str
+    callers: list[str]  # functions that call this one
+    callees: list[str]  # functions this one calls
+    betweenness: float = 0.0
+
+
+@dataclass
 class CutVertexEvidence:
     file: str
     functions: list[str]
+    topology: list[FunctionTopology] = field(default_factory=list)
     betweenness_max: float = 0.0
     has_contract: bool = False
     contract: str = ""
@@ -189,29 +198,48 @@ def _collect_cut_vertices(
         except Exception:
             pass
 
-    # Compute betweenness from call graph for ranking
+    # Build call graph and compute betweenness + topology
     betweenness: dict[str, float] = {}
+    G = None
     try:
         import networkx as nx
 
         G = nx.DiGraph()
         for cs in call_sites:
-            G.add_edge(cs.caller, cs.callee)
-        b = nx.betweenness_centrality(G)
-        betweenness = b
+            if cs.caller_name and cs.callee_name:
+                G.add_edge(cs.caller_name, cs.callee_name)
+        betweenness = nx.betweenness_centrality(G)
     except Exception:
         pass
+
+    def _short(name: str) -> str:
+        # Drop module prefix (e.g. "pact.reduce.cut_vertex_files" → "cut_vertex_files")
+        return name.split(".")[-1] if "." in name else name
+
+    def _topology(fn: str) -> FunctionTopology:
+        if G is None or fn not in G:
+            return FunctionTopology(name=_short(fn), callers=[], callees=[])
+        callers = [_short(p) for p in G.predecessors(fn)][:5]
+        callees = [_short(s) for s in G.successors(fn)][:5]
+        return FunctionTopology(
+            name=_short(fn),
+            callers=callers,
+            callees=callees,
+            betweenness=betweenness.get(fn, 0.0),
+        )
 
     evidence = []
     for file_path, func_names in cv_map.items():
         contract, gaps = contracts.get(
             file_path, contracts.get(Path(file_path).name, ("", []))
         )
-        bmax = max((betweenness.get(fn, 0.0) for fn in func_names), default=0.0)
+        topo = [_topology(fn) for fn in func_names[:8]]
+        bmax = max((t.betweenness for t in topo), default=0.0)
         evidence.append(
             CutVertexEvidence(
                 file=file_path,
                 functions=func_names,
+                topology=topo,
                 betweenness_max=bmax,
                 has_contract=bool(contract),
                 contract=contract,
@@ -309,20 +337,29 @@ def _cv_evidence_block(ev: CutVertexEvidence) -> str:
     file_short = Path(ev.file).name
     lines = [
         f"**File**: `{file_short}`",
-        "**Cut-vertex functions** (articulation points in call graph):",
+        f"**Behavioral contract**: {'present' if ev.contract else 'MISSING'}",
     ]
-    for fn in ev.functions[:8]:
-        lines.append(f"  - `{fn}`")
-    if ev.betweenness_max > 0:
-        lines.append(f"**Betweenness centrality (max)**: {ev.betweenness_max:.4f}")
     if ev.contract:
-        lines.append(f"**Stated behavioral contract**: {ev.contract[:300]}")
-    else:
-        lines.append("**Behavioral contract**: MISSING — no formal contract exists")
+        lines.append(f"**Contract summary**: {ev.contract[:250]}")
+
+    lines.append("")
+    lines.append(
+        "**Cut-vertex functions** — each is an articulation point whose removal "
+        "disconnects the call graph. Callers / callees show what breaks:"
+    )
+    for t in ev.topology:
+        b = f"  betweenness={t.betweenness:.4f}" if t.betweenness > 0 else ""
+        lines.append(f"  - `{t.name}`{b}")
+        if t.callers:
+            lines.append(f"      called by: {', '.join(f'`{c}`' for c in t.callers)}")
+        if t.callees:
+            lines.append(f"      calls:     {', '.join(f'`{c}`' for c in t.callees)}")
+
     if ev.violations:
-        lines.append("**Known intent gaps**:")
+        lines.append("")
+        lines.append("**Known intent gaps** (from pact intent analysis):")
         for v in ev.violations[:3]:
-            lines.append(f"  - {v[:200]}")
+            lines.append(f"  - {v[:250]}")
     return "\n".join(lines)
 
 
