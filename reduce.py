@@ -883,7 +883,12 @@ def analyze_graph_reduction(
 
 
 def _live_roots(G) -> set[str]:
-    """Heuristic: nodes with no predecessors, or named like entry points."""
+    """Nodes with no predecessors, or named like known entry points.
+
+    Public functions are NOT assumed live — that masked orphaned production
+    functions like compute_module_metrics that have test callers but no path
+    from any CLI entry point.
+    """
     roots: set[str] = set()
     for node in G.nodes():
         if G.in_degree(node) == 0:
@@ -903,9 +908,6 @@ def _live_roots(G) -> set[str]:
             "dispatch",
             "process",
         }:
-            roots.add(node)
-        # Public API convention: no leading underscore, top-level module name
-        if not name.startswith("_") and "." not in node:
             roots.add(node)
     return roots or set(G.nodes())  # degenerate: treat all as live if none found
 
