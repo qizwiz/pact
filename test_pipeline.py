@@ -380,9 +380,9 @@ class TestRunPipeline:
 
     def test_execute_heal_maps_zero_patches_to_unknown(self, tmp_path, monkeypatch):
         # _execute_heal with an intent JSON that has 0 violations → 0 patches → "unknown".
-        # This exercises the real heal_project call path end-to-end without LLM calls
-        # (heal_project short-circuits when violations_attempted == 0).
+        # Requires an oracle marker so we reach heal_project (which short-circuits at 0 violations).
         monkeypatch.setenv("ANTHROPIC_API_KEY", "fake")
+        (tmp_path / "pytest.ini").write_text("[pytest]\n")
         # intent JSON with no violations — heal_project will find nothing to fix
         intent_path = tmp_path / "intent.json"
         intent_path.write_text(json.dumps({"modules": []}))
@@ -423,8 +423,8 @@ class TestRunPipeline:
         assert r.details["applied"] is True
         assert "oracle-verified" in r.summary
 
-    def test_execute_heal_no_oracle_stays_dry_run(self, tmp_path, monkeypatch):
-        """When no project markers found, heal stays dry-run."""
+    def test_execute_heal_no_oracle_skipped(self, tmp_path, monkeypatch):
+        """When no project markers found, heal is skipped (not dry-run) to avoid unverified patches."""
         monkeypatch.setenv("ANTHROPIC_API_KEY", "fake")
         (tmp_path / "target.py").write_text("def f(x): return x or None")
         intent_path = tmp_path / "intent.json"
@@ -439,9 +439,10 @@ class TestRunPipeline:
             "rationale": "fix violation",
         }
         r = _execute_heal(step, intent_path, "fake", "claude-sonnet-4-6", False)
+        assert r.status == "skipped"
         assert r.details["oracle"] == "none"
         assert r.details["applied"] is False
-        assert "dry-run" in r.summary
+        assert "oracle" in r.summary
 
     def test_missing_api_key_raises(self, tmp_path, monkeypatch):
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
