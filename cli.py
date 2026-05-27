@@ -14,6 +14,7 @@ from .reduce import (
     apply_full_reduction,
     compute_blast_radii,
     compute_fitness,
+    compute_module_metrics,
     compute_structural_coverage,
     cut_vertex_files,
 )
@@ -519,6 +520,137 @@ def _show_cut_vertex_contracts(
             print(f"  ↳ {len(added)} module(s) added to {intent_json_path.name}")
 
 
+def _metrics_cmd(argv) -> int:
+    """Entry point for `pact metrics [DIR] [options]`."""
+    p = argparse.ArgumentParser(
+        prog="pact metrics",
+        description=(
+            "R.C. Martin package metrics: instability (I), abstractness (A), "
+            "and distance from the main sequence (D) for every Python module. "
+            "Modules far from the diagonal land in the 'zone of pain' (hard to change) "
+            "or 'zone of uselessness' (never called)."
+        ),
+    )
+    p.add_argument(
+        "root",
+        nargs="?",
+        default=".",
+        metavar="DIR",
+        help="Root directory to analyze (default: current directory)",
+    )
+    p.add_argument(
+        "--top",
+        type=int,
+        default=None,
+        metavar="N",
+        help="Show only the N modules with highest distance (default: all)",
+    )
+    p.add_argument(
+        "--zone",
+        choices=["pain", "uselessness", "main"],
+        default=None,
+        help="Filter to one zone only",
+    )
+    p.add_argument(
+        "--json",
+        dest="json_mode",
+        action="store_true",
+        help="Emit results as JSON array",
+    )
+    p.add_argument(
+        "--threshold",
+        type=float,
+        default=None,
+        metavar="D",
+        help="Exit 1 if any module exceeds this distance threshold (0.0–1.0)",
+    )
+    p.add_argument(
+        "--all",
+        dest="show_all",
+        action="store_true",
+        help=(
+            "Include isolated modules (Ca=0, Ce=0). "
+            "By default these are hidden — they score D=1.0 by the math but are "
+            "not architectural concerns since nothing depends on them."
+        ),
+    )
+
+    args = p.parse_args(argv)
+    root = Path(args.root).resolve()
+    if not root.is_dir():
+        print(f"error: {root} is not a directory", file=sys.stderr)
+        return 2
+
+    # Compute all, apply --top after filtering so N means "top N after filters"
+    results = compute_module_metrics(root)
+
+    # Hide fully-isolated modules (Ca=0, Ce=0) by default — they're D=1.0
+    # by the formula but aren't structural concerns since nothing depends on them.
+    if not args.show_all:
+        results = [r for r in results if (r.ca + r.ce) > 0]
+
+    zone_map = {
+        "pain": "zone of pain",
+        "uselessness": "zone of uselessness",
+        "main": "main sequence",
+    }
+    if args.zone:
+        results = [r for r in results if r.zone == zone_map[args.zone]]
+
+    if args.top is not None:
+        results = results[: args.top]
+
+    if args.json_mode:
+        print(json.dumps([r.to_dict() for r in results], indent=2))
+        return 0
+
+    if not results:
+        print(
+            "pact metrics: no coupled modules found (try --all to include isolated modules)"
+        )
+        return 0
+
+    # Group by zone for a structured summary
+    pain = [r for r in results if r.zone == "zone of pain"]
+    useless = [r for r in results if r.zone == "zone of uselessness"]
+    seq = [r for r in results if r.zone == "main sequence"]
+
+    zone_icons = {
+        "zone of pain": "🔴",
+        "zone of uselessness": "🟡",
+        "main sequence": "🟢",
+    }
+
+    print(
+        f"pact metrics — {len(results)} coupled module(s)  "
+        f"[{len(pain)} zone-of-pain  {len(useless)} zone-of-uselessness  {len(seq)} main-sequence]\n"
+    )
+
+    for zone_label, group in [
+        ("zone of pain", pain),
+        ("zone of uselessness", useless),
+        ("main sequence", seq),
+    ]:
+        if not group:
+            continue
+        icon = zone_icons[zone_label]
+        print(f"{icon}  {zone_label.upper()} ({len(group)})")
+        for m in group:
+            print(f"   {m.summary()}")
+        print()
+
+    if args.threshold is not None:
+        worst = max(results, key=lambda m: m.distance)
+        if worst.distance > args.threshold:
+            print(
+                f"error: {worst.module} has D={worst.distance:.2f} > threshold {args.threshold:.2f}",
+                file=sys.stderr,
+            )
+            return 1
+
+    return 0
+
+
 def _adrs_cmd(argv) -> int:
     """Entry point for `pact adrs [DIR] [options]`."""
 
@@ -665,6 +797,9 @@ def main(argv=None) -> int:
         from .pipeline import main as _pipeline_main
 
         return _pipeline_main(argv[1:])
+
+    if argv and argv[0] == "metrics":
+        return _metrics_cmd(argv[1:])
 
     if argv and argv[0] == "adrs":
         return _adrs_cmd(argv[1:])

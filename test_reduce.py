@@ -1283,3 +1283,87 @@ class TestSpectralGap:
         """Non-graph input returns None gracefully."""
         sr = compute_spectral_gap(None)
         assert sr is None
+
+
+# ---------------------------------------------------------------------------
+# pact metrics CLI command
+# ---------------------------------------------------------------------------
+
+
+class TestMetricsCmd:
+    """CLI-level tests for _metrics_cmd."""
+
+    def _write(self, tmp_path, name: str, content: str) -> None:
+        (tmp_path / name).write_text(content)
+
+    def test_basic_output(self, tmp_path, capsys):
+        from .cli import _metrics_cmd
+
+        self._write(tmp_path, "core.py", "def f(): pass\n")
+        self._write(tmp_path, "user.py", "from core import f\n")
+        rc = _metrics_cmd([str(tmp_path)])
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "pact metrics" in out
+        assert "zone-of-pain" in out or "main-sequence" in out
+
+    def test_json_output(self, tmp_path, capsys):
+        import json
+        from .cli import _metrics_cmd
+
+        self._write(tmp_path, "core.py", "def f(): pass\n")
+        self._write(tmp_path, "user.py", "import requests\nfrom core import f\n")
+        rc = _metrics_cmd([str(tmp_path), "--json"])
+        assert rc == 0
+        data = json.loads(capsys.readouterr().out)
+        assert isinstance(data, list)
+        assert all("module" in m and "distance" in m and "zone" in m for m in data)
+
+    def test_zone_filter(self, tmp_path, capsys):
+        from .cli import _metrics_cmd
+
+        # core.py: imported by user, no external deps → zone of pain
+        self._write(tmp_path, "core.py", "def f(): pass\n")
+        self._write(tmp_path, "user.py", "from core import f\n")
+        rc = _metrics_cmd([str(tmp_path), "--zone", "pain"])
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "ZONE OF PAIN" in out
+        assert "main-sequence" not in out.lower() or "0 main-sequence" in out
+
+    def test_threshold_exit_1_when_exceeded(self, tmp_path, capsys):
+        from .cli import _metrics_cmd
+
+        # core.py has D=1.0 — well above any threshold
+        self._write(tmp_path, "core.py", "def f(): pass\n")
+        self._write(tmp_path, "user.py", "from core import f\n")
+        rc = _metrics_cmd([str(tmp_path), "--threshold", "0.5"])
+        assert rc == 1
+
+    def test_threshold_exit_0_when_not_exceeded(self, tmp_path, capsys):
+        from .cli import _metrics_cmd
+
+        # A module right on the main sequence should pass a strict threshold
+        self._write(tmp_path, "balanced.py", "import requests\n")
+        rc = _metrics_cmd([str(tmp_path), "--threshold", "0.5"])
+        # balanced has Ca=0, Ce=1, I=1.0, D=0 — passes, but filtered (Ca=0 Ce=1>0)
+        assert rc == 0
+
+    def test_missing_dir_returns_2(self, tmp_path):
+        from .cli import _metrics_cmd
+
+        rc = _metrics_cmd([str(tmp_path / "does_not_exist")])
+        assert rc == 2
+
+    def test_top_n_limits_after_filters(self, tmp_path, capsys):
+        from .cli import _metrics_cmd
+
+        for i in range(5):
+            self._write(tmp_path, f"core{i}.py", "def f(): pass\n")
+            self._write(tmp_path, f"user{i}.py", f"from core{i} import f\n")
+        rc = _metrics_cmd([str(tmp_path), "--zone", "pain", "--top", "2"])
+        assert rc == 0
+        out = capsys.readouterr().out
+        # Only 2 pain modules shown even though there are 5
+        lines = [l for l in out.splitlines() if l.startswith("   ")]
+        assert len(lines) == 2
