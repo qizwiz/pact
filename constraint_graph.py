@@ -658,6 +658,57 @@ def _find_optional_deref_sites(fn_node: ast.AST, via: str) -> list[dict]:
 def _is_index_guarded(subscript_node: ast.Subscript, scope: ast.AST) -> bool:
     """True if subscript_node is inside an if-block or after a len/bool check."""
     container_src = ast.unparse(subscript_node.value)
+    # The bare name being indexed (for `records[0]` → "records")
+    container_name = (
+        subscript_node.value.id if isinstance(subscript_node.value, ast.Name) else None
+    )
+
+    # Early-exit guard: `if not x: return/continue` before the access
+    if container_name:
+        for parent in ast.walk(scope):
+            if not isinstance(parent, ast.If):
+                continue
+            test = parent.test
+            # if not x / if len(x) == 0 / if x is None
+            test_src = ast.unparse(test)
+            is_empty_check = (
+                (
+                    isinstance(test, ast.UnaryOp)
+                    and isinstance(test.op, ast.Not)
+                    and isinstance(test.operand, ast.Name)
+                    and test.operand.id == container_name
+                )
+                or f"not {container_name}" in test_src
+                or f"{container_name} is None" in test_src
+                or f"len({container_name}) == 0" in test_src
+            )
+            if not is_empty_check:
+                continue
+            # Body must be a short-circuit (return/continue/raise/pass)
+            body_exits = any(
+                isinstance(n, (ast.Return, ast.Continue, ast.Raise, ast.Break))
+                for n in ast.walk(
+                    ast.Module(body=parent.body, type_ignores=[])  # type: ignore[arg-type]
+                )
+            )
+            if body_exits:
+                return True
+
+    # Ternary guard: `x[0] if x else default` or `x[0] if len(x) > 0 else ...`
+    for parent in ast.walk(scope):
+        if isinstance(parent, ast.IfExp):  # ternary
+            # subscript is in the 'body' (true branch) of ANY ternary
+            if any(subscript_node is n for n in ast.walk(parent.body)):
+                return True  # any ternary wrapping the access is a guard
+
+    # Skip subscripts in lambda/generator parameters — always structurally safe
+    for parent in ast.walk(scope):
+        if isinstance(
+            parent,
+            (ast.Lambda, ast.GeneratorExp, ast.ListComp, ast.SetComp, ast.DictComp),
+        ):
+            if any(subscript_node is n for n in ast.walk(parent)):
+                return True
 
     for parent in ast.walk(scope):
         # if container or if len(container) or if container is not None
