@@ -655,6 +655,11 @@ def _find_optional_deref_sites(fn_node: ast.AST, via: str) -> list[dict]:
     return deduped
 
 
+def _base_names(expr: ast.expr) -> set[str]:
+    """All Name ids inside an expression — for matching guards on chained exprs."""
+    return {n.id for n in ast.walk(expr) if isinstance(n, ast.Name)}
+
+
 def _is_index_guarded(subscript_node: ast.Subscript, scope: ast.AST) -> bool:
     """True if subscript_node is inside an if-block or after a len/bool check."""
     container_src = ast.unparse(subscript_node.value)
@@ -662,6 +667,9 @@ def _is_index_guarded(subscript_node: ast.Subscript, scope: ast.AST) -> bool:
     container_name = (
         subscript_node.value.id if isinstance(subscript_node.value, ast.Name) else None
     )
+    # All variable names that appear anywhere in the container expression.
+    # For `list(d.keys())[0]` this is {"list", "d"} — lets us match `if d and ...`
+    container_base_names = _base_names(subscript_node.value)
 
     # Early-exit guard: `if not x: return/continue` before the access
     if container_name:
@@ -724,6 +732,18 @@ def _is_index_guarded(subscript_node: ast.Subscript, scope: ast.AST) -> bool:
                 )
                 if in_body:
                     return True
+            # `if x and x[0]` or `if x and f(x[0])` — subscript is guarded by an
+            # earlier operand in the same `and` condition that tests the container
+            if isinstance(parent.test, ast.BoolOp) and isinstance(
+                parent.test.op, ast.And
+            ):
+                for i, val in enumerate(parent.test.values):
+                    val_names = _base_names(val)
+                    # Left operand mentions one of the container's base names
+                    if val_names & container_base_names:
+                        for later in parent.test.values[i + 1 :]:
+                            if any(subscript_node is n for n in ast.walk(later)):
+                                return True
         # try/except IndexError or similar
         if isinstance(parent, ast.Try):
             for handler in parent.handlers:
