@@ -51,6 +51,7 @@ import os
 import sys
 import textwrap
 import time
+import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
@@ -648,8 +649,8 @@ def _z3_optimal_heal_order(violations_doc: dict, top_k: int = 5) -> list[str] | 
                 reverse=True,
             )
             return [file_viols[i][0] for i in order]
-    except Exception:
-        pass
+    except Exception as exc:
+        warnings.warn(f"violation ordering failed: {exc}", RuntimeWarning)
     return None
 
 

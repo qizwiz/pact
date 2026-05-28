@@ -3,6 +3,7 @@
 import argparse
 import json
 import sys
+import warnings
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -393,8 +394,8 @@ def _show_cut_vertex_contracts(
         _ctx = _gather(root, max_commits=500, github=False)
         if _ctx and _ctx.tornhill:
             _coupling = _ctx.tornhill.temporal_coupling
-    except Exception:
-        pass
+    except Exception as exc:
+        warnings.warn(f"Tornhill coupling lookup failed: {exc}", RuntimeWarning)
 
     cv_files = cut_vertex_files(functions, call_sites, coupling_edges=_coupling or None)
     if not cv_files:
@@ -412,8 +413,6 @@ def _show_cut_vertex_contracts(
         try:
             intent_data = json.loads(intent_json_path.read_text())
         except (json.JSONDecodeError, OSError) as exc:
-            import warnings
-
             warnings.warn(
                 f"cli: could not load intent data from {intent_json_path} "
                 f"({type(exc).__name__}: {exc}); contract annotations will be absent",

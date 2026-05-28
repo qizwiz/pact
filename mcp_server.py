@@ -78,6 +78,17 @@ def _to_sampling_messages(messages: list[dict]) -> list[dict]:
     return out
 
 
+_DEBUG_LOG = Path("/tmp/pact_mcp_debug.jsonl")
+
+
+def _dbg(event: str, data: object = None) -> None:
+    try:
+        with _DEBUG_LOG.open("a") as f:
+            f.write(json.dumps({"event": event, "data": data}) + "\n")
+    except Exception:
+        pass
+
+
 def _sample(messages: list[dict], max_tokens: int = 8192, system: str = "") -> str:
     """Send sampling/createMessage to the host LLM; block until response arrives."""
     sample_id = f"s-{uuid.uuid4().hex[:12]}"
@@ -87,14 +98,17 @@ def _sample(messages: list[dict], max_tokens: int = 8192, system: str = "") -> s
     }
     if system:
         params["systemPrompt"] = system
-    _send(
-        {
-            "jsonrpc": "2.0",
-            "id": sample_id,
-            "method": "sampling/createMessage",
-            "params": params,
-        }
+    req = {
+        "jsonrpc": "2.0",
+        "id": sample_id,
+        "method": "sampling/createMessage",
+        "params": params,
+    }
+    _dbg(
+        "sampling_request_sent",
+        {"id": sample_id, "n_messages": len(params["messages"])},
     )
+    _send(req)
     for line in sys.stdin:
         line = line.strip()
         if not line:
@@ -102,15 +116,29 @@ def _sample(messages: list[dict], max_tokens: int = 8192, system: str = "") -> s
         try:
             msg = json.loads(line)
         except json.JSONDecodeError:
+            _dbg("sampling_parse_error", line[:200])
             continue
+        _dbg(
+            "sampling_stdin_received",
+            {
+                "id": msg.get("id"),
+                "has_result": "result" in msg,
+                "has_error": "error" in msg,
+            },
+        )
         if msg.get("id") == sample_id:
             if "result" in msg:
                 content = msg["result"].get("content", {})
+                _dbg("sampling_success", {"content_type": type(content).__name__})
                 if isinstance(content, dict):
                     return content.get("text", "")
                 return str(content)
-            raise RuntimeError(f"Sampling error: {msg.get('error', '?')}")
+            err = msg.get("error", "?")
+            _dbg("sampling_error", err)
+            raise RuntimeError(f"Sampling error: {err}")
+        _dbg("sampling_queued", msg.get("method", msg.get("id", "?")))
         _queued_requests.append(msg)
+    _dbg("sampling_stdin_closed")
     raise RuntimeError("stdin closed while waiting for sampling response")
 
 
@@ -472,7 +500,111 @@ _TOOLS = [
             "required": ["mode"],
         },
     },
+    {
+        "name": "pact_ping",
+        "description": (
+            "Diagnostic: probe whether MCP sampling/createMessage is working. "
+            "Sends a single sampling request to the host and returns the response "
+            "or the error. Use this to verify the sampling round-trip before running "
+            "pact_heal or pact_find."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "prompt": {
+                    "type": "string",
+                    "default": "Reply with exactly: SAMPLING_OK",
+                    "description": "Prompt to send via sampling/createMessage",
+                }
+            },
+            "required": [],
+        },
+    },
 ]
+
+
+# ---------------------------------------------------------------------------
+# Human-readable markdown renderers
+# ---------------------------------------------------------------------------
+
+
+def _md_check(r: dict) -> str:
+    modules = r.get("modules", [])
+    if not modules:
+        return f"**{r.get('project', '?')}** — no violations found."
+    lines = [f"## pact check — {r.get('project', '?')}\n"]
+    total = sum(len(m.get("violations", [])) for m in modules)
+    lines.append(f"**{total} violation(s)** across {len(modules)} file(s)\n")
+    for m in modules:
+        viols = m.get("violations", [])
+        if not viols:
+            continue
+        lines.append(f"\n### `{m['path'].rsplit('/', 1)[-1]}`")
+        for v in viols:
+            lines.append(
+                f"- **{v['severity']}** line {v['line']} — `{v.get('evidence','')}`"
+            )
+            if v.get("explanation"):
+                lines.append(f"  _{v['explanation'].splitlines()[0]}_")
+    return "\n".join(lines)
+
+
+def _md_heal(r: dict) -> str:
+    lines = [f"## pact heal — {r.get('project', '?')}\n"]
+    lines.append(
+        f"Attempted **{r['violations_attempted']}** | "
+        f"Accepted **{r['patches_accepted']}** | "
+        f"Rejected **{r['patches_rejected']}**\n"
+    )
+    if r.get("oracle_warning"):
+        lines.append(f"> ⚠ {r['oracle_warning']}\n")
+    results = r.get("results", [])
+    if not results:
+        lines.append("_No patches synthesized._")
+        lines.append(
+            "\n> Possible cause: LLM sampling unavailable during synchronous "
+            "tool execution. Run `pact heal` directly from the CLI to use "
+            "the Anthropic API."
+        )
+    else:
+        for res in results:
+            verdict = res.get("verify_verdict", "?")
+            icon = (
+                "✓"
+                if res.get("oracle_confirmed")
+                else ("~" if verdict == "ACCEPT" else "✗")
+            )
+            lines.append(
+                f"- {icon} `{res['file'].rsplit('/', 1)[-1]}:{res['line']}` "
+                f"{verdict} (score={res.get('verify_score', 0):.2f})"
+                + (" oracle_confirmed" if res.get("oracle_confirmed") else "")
+            )
+    return "\n".join(lines)
+
+
+def _md_topology(r: dict) -> str:
+    lines = [f"## pact topology — {r.get('root', '?').rsplit('/', 1)[-1]}\n"]
+    lines.append(
+        f"**{r.get('n_functions', 0)} functions** · "
+        f"**{len(r.get('cut_vertices', []))} cut vertices** · "
+        f"**{len(r.get('strongly_connected_components', []))} SCCs**\n"
+    )
+    cvs = r.get("cut_vertices", [])
+    if cvs:
+        lines.append("### Cut Vertices (load-bearing joints)")
+        for cv in cvs[:20]:
+            lines.append(
+                f"- `{cv['function']}` in `{cv['file'].rsplit('/', 1)[-1]}` "
+                f"btw={cv['betweenness']}"
+            )
+    return "\n".join(lines)
+
+
+_MD_RENDERERS = {
+    "pact_check": _md_check,
+    "pact_heal": _md_heal,
+    "pact_topology": _md_topology,
+}
 
 
 # ---------------------------------------------------------------------------
@@ -703,9 +835,25 @@ def _tool_pact_loop(params: dict) -> dict:
     if verbose:
         argv.append("--verbose")
 
+    # Capture loop output without redirecting sys.stdout — _sample() must write
+    # to the real stdout to reach the host via sampling/createMessage.
     buf = _io.StringIO()
+    import io as _real_io
+
+    _real_stdout = sys.__stdout__  # always the real fd, unaffected by redirects
+
+    class _Tee(_real_io.TextIOBase):
+        def write(self, s: str) -> int:
+            _real_stdout.write(s)
+            _real_stdout.flush()
+            buf.write(s)
+            return len(s)
+
+        def flush(self) -> None:
+            _real_stdout.flush()
+
     old_stdout = sys.stdout
-    sys.stdout = buf
+    sys.stdout = _Tee()
     try:
         with _sampling_backend():
             exit_code = loop_main(argv)
@@ -913,6 +1061,19 @@ def _tool_pact_spec_learn(params: dict) -> dict:
     }
 
 
+def _tool_pact_ping(params: dict) -> dict:
+    """Probe sampling/createMessage: send one request, return raw result or error."""
+    prompt = params.get("prompt", "Reply with exactly: SAMPLING_OK")
+    try:
+        text = _sample(
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=64,
+        )
+        return {"status": "ok", "response": text}
+    except Exception as exc:
+        return {"status": "error", "error": f"{type(exc).__name__}: {exc}"}
+
+
 _DISPATCH = {
     # Zero-LLM structural tools — work without ANTHROPIC_API_KEY
     "pact_topology": _tool_pact_topology,
@@ -927,6 +1088,8 @@ _DISPATCH = {
     "pact_heal": _tool_pact_heal,
     "pact_loop": _tool_pact_loop,
     "pact_spec_learn": _tool_pact_spec_learn,
+    # Diagnostic
+    "pact_ping": _tool_pact_ping,
 }
 
 # ---------------------------------------------------------------------------
@@ -939,11 +1102,12 @@ def _handle(req: dict) -> None:
     method = req.get("method", "")
 
     if method == "initialize":
+        _dbg("initialize", req.get("params", {}))
         _respond(
             rid,
             {
                 "protocolVersion": "2024-11-05",
-                "capabilities": {"tools": {}, "prompts": {}, "sampling": {}},
+                "capabilities": {"tools": {}, "prompts": {}},
                 "serverInfo": {"name": "pact", "version": "0.1.0"},
             },
         )
@@ -1005,10 +1169,9 @@ def _handle(req: dict) -> None:
             return
         try:
             result = fn(args)
-            _respond(
-                rid,
-                {"content": [{"type": "text", "text": json.dumps(result, indent=2)}]},
-            )
+            renderer = _MD_RENDERERS.get(name)
+            text = renderer(result) if renderer else json.dumps(result, indent=2)
+            _respond(rid, {"content": [{"type": "text", "text": text}]})
         except Exception as exc:
             _error(
                 rid, -32603, f"{type(exc).__name__}: {exc}\n{traceback.format_exc()}"

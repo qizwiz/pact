@@ -170,8 +170,8 @@ def _collect_cut_vertices(
         ctx = enrich_gather(root, max_commits=300, github=False)
         if ctx and ctx.tornhill:
             coupling = ctx.tornhill.temporal_coupling
-    except Exception:
-        pass
+    except Exception as exc:
+        warnings.warn(f"Tornhill coupling lookup failed: {exc}", RuntimeWarning)
 
     cv_map = cut_vertex_files(functions, call_sites, coupling_edges=coupling or None)
     if not cv_map:
@@ -195,8 +195,8 @@ def _collect_cut_vertices(
                 if path:
                     contracts[path] = (contract, gaps)
                     contracts[Path(path).name] = (contract, gaps)
-        except Exception:
-            pass
+        except Exception as exc:
+            warnings.warn(f"contract dict build failed: {exc}", RuntimeWarning)
 
     # Build call graph and compute betweenness + topology
     betweenness: dict[str, float] = {}
@@ -209,8 +209,8 @@ def _collect_cut_vertices(
             if cs.caller_name and cs.callee_name:
                 G.add_edge(cs.caller_name, cs.callee_name)
         betweenness = nx.betweenness_centrality(G)
-    except Exception:
-        pass
+    except Exception as exc:
+        warnings.warn(f"NetworkX betweenness failed: {exc}", RuntimeWarning)
 
     def _short(name: str) -> str:
         # Drop module prefix (e.g. "pact.reduce.cut_vertex_files" → "cut_vertex_files")

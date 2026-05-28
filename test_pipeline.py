@@ -609,7 +609,7 @@ class TestPreencodedZ3Script:
                 preencoded_z3_script="print('no z3 import here')",
             )
         except Exception:
-            pass
+            pass  # intentional — verifies oracle fallback
         assert called  # LLM was called (preencoded rejected, fell through)
 
 

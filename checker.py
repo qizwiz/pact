@@ -2,6 +2,7 @@
 Main orchestration: parse → graph → FailureMode registry → Z3 → violations.
 """
 
+import warnings
 from pathlib import Path
 from typing import Optional
 
@@ -244,8 +245,11 @@ def check_codebase(
             if key not in seen:
                 seen.add(key)
                 violations.append(v)
-    except Exception:
-        pass  # semgrep unavailable or crashed — AST results still complete
+    except Exception as exc:
+        warnings.warn(
+            f"semgrep unavailable or crashed — AST results still complete: {exc}",
+            RuntimeWarning,
+        )
 
     # Mypy — type-system-confirmed optional_dereference violations.
     # Complements AST heuristic with union-attr + None-attr errors.
@@ -257,8 +261,8 @@ def check_codebase(
             if key not in seen:
                 seen.add(key)
                 violations.append(v)
-    except Exception:
-        pass  # mypy unavailable or crashed
+    except Exception as exc:
+        warnings.warn(f"mypy unavailable or crashed: {exc}", RuntimeWarning)
 
     return violations
 

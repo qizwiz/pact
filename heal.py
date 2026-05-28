@@ -22,6 +22,7 @@ from __future__ import annotations
 import json
 import tempfile
 import textwrap
+import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
@@ -297,8 +298,10 @@ def _autodetect_test_cmd(project_root: Path) -> Optional[str]:
                 cmd = cfg.get("tool", {}).get("pact", {}).get("oracle_cmd")
                 if cmd:
                     return cmd
-            except Exception:
-                pass
+            except Exception as exc:
+                warnings.warn(
+                    f"pyproject.toml oracle config parse failed: {exc}", RuntimeWarning
+                )
 
     # pytest: any of these files signal a pytest project
     pytest_markers = [
@@ -1258,8 +1261,8 @@ def heal_project(
                 _cached = json.loads(_cache_path.read_text())
                 if _time.time() - _cached.get("ts", 0) < 1800:
                     _baseline_ok = _cached.get("ok")
-            except Exception:
-                pass
+            except Exception as exc:
+                warnings.warn(f"oracle cache read failed: {exc}", RuntimeWarning)
         if _baseline_ok is None:
             _baseline_ok, _ = _run_oracle(
                 effective_test_cmd, project_root, verbose=False
@@ -1268,8 +1271,8 @@ def heal_project(
                 _cache_path.write_text(
                     json.dumps({"ok": _baseline_ok, "ts": _time.time()})
                 )
-            except Exception:
-                pass
+            except Exception as exc:
+                warnings.warn(f"oracle cache write failed: {exc}", RuntimeWarning)
         if not _baseline_ok:
             if verbose:
                 print(
@@ -1288,8 +1291,8 @@ def heal_project(
             _baseline_checker_count = len(_check_cb(project_root))
             if verbose:
                 print(f"[heal] checker baseline: {_baseline_checker_count} violations")
-        except Exception:
-            pass
+        except Exception as exc:
+            warnings.warn(f"checker baseline computation failed: {exc}", RuntimeWarning)
 
     if verbose:
         print(f"[heal] {len(to_heal)} violations to attempt ({', '.join(sev_set)})")

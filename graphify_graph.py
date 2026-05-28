@@ -13,6 +13,7 @@ and pact runs as if this module doesn't exist.
 from __future__ import annotations
 
 import json
+import warnings
 from pathlib import Path
 
 
@@ -196,8 +197,10 @@ class CallGraph:
             try:
                 g = json.loads(graph_path.read_text())
                 return cls(g.get("nodes", []), g.get("links", []))
-            except Exception:
-                pass  # fall through to AST fallback
+            except Exception as exc:
+                warnings.warn(
+                    f"JSON parse of graphify output failed: {exc}", RuntimeWarning
+                )
 
         return cls._from_ast(root)
 

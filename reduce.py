@@ -1266,8 +1266,8 @@ def compute_structural_coverage(
             try:
                 intent_data = json.loads(p.read_text())
                 break
-            except Exception:
-                pass
+            except Exception as exc:
+                warnings.warn(f"intent JSON parse failed: {exc}", RuntimeWarning)
 
     # Build path + basename → has_contract lookup
     has_contract: set[str] = set()

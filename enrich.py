@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 import re
 import subprocess
+import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
@@ -1098,8 +1099,8 @@ def get_file_intent_coverage(
             all_signals = _extract_test_intent(test_files)
             matched = _match_tests_for_module(Path(file_path), all_signals)
             test_sigs = [s["description"] for s in matched]
-        except Exception:
-            pass
+        except Exception as exc:
+            warnings.warn(f"test matching failed: {exc}", RuntimeWarning)
 
     return IntentCoverage(
         level=level,

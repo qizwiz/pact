@@ -27,6 +27,7 @@ import os as _os
 import re
 import sys as _sys
 import time as _time
+import warnings
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Optional
@@ -930,7 +931,6 @@ def _extract_test_intent(test_files: list[Path]) -> list[dict]:
     SyntaxError in any file is caught and skipped with a RuntimeWarning.
     Functions whose names do not start with ``test_`` are ignored.
     """
-    import warnings
 
     results: list[dict] = []
     for tf in test_files:
@@ -2333,8 +2333,8 @@ def extract_project_intent(
         if ".pact_stages" not in _gi_text:
             with _gi.open("a") as _fh:
                 _fh.write("\n.pact_stages/\n")
-    except Exception:
-        pass
+    except Exception as exc:
+        warnings.warn(f".gitignore update failed: {exc}", RuntimeWarning)
 
     def _cache_key(f: Path, src: str) -> str:
         # Keyed on file content + model only — not essence, which is non-deterministic
@@ -2355,8 +2355,8 @@ def extract_project_intent(
         p = _stages_dir / f"{key}.json"
         try:
             p.write_text(json.dumps(asdict(module), indent=2))
-        except Exception:
-            pass
+        except Exception as exc:
+            warnings.warn(f"staged module write failed: {exc}", RuntimeWarning)
 
     tasks = [_build_task(f) for f in files]
     module_sources: dict[str, str] = {str(f): src for f, src, _ in tasks}

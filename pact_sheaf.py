@@ -42,6 +42,7 @@ COBOUNDARY MATRIX
 from __future__ import annotations
 
 import ast as _ast
+import warnings
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -1228,8 +1229,8 @@ def sheaf_summary(path: str, *, call_graph: object = None) -> dict:
                 _nx_graph.add_edges_from(_cg_edges)
                 _pr = _compute_persistence(_nx_graph)
                 persistence_result = _pr.to_dict()
-        except Exception:
-            pass
+        except Exception as exc:
+            warnings.warn(f"persistence computation failed: {exc}", RuntimeWarning)
 
     # total_persistence_h1: primary fragility score (replaces raw β₁ count).
     # If persistence computation succeeded, use it; otherwise fall back to β₁.
@@ -1252,8 +1253,8 @@ def sheaf_summary(path: str, *, call_graph: object = None) -> dict:
             sr = _csg(call_graph)
             if sr is not None:
                 spectral = sr.to_dict()
-        except Exception:
-            pass
+        except Exception as exc:
+            warnings.warn(f"spectral computation failed: {exc}", RuntimeWarning)
 
     result: dict = {
         "h1_semantic": h1_sem,

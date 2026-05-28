@@ -35,6 +35,7 @@ import subprocess
 import sys
 import textwrap
 import tempfile
+import warnings
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -394,8 +395,11 @@ def verify_contract(
                     counterexample = refined_result.get("counterexample")
                     explanation = refined_result.get("explanation", "")
                     z3_script = refined  # surface the corrected script
-        except Exception:
-            pass  # CEGIS round is best-effort; base result still valid
+        except Exception as exc:
+            warnings.warn(
+                f"CEGIS round is best-effort; base result still valid: {exc}",
+                RuntimeWarning,
+            )
 
     return ContractVerificationResult(
         function_name=function_name,
