@@ -1478,12 +1478,40 @@ def structural_risk_report(root: str, top_n: int = 20) -> dict:
                 m = solver.model()
                 z3_model = {str(d): str(m[d]) for d in m.decls() if m[d] is not None}
         elif sites:
-            z3_sat = "unsat"  # sites found but all guarded
+            z3_sat = "unsat"
 
         dag_stats = analyze_constraint_dag(G_dag)
 
-        # Risk score: betweenness amplified by number of formal violations
-        risk_score = btw_score * (1 + len(unguarded))
+        # WP extraction: proof obligations per dangerous operation
+        try:
+            obligations = extract_wp(source_file, fn_name)
+        except Exception:
+            obligations = []
+        missing_obs = [
+            {
+                "line": o.line,
+                "operation": o.operation,
+                "wp": o.wp,
+                "counterexample": o.counterexample,
+            }
+            for o in obligations
+            if not o.discharged
+        ]
+        discharged_obs = [
+            {
+                "line": o.line,
+                "operation": o.operation,
+                "wp": o.wp,
+                "evidence": o.discharge_evidence,
+            }
+            for o in obligations
+            if o.discharged
+        ]
+
+        # Risk score: betweenness × (1 + missing proof obligations)
+        # Missing WP obligations are more precise than unguarded pattern sites
+        n_missing = len(missing_obs) if missing_obs else len(unguarded)
+        risk_score = btw_score * (1 + n_missing)
 
         findings.append(
             {
@@ -1491,6 +1519,10 @@ def structural_risk_report(root: str, top_n: int = 20) -> dict:
                 "file": source_file,
                 "betweenness": round(btw_score, 4),
                 "risk_score": round(risk_score, 4),
+                # WP proof obligations (primary signal)
+                "missing_obligations": missing_obs,
+                "discharged_obligations": discharged_obs,
+                # Pattern-based sites (secondary / legacy signal)
                 "unguarded_sites": unguarded,
                 "guarded_sites": [s for s in sites if s["guarded"]],
                 "z3_sat": z3_sat,
@@ -1504,8 +1536,12 @@ def structural_risk_report(root: str, top_n: int = 20) -> dict:
     # Sort by risk score descending
     findings.sort(key=lambda x: x["risk_score"], reverse=True)
 
-    n_violated = sum(1 for f in findings if f["unguarded_sites"])
-    n_clean = sum(1 for f in findings if not f["unguarded_sites"])
+    n_violated = sum(
+        1 for f in findings if f["missing_obligations"] or f["unguarded_sites"]
+    )
+    n_clean = sum(
+        1 for f in findings if not f["missing_obligations"] and not f["unguarded_sites"]
+    )
 
     return {
         "project": root_path.name,

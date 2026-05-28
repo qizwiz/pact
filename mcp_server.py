@@ -766,8 +766,11 @@ def _md_risk(r: dict) -> str:
         return "\n".join(lines)
 
     for i, f in enumerate(findings[:15], 1):
-        violated = bool(f.get("unguarded_sites"))
-        icon = "🔴" if violated else "🟢"
+        missing = f.get("missing_obligations", [])
+        discharged = f.get("discharged_obligations", [])
+        unguarded = f.get("unguarded_sites", [])
+        has_issue = bool(missing or unguarded)
+        icon = "🔴" if has_issue else "🟢"
         lines.append(
             f"### {i}. {icon} `{f['function']}` in `{f['file'].rsplit('/', 1)[-1]}`"
         )
@@ -775,13 +778,32 @@ def _md_risk(r: dict) -> str:
             f"btw={f['betweenness']}  risk={f['risk_score']}  "
             f"β₁={f['beta1']}  z3={f['z3_sat']}"
         )
-        for s in f.get("unguarded_sites", [])[:4]:
-            via = f" via `{s['via']}`" if s.get("via") else ""
-            lines.append(f"- line {s['line']}{via} `{s['pattern']}` arg=`{s['arg']}`")
+
+        # Proof obligations — primary signal
+        if missing:
+            lines.append(f"\n**{len(missing)} missing proof obligation(s):**")
+            for o in missing[:4]:
+                lines.append(
+                    f"- ✗ L{o['line']} `{o['operation']}` — "
+                    f"requires `{o['wp']}` · counterexample: `{o['counterexample']}`"
+                )
+        if discharged:
+            lines.append(
+                f"_{len(discharged)} obligation(s) proved: "
+                + ", ".join(f"L{o['line']}" for o in discharged[:4])
+                + "_"
+            )
+
+        # Pattern sites — secondary (only show when no WP obligations computed)
+        if not missing and not discharged and unguarded:
+            for s in unguarded[:3]:
+                via = f" via `{s['via']}`" if s.get("via") else ""
+                lines.append(f"- line {s['line']}{via} `{s['pattern']}` `{s['arg']}`")
+
         lbc = f.get("load_bearing_constraints", [])
-        if lbc:
-            top = ", ".join(f"`{c['label']}`({c['betweenness']})" for c in lbc[:3])
-            lines.append(f"  load-bearing: {top}")
+        if lbc and has_issue:
+            top = ", ".join(f"`{c['label']}`" for c in lbc[:3])
+            lines.append(f"  load-bearing constraints: {top}")
         lines.append("")
 
     return "\n".join(lines)
