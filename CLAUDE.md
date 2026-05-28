@@ -218,6 +218,17 @@ Before writing any code, do these three things:
 
 ---
 
+## MCP SERVER NOTES
+
+**Claude Code 2.1.153 does not support `sampling/createMessage`.**
+The client's `initialize` capabilities are `{"roots": {}, "elicitation": {}}` — no `"sampling"`.
+LLM tools (`pact_heal`, `pact_find`, `pact_context`, `pact_loop`, `pact_spec_learn`) work via
+MCP only when the host supports sampling. Until then, run them via CLI with `ANTHROPIC_API_KEY`.
+API billing resets 2026-06-01. The zero-LLM tools (`pact_topology`, `pact_metrics`,
+`pact_z3_verify`, `pact_check`, `pact_sheaf`, `pact_tda`) work fully via MCP today.
+
+---
+
 ## HARD-LEARNED PATTERNS
 
 **LLM output quality = evidence quality, not prompt quality.**

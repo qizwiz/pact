@@ -51,6 +51,11 @@ def _error(id: Any, code: int, message: str) -> None:
 # ---------------------------------------------------------------------------
 
 _queued_requests: list[dict] = []
+_client_supports_sampling: bool = False  # set from initialize capabilities
+
+
+class SamplingUnavailable(RuntimeError):
+    """Raised when the host does not support sampling/createMessage."""
 
 
 def _to_sampling_messages(messages: list[dict]) -> list[dict]:
@@ -91,6 +96,11 @@ def _dbg(event: str, data: object = None) -> None:
 
 def _sample(messages: list[dict], max_tokens: int = 8192, system: str = "") -> str:
     """Send sampling/createMessage to the host LLM; block until response arrives."""
+    if not _client_supports_sampling:
+        raise SamplingUnavailable(
+            "Host does not support sampling/createMessage. "
+            "Run LLM tools via the CLI: pact heal / pact find / pact context"
+        )
     sample_id = f"s-{uuid.uuid4().hex[:12]}"
     params: dict = {
         "messages": _to_sampling_messages(messages),
@@ -1102,7 +1112,11 @@ def _handle(req: dict) -> None:
     method = req.get("method", "")
 
     if method == "initialize":
-        _dbg("initialize", req.get("params", {}))
+        params = req.get("params", {})
+        _dbg("initialize", params)
+        global _client_supports_sampling
+        _client_supports_sampling = "sampling" in params.get("capabilities", {})
+        _dbg("sampling_supported", _client_supports_sampling)
         _respond(
             rid,
             {
@@ -1172,6 +1186,28 @@ def _handle(req: dict) -> None:
             renderer = _MD_RENDERERS.get(name)
             text = renderer(result) if renderer else json.dumps(result, indent=2)
             _respond(rid, {"content": [{"type": "text", "text": text}]})
+        except SamplingUnavailable as exc:
+            _respond(
+                rid,
+                {
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": (
+                                f"## {name} — LLM unavailable via MCP\n\n"
+                                f"{exc}\n\n"
+                                "**CLI equivalent:**\n"
+                                "```bash\n"
+                                f"cd ~/src/pact-standalone && "
+                                f".venv/bin/python -m pact {name.replace('pact_', '')} "
+                                f"<args>\n"
+                                "```\n\n"
+                                "API billing resets 2026-06-01 00:00 UTC."
+                            ),
+                        }
+                    ]
+                },
+            )
         except Exception as exc:
             _error(
                 rid, -32603, f"{type(exc).__name__}: {exc}\n{traceback.format_exc()}"
