@@ -24,64 +24,169 @@ import z3
 # ---------------------------------------------------------------------------
 
 
+def _is_pure_function(source_file: str, fn_qualname: str) -> bool:
+    """Heuristic: True if the function body contains no I/O or subprocess calls."""
+    try:
+        source = Path(source_file).read_text(encoding="utf-8")
+        tree = ast.parse(source)
+    except (OSError, SyntaxError):
+        return False
+    fn_node = _find_function_node(tree, fn_qualname)
+    if fn_node is None:
+        return False
+    for node in ast.walk(fn_node):
+        if isinstance(node, ast.Call):
+            func = node.func
+            # Flag any open/subprocess/os.path calls
+            if isinstance(func, ast.Attribute) and func.attr in (
+                "open",
+                "run",
+                "call",
+                "popen",
+                "read_text",
+                "write_text",
+                "read",
+                "write",
+                "listdir",
+                "walk",
+            ):
+                return False
+            if isinstance(func, ast.Name) and func.id in ("open", "print"):
+                return False
+    return True
+
+
 def run_crosshair(
     fn_qualname: str, source_file: str, timeout: float = 10.0
 ) -> list[dict]:
-    """Run crosshair on *fn_qualname* in *source_file*.
+    """Run Crosshair on *fn_qualname*, using cover mode for pure functions.
+
+    - Pure functions (no I/O): ``crosshair cover`` — generates input corpus
+      and detects exception-raising paths.
+    - Impure functions: ``crosshair check`` — requires pre:/post: contracts;
+      returns empty if none are present.
 
     Returns a list of violation dicts::
 
         {"file": str, "line": int, "message": str, "type": "crosshair_violation"}
-
-    The output format is ``<filename>:<line>: error: <message>``.
+        {"file": str, "line": int, "message": str, "type": "crosshair_cover",
+         "inputs": [...], "raises": str}   # for exception-raising cover paths
     """
-    # crosshair check accepts TARGET as path::fn or module.fn.
-    # The safest form for an arbitrary file is ``<file>::<fn>``.
-    target = f"{source_file}::{fn_qualname}"
-    cmd = [
-        sys.executable,
-        "-m",
-        "crosshair",
-        "check",
-        target,
-        "--per_condition_timeout",
-        str(timeout),
-    ]
+    pure = _is_pure_function(source_file, fn_qualname)
+
+    # Derive module.qualname from file path for crosshair
+    module = Path(source_file).stem
+    # Try to find the package prefix
+    parts = Path(source_file).parts
+    try:
+        pkg_idx = list(parts).index("pact-standalone") + 1
+        pkg_parts = [p for p in parts[pkg_idx:] if p != "__pycache__"]
+        module_path = ".".join(p.replace(".py", "") for p in pkg_parts)
+        target = (
+            f"{module_path}.{fn_qualname}"
+            if "." not in module_path.split(".")[-1]
+            else f"{module_path}"
+        )
+        target = f"{module_path}.{fn_qualname}"
+    except (ValueError, IndexError):
+        target = f"{module}.{fn_qualname}"
+
+    if pure:
+        cmd = [
+            sys.executable,
+            "-m",
+            "crosshair",
+            "cover",
+            target,
+            "--example_output_format",
+            "pytest",
+            "--per_condition_timeout",
+            str(timeout),
+            "--max_uninteresting_iterations",
+            "10",
+        ]
+    else:
+        cmd = [
+            sys.executable,
+            "-m",
+            "crosshair",
+            "check",
+            target,
+            "--per_condition_timeout",
+            str(timeout),
+        ]
+
     try:
         proc = subprocess.run(
             cmd,
             capture_output=True,
             text=True,
-            timeout=timeout + 5,
+            timeout=timeout + 10,
+            check=False,
         )
         raw = proc.stdout + proc.stderr
     except subprocess.TimeoutExpired:
         warnings.warn(
-            f"crosshair timed out checking {fn_qualname}", RuntimeWarning, stacklevel=2
+            f"crosshair timed out on {fn_qualname}", RuntimeWarning, stacklevel=2
         )
         return []
     except FileNotFoundError:
         warnings.warn(
-            "crosshair not found — install it with: pip install crosshair-tool",
+            "crosshair not found — install with: pip install crosshair-tool",
             RuntimeWarning,
             stacklevel=2,
         )
         return []
 
     violations: list[dict] = []
-    # Parse lines of the form: filename:line: error: message
-    pattern = re.compile(r"^(.+?):(\d+):\s*error:\s*(.+)$")
-    for line in raw.splitlines():
-        m = pattern.match(line.strip())
-        if m:
-            violations.append(
-                {
-                    "file": m.group(1),
-                    "line": int(m.group(2)),
-                    "message": m.group(3),
-                    "type": "crosshair_violation",
-                }
-            )
+
+    if pure:
+        # Parse pytest-format cover output; execute each case to find raisers
+        import importlib
+
+        fn = None
+        try:
+            mod_name, attr = target.rsplit(".", 1)
+            mod = importlib.import_module(mod_name)
+            fn = getattr(mod, attr, None)
+        except (ImportError, AttributeError):
+            pass
+
+        if fn is not None:
+            # Extract assert lines: assert f(args) == value
+            _assert_re = re.compile(r"assert \w+\((.+)\) == ")
+            for line in raw.splitlines():
+                m = _assert_re.match(line.strip())
+                if not m:
+                    continue
+                args_src = m.group(1)
+                try:
+                    args = eval(f"({args_src},)", {})  # noqa: S307
+                    fn(*args)
+                except Exception as exc:
+                    violations.append(
+                        {
+                            "file": source_file,
+                            "line": 0,
+                            "message": f"{type(exc).__name__}: {exc} — input: {args_src[:80]}",
+                            "type": "crosshair_cover",
+                        }
+                    )
+    else:
+        # check mode: parse error lines
+        err_re = re.compile(r"^(.+?):(\d+):\s*error:\s*(.+)$")
+        for line in raw.splitlines():
+            m = err_re.match(line.strip())
+            if m:
+                violations.append(
+                    {
+                        "file": m.group(1),
+                        "line": int(m.group(2)),
+                        "message": m.group(3),
+                        "type": "crosshair_violation",
+                    }
+                )
+
     return violations
 
 
