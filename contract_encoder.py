@@ -88,7 +88,10 @@ def _parse_json(text: str) -> dict:
     except json.JSONDecodeError:
         start = text.find("{")
         if start >= 0:
-            return json.loads(text[start:])
+            try:
+                return json.loads(text[start:])
+            except json.JSONDecodeError:
+                pass
         raise
 
 
@@ -136,6 +139,7 @@ def _run_z3_script(script: str) -> dict:
             capture_output=True,
             text=True,
             timeout=_SUBPROCESS_TIMEOUT,
+            check=False,
         )
         stdout = result.stdout.strip()
         if not stdout:
@@ -428,7 +432,12 @@ def verify_contracts_from_intent(
     then verifies each against its source function using Z3.
     """
     key = api_key or os.environ.get("ANTHROPIC_API_KEY", "")
-    intent_data = json.loads(Path(intent_json_path).read_text())
+    try:
+        intent_data = json.loads(Path(intent_json_path).read_text())
+    except (json.JSONDecodeError, ValueError) as exc:
+        raise ValueError(
+            f"Intent JSON is not valid: {intent_json_path}: {exc}"
+        ) from exc
     results: list[ContractVerificationResult] = []
     root = Path(source_root)
 

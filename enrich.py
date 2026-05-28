@@ -1326,6 +1326,7 @@ def _fetch_spec_branches(
                 capture_output=True,
                 text=True,
                 timeout=10,
+                check=False,
             )
             for filepath in ls.stdout.splitlines():
                 filepath = filepath.strip()
@@ -1341,6 +1342,7 @@ def _fetch_spec_branches(
                         capture_output=True,
                         text=True,
                         timeout=10,
+                        check=False,
                     )
                     content = show.stdout[:_MAX_DOC_CHARS]
                     if not content.strip():

@@ -431,6 +431,7 @@ def mine_invariants(
             env=env,
             timeout=timeout,
             capture_output=True,
+            check=False,
         )
 
         if not obs_path.exists():

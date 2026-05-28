@@ -90,7 +90,7 @@ def _dbg(event: str, data: object = None) -> None:
     try:
         with _DEBUG_LOG.open("a") as f:
             f.write(json.dumps({"event": event, "data": data}) + "\n")
-    except Exception:
+    except Exception:  # noqa: BLE001 — debug logging must never crash the server
         pass
 
 

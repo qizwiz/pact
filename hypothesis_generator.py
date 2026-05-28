@@ -86,7 +86,10 @@ def _parse_json(text: str) -> dict:
     except json.JSONDecodeError:
         start = text.find("{")
         if start >= 0:
-            return json.loads(text[start:])
+            try:
+                return json.loads(text[start:])
+            except json.JSONDecodeError:
+                pass
         raise
 
 
@@ -133,6 +136,7 @@ def _run_hypothesis_test(test_src: str) -> dict:
             capture_output=True,
             text=True,
             timeout=_SUBPROCESS_TIMEOUT,
+            check=False,
         )
         stdout = result.stdout.strip()
         stderr = result.stderr.strip()

@@ -104,6 +104,8 @@ def _call_llm(prompt: str, model: str, key: str) -> list[dict]:
         max_tokens=2048,
         messages=[{"role": "user", "content": prompt}],
     )
+    if not msg.content:
+        raise RuntimeError("LLM returned empty content")
     text = msg.content[0].text.strip()
     # Strip markdown fences if present
     if text.startswith("```"):
@@ -352,6 +354,7 @@ def _run_tlc(tla_path: Path, cfg_path: Path, timeout: int = 60) -> dict:
             capture_output=True,
             text=True,
             timeout=timeout,
+            check=False,
         )
         output = proc.stdout + proc.stderr
         if "Model checking completed. No error has been found." in output:
@@ -801,7 +804,12 @@ def run_pipeline(
 
     key = resolve_key(api_key)
 
-    intent = json.loads(intent_path.read_text())
+    try:
+        intent = json.loads(intent_path.read_text())
+    except (json.JSONDecodeError, ValueError) as exc:
+        raise ValueError(
+            f"Intent file is not valid JSON: {intent_path}: {exc}"
+        ) from exc
     summary = _intent_summary(intent)
 
     # Build invariant index keyed by both statement and invariant_id (from contract IR)

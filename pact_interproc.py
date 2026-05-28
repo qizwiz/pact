@@ -60,22 +60,29 @@ def _func_id(file_path: Path, func_name: str) -> str:
     return f"{file_path.stem}::{func_name}"
 
 
+_JSON_GUARD_NAMES = {"JSONDecodeError", "ValueError", "Exception"}
+
+
+def _exc_names(exc_node: ast.expr) -> set[str]:
+    """Extract all exception names from a handler type node (Name, Attribute, Tuple)."""
+    if isinstance(exc_node, ast.Name):
+        return {exc_node.id}
+    if isinstance(exc_node, ast.Attribute):
+        return {exc_node.attr}
+    if isinstance(exc_node, ast.Tuple):
+        names: set[str] = set()
+        for elt in exc_node.elts:
+            names |= _exc_names(elt)
+        return names
+    return set()
+
+
 def _is_guarded_json_loads(node: ast.Call, tree: ast.AST) -> bool:
-    """True if this json.loads call is inside a try/except json.JSONDecodeError."""
+    """True if this json.loads call is inside a try/except that catches JSONDecodeError."""
     for parent in ast.walk(tree):
         if isinstance(parent, ast.ExceptHandler):
             if parent.type is not None:
-                exc_name = (
-                    parent.type.id
-                    if isinstance(parent.type, ast.Name)
-                    else (
-                        parent.type.attr
-                        if isinstance(parent.type, ast.Attribute)
-                        else ""
-                    )
-                )
-                if exc_name in ("JSONDecodeError", "ValueError", "Exception"):
-                    # Check if node is inside this handler's try block
+                if _exc_names(parent.type) & _JSON_GUARD_NAMES:
                     for child in ast.walk(parent):
                         if child is node:
                             return True

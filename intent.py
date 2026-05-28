@@ -719,7 +719,12 @@ def _extract_git_log(path: Path) -> str:
     def _run(*args: str, timeout: int = 5) -> str:
         try:
             r = subprocess.run(
-                list(args), capture_output=True, text=True, timeout=timeout, cwd=cwd
+                list(args),
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                cwd=cwd,
+                check=False,
             )
             return r.stdout.strip()
         except Exception:
