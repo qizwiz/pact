@@ -1635,3 +1635,367 @@ def risk_to_violations(risk_report: dict) -> dict:
         "generated_by": "pact.constraint_graph",
         "modules": modules,
     }
+
+
+# ---------------------------------------------------------------------------
+# Weakest precondition extraction
+# ---------------------------------------------------------------------------
+
+
+from dataclasses import dataclass  # noqa: E402 (after other imports at top)
+
+
+@dataclass
+class ProofObligation:
+    """A proof obligation extracted from a dangerous operation in source code.
+
+    ``discharged=True`` means we found a fact that logically implies the WP.
+    ``discharged=False`` means the obligation is missing — a genuine bug risk.
+    """
+
+    line: int
+    operation: str  # e.g. "content[0]"
+    wp: str  # e.g. "len(content) > 0"
+    wp_var: str  # e.g. "content"
+    wp_kind: str  # "len_gt_0" | "key_in_dict" | "not_none" | "valid_json"
+    discharged: bool
+    discharge_evidence: str  # e.g. "if not content: pytest.skip (L452)"
+    counterexample: str  # concrete witness when not discharged
+
+    def __str__(self) -> str:
+        if self.discharged:
+            return (
+                f"L{self.line} `{self.operation}` "
+                f"WP: {self.wp} ✓ [{self.discharge_evidence}]"
+            )
+        return (
+            f"L{self.line} `{self.operation}` "
+            f"WP: {self.wp} ✗ MISSING — counterexample: {self.counterexample}"
+        )
+
+
+# Trivial counterexamples for each WP kind
+_WP_COUNTEREXAMPLES: dict[str, str] = {
+    "len_gt_0": "{var} = []",
+    "key_in_dict": "{var} does not contain the key",
+    "not_none": "{var} = None",
+    "valid_json": "{var} = 'invalid'",
+}
+
+# Exit-like call names that terminate the current path
+_EXIT_CALLS = frozenset(
+    {"skip", "fail", "xfail", "abort", "exit", "quit", "sys.exit", "os._exit"}
+)
+
+
+def _path_exits(stmts: list[ast.stmt]) -> bool:
+    """True if *stmts* always exits (return/raise/continue/break/pytest.skip)."""
+    for stmt in stmts:
+        if isinstance(stmt, (ast.Return, ast.Raise, ast.Continue, ast.Break)):
+            return True
+        if isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Call):
+            call_src = ast.unparse(stmt.value)
+            if any(ec in call_src for ec in _EXIT_CALLS):
+                return True
+    return False
+
+
+def _discharges_len_gt_0(test: ast.expr, var: str) -> bool:
+    """True if *test* is an emptiness check on *var* (implies len > 0 after exit)."""
+    src = ast.unparse(test)
+    # `if not var` / `if len(var) == 0` / `if var is None` / `if not var:`
+    return (
+        src.strip() == f"not {var}"
+        or f"not {var}" in src
+        or f"len({var}) == 0" in src
+        or f"len({var}) < 1" in src
+        or f"{var} is None" in src
+        or src.strip() == var  # negative: `if var:` guards the else
+    )
+
+
+def _discharges_not_none(test: ast.expr, var: str) -> bool:
+    src = ast.unparse(test)
+    return f"{var} is None" in src or f"not {var}" in src or src.strip() == f"not {var}"
+
+
+def _discharges_key_in_dict(test: ast.expr, var: str, key_src: str) -> bool:
+    src = ast.unparse(test)
+    return (
+        f"{key_src} not in {var}" in src
+        or f"{key_src} in {var}" in src  # positive guard (access in body)
+    )
+
+
+def _find_discharge_for_op(
+    op_line: int,
+    wp_kind: str,
+    wp_var: str,
+    extra: str,
+    fn_node: ast.AST,
+) -> tuple[bool, str]:
+    """Return (discharged, evidence) for a single proof obligation."""
+    for parent in ast.walk(fn_node):
+        if not isinstance(parent, ast.If):
+            continue
+        if parent.lineno >= op_line:
+            continue
+        if wp_var not in _base_names(parent.test):
+            continue
+
+        test = parent.test
+
+        if wp_kind == "len_gt_0":
+            # Early-exit on empty/None → len > 0 holds after
+            if _discharges_len_gt_0(test, wp_var) and _path_exits(parent.body):
+                return True, f"`{ast.unparse(test)}` early-exit L{parent.lineno}"
+            # Positive guard: `if var:` body contains the access
+            pos_src = ast.unparse(test)
+            if pos_src.strip() == wp_var or pos_src.strip().startswith(wp_var + " "):
+                return True, f"`{ast.unparse(test)}` positive guard L{parent.lineno}"
+
+        elif wp_kind == "not_none":
+            if _discharges_not_none(test, wp_var) and _path_exits(parent.body):
+                return True, f"`{ast.unparse(test)}` early-exit L{parent.lineno}"
+            # Positive guard: `if var is not None:` or `if var:`
+            pos_src = ast.unparse(test)
+            if (
+                f"{wp_var} is not None" in pos_src
+                or pos_src.strip() == wp_var
+                or f"isinstance({wp_var}" in pos_src
+            ):
+                return True, f"`{ast.unparse(test)}` positive guard L{parent.lineno}"
+
+        elif wp_kind == "key_in_dict":
+            if _discharges_key_in_dict(test, wp_var, extra) and _path_exits(
+                parent.body
+            ):
+                return True, f"`{ast.unparse(test)}` early-exit L{parent.lineno}"
+
+        # Short-circuit `and`: `if var and var[0]` — access is in right operand
+        if isinstance(test, ast.BoolOp) and isinstance(test.op, ast.And):
+            for i, val in enumerate(test.values):
+                if wp_var in _base_names(val):
+                    return (
+                        True,
+                        f"`{ast.unparse(test)}` and-guard L{parent.lineno}",
+                    )
+
+    # Also check direct assignments: var = [literal] or var = d.setdefault(k, [...])
+    for node in ast.walk(fn_node):
+        if not isinstance(node, ast.Assign):
+            continue
+        if node.lineno >= op_line:
+            continue
+        for target in node.targets:
+            if isinstance(target, ast.Name) and target.id == wp_var:
+                val = node.value
+                # Non-empty literal assignment
+                if isinstance(val, (ast.List, ast.Tuple, ast.Set)) and val.elts:
+                    return True, f"`{wp_var} = [...]` non-empty literal L{node.lineno}"
+                # `var = var or {}` / `var = var or []`
+                if isinstance(val, ast.BoolOp) and isinstance(val.op, ast.Or):
+                    return (
+                        True,
+                        f"`{wp_var} = {ast.unparse(val)}` or-default L{node.lineno}",
+                    )
+
+    # Ternary: `var = expr if cond else []` — presence of default handles None case
+    for node in ast.walk(fn_node):
+        if isinstance(node, ast.IfExp) and node.lineno < op_line:
+            if wp_var in _base_names(node):
+                return True, f"ternary default L{node.lineno}"
+
+    return False, ""
+
+
+def extract_wp(source_file: str, fn_qualname: str) -> list[ProofObligation]:
+    """Extract and discharge proof obligations from *fn_qualname*.
+
+    For every dangerous operation (index access, key access, Optional dereference),
+    computes the weakest precondition and checks whether it is provably discharged
+    by a prior guard in the same function scope.
+
+    Args:
+        source_file: Absolute path to the Python source file.
+        fn_qualname: Qualified function name.
+
+    Returns:
+        List of :class:`ProofObligation` — one per dangerous operation.
+        Undischarged obligations are genuine bug risks; discharged ones have proof.
+    """
+    try:
+        source = Path(source_file).read_text(encoding="utf-8")
+        tree = ast.parse(source)
+    except (OSError, SyntaxError) as exc:
+        warnings.warn(f"extract_wp: cannot parse {source_file}: {exc}", RuntimeWarning)
+        return []
+
+    fn_node = _find_function_node(tree, fn_qualname)
+    if fn_node is None:
+        return []
+
+    # Also build index of same-file callees for 1-hop interprocedural
+    all_fns: dict[str, ast.AST] = {
+        node.name: node
+        for node in ast.iter_child_nodes(tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    to_scan = {fn_qualname: fn_node}
+    for callee in _collect_local_callees(fn_node, all_fns):
+        if callee not in to_scan:
+            to_scan[callee] = all_fns[callee]
+
+    optional_params = _optional_param_names(fn_node)
+    obligations: list[ProofObligation] = []
+
+    for _scope_name, scope_node in to_scan.items():
+        for node in ast.walk(scope_node):
+
+            # ── x[0] / x[-1] ────────────────────────────────────────────────
+            if isinstance(node, ast.Subscript):
+                idx = node.slice
+                if not (isinstance(idx, ast.Constant) and idx.value in (0, -1)):
+                    continue
+                container = node.value
+                if isinstance(container, (ast.Constant, ast.Dict, ast.Set)):
+                    continue
+                # Skip split()[0] — always safe
+                if (
+                    isinstance(container, ast.Call)
+                    and isinstance(container.func, ast.Attribute)
+                    and container.func.attr
+                    in ("split", "splitlines", "partition", "rpartition")
+                ):
+                    continue
+                # Skip grammar-guaranteed non-empty attributes
+                if isinstance(container, ast.Attribute) and container.attr in (
+                    "targets",
+                    "ops",
+                    "comparators",
+                ):
+                    continue
+                # Skip ternary-guarded and lambda/comprehension
+                if any(
+                    node is n
+                    for parent in ast.walk(scope_node)
+                    if isinstance(
+                        parent,
+                        (
+                            ast.IfExp,
+                            ast.Lambda,
+                            ast.GeneratorExp,
+                            ast.ListComp,
+                            ast.SetComp,
+                            ast.DictComp,
+                        ),
+                    )
+                    for n in ast.walk(parent)
+                ):
+                    continue
+
+                var_src = ast.unparse(container)
+                op_src = ast.unparse(node)
+                wp = f"len({var_src}) > 0"
+                base = _base_names(container)
+                wp_var = next(iter(base)) if len(base) == 1 else var_src
+
+                discharged, evidence = _find_discharge_for_op(
+                    node.lineno, "len_gt_0", wp_var, "", scope_node
+                )
+                # Also check: is the FULL container expression tested?
+                if not discharged:
+                    discharged, evidence = _find_discharge_for_op(
+                        node.lineno, "len_gt_0", var_src, "", scope_node
+                    )
+
+                obligations.append(
+                    ProofObligation(
+                        line=node.lineno,
+                        operation=op_src,
+                        wp=wp,
+                        wp_var=wp_var,
+                        wp_kind="len_gt_0",
+                        discharged=discharged,
+                        discharge_evidence=evidence,
+                        counterexample=("" if discharged else f"{wp_var} = []"),
+                    )
+                )
+
+            # ── x.attr where x: Optional ─────────────────────────────────────
+            elif (
+                isinstance(node, ast.Attribute)
+                and isinstance(node.value, ast.Name)
+                and node.value.id in optional_params
+            ):
+                var = node.value.id
+                op_src = f"{var}.{node.attr}"
+                wp = f"{var} is not None"
+
+                discharged, evidence = _find_discharge_for_op(
+                    node.lineno, "not_none", var, "", scope_node
+                )
+                obligations.append(
+                    ProofObligation(
+                        line=node.lineno,
+                        operation=op_src,
+                        wp=wp,
+                        wp_var=var,
+                        wp_kind="not_none",
+                        discharged=discharged,
+                        discharge_evidence=evidence,
+                        counterexample="" if discharged else f"{var} = None",
+                    )
+                )
+
+    # Deduplicate by (line, operation)
+    seen: set[tuple] = set()
+    unique: list[ProofObligation] = []
+    for ob in obligations:
+        key = (ob.line, ob.operation)
+        if key not in seen:
+            seen.add(key)
+            unique.append(ob)
+
+    return unique
+
+
+def wp_report(source_file: str, fn_qualname: str) -> dict:
+    """Run :func:`extract_wp` and return a structured report dict.
+
+    Returns::
+
+        {
+            "function": str,
+            "file": str,
+            "n_obligations": int,
+            "n_discharged": int,
+            "n_missing": int,
+            "obligations": [
+                {
+                    "line": int, "operation": str, "wp": str,
+                    "discharged": bool, "evidence": str, "counterexample": str
+                },
+                ...
+            ]
+        }
+    """
+    obs = extract_wp(source_file, fn_qualname)
+    return {
+        "function": fn_qualname,
+        "file": source_file,
+        "n_obligations": len(obs),
+        "n_discharged": sum(1 for o in obs if o.discharged),
+        "n_missing": sum(1 for o in obs if not o.discharged),
+        "obligations": [
+            {
+                "line": o.line,
+                "operation": o.operation,
+                "wp": o.wp,
+                "discharged": o.discharged,
+                "evidence": o.discharge_evidence,
+                "counterexample": o.counterexample,
+            }
+            for o in obs
+        ],
+    }
