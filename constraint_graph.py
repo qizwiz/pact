@@ -511,38 +511,96 @@ def _optional_param_names(fn_node: ast.AST) -> set[str]:
 
 
 def _is_none_guarded(name: str, access_node: ast.AST, scope: ast.AST) -> bool:
-    """True if *name* is checked for None before *access_node* in *scope*."""
+    """True if *name* is guaranteed non-None at *access_node* in *scope*.
+
+    Handles:
+    - ``if x is not None: ... x.attr`` / ``if x: ... x.attr``
+    - ``if x is None: return/raise`` before the access (early-exit guard)
+    - ``x and x.attr`` short-circuit (the BoolOp itself)
+    - ``if x is None: x = default`` reassignment-after-check
+    """
     for parent in ast.walk(scope):
-        if not isinstance(parent, ast.If):
-            continue
-        test = parent.test
-        test_src = ast.unparse(test)
-        # if x is not None / if x / if x is not None and ...
-        guarded_positive = (
-            f"{name} is not None" in test_src
-            or test_src.strip() == name
-            or test_src.startswith(f"{name} ")
-            or f"isinstance({name}," in test_src
-        )
-        if guarded_positive:
-            in_body = any(
-                access_node is n
-                for n in ast.walk(
-                    ast.Module(body=parent.body, type_ignores=[])  # type: ignore[arg-type]
-                )
+        # ── if-block guards ──────────────────────────────────────────────────
+        if isinstance(parent, ast.If):
+            test_src = ast.unparse(parent.test)
+            guarded_positive = (
+                f"{name} is not None" in test_src
+                or test_src.strip() == name
+                or test_src.startswith(f"{name} ")
+                or f"isinstance({name}," in test_src
             )
-            if in_body:
-                return True
-        # if x is None → in else branch
-        if f"{name} is None" in test_src:
-            in_else = any(
-                access_node is n
-                for n in ast.walk(
-                    ast.Module(body=parent.orelse, type_ignores=[])  # type: ignore[arg-type]
+            if guarded_positive:
+                in_body = any(
+                    access_node is n
+                    for n in ast.walk(
+                        ast.Module(body=parent.body, type_ignores=[])  # type: ignore[arg-type]
+                    )
                 )
-            )
-            if in_else:
-                return True
+                if in_body:
+                    return True
+
+            # if x is None → access in else branch
+            if f"{name} is None" in test_src:
+                in_else = any(
+                    access_node is n
+                    for n in ast.walk(
+                        ast.Module(body=parent.orelse, type_ignores=[])  # type: ignore[arg-type]
+                    )
+                )
+                if in_else:
+                    return True
+
+                # Early-exit: if x is None: return/raise — access is after the if
+                body_exits = any(
+                    isinstance(n, (ast.Return, ast.Raise))
+                    for n in ast.walk(
+                        ast.Module(body=parent.body, type_ignores=[])  # type: ignore[arg-type]
+                    )
+                )
+                if body_exits and access_node is not None:
+                    return (
+                        True  # conservative: any access after an early-exit is guarded
+                    )
+
+        # ── reassignment: if x is None: x = default ──────────────────────────
+        if isinstance(parent, ast.If):
+            test_src = ast.unparse(parent.test)
+            if f"{name} is None" in test_src:
+                # Check if body assigns to name
+                for stmt in parent.body:
+                    if isinstance(stmt, ast.Assign):
+                        if any(
+                            isinstance(t, ast.Name) and t.id == name
+                            for t in stmt.targets
+                        ):
+                            # After reassignment the name is non-None
+                            return True
+                    if isinstance(stmt, ast.AugAssign):
+                        if isinstance(stmt.target, ast.Name) and stmt.target.id == name:
+                            return True
+
+        # ── short-circuit: x and x.attr ──────────────────────────────────────
+        if isinstance(parent, ast.BoolOp) and isinstance(parent.op, ast.And):
+            values = parent.values
+            # Find if `name` appears as a truth-test before access_node
+            for i, val in enumerate(values):
+                if isinstance(val, ast.Name) and val.id == name:
+                    # Everything after this position is guarded by the short-circuit
+                    for later in values[i + 1 :]:
+                        if any(access_node is n for n in ast.walk(later)):
+                            return True
+                # Also handle `name is not None` as a left operand
+                if (
+                    isinstance(val, ast.Compare)
+                    and isinstance(val.left, ast.Name)
+                    and val.left.id == name
+                ):
+                    op_srcs = [type(o).__name__ for o in val.ops]
+                    if "IsNot" in op_srcs:
+                        for later in values[i + 1 :]:
+                            if any(access_node is n for n in ast.walk(later)):
+                                return True
+
     return False
 
 
@@ -768,6 +826,14 @@ def extract_call_sites(source_file: str, fn_qualname: str) -> list[dict]:
                 and isinstance(container_node.func, ast.Attribute)
                 and container_node.func.attr
                 in ("split", "splitlines", "partition", "rpartition")
+            ):
+                continue
+            # Skip AST node attributes guaranteed non-empty by grammar
+            # (ast.Assign.targets, ast.FunctionDef.args, etc.)
+            if isinstance(container_node, ast.Attribute) and container_node.attr in (
+                "targets",
+                "ops",
+                "comparators",
             ):
                 continue
             guarded = _is_index_guarded(node, scan_node)

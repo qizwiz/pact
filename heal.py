@@ -561,6 +561,10 @@ def apply_patch(source: str, original: str, replacement: str) -> Optional[str]:
     """
     original = original.replace("\\n", "\n").replace("\\t", "\t")
     replacement = replacement.replace("\\n", "\n").replace("\\t", "\t")
+    if not original.strip():
+        # Empty or whitespace-only original would match everywhere via str.replace;
+        # treat as not-found rather than silently corrupting source.
+        return None
     if original not in source:
         # Try with normalized indentation: strip common leading whitespace
         orig_stripped = textwrap.dedent(original).strip()
