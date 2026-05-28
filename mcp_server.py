@@ -18,9 +18,11 @@ Usage:
 
 from __future__ import annotations
 
+import contextlib
 import json
 import sys
 import traceback
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -42,6 +44,86 @@ def _respond(id: Any, result: Any) -> None:
 
 def _error(id: Any, code: int, message: str) -> None:
     _send({"jsonrpc": "2.0", "id": id, "error": {"code": code, "message": message}})
+
+
+# ---------------------------------------------------------------------------
+# MCP sampling — delegate LLM calls to the host instead of calling API directly
+# ---------------------------------------------------------------------------
+
+_queued_requests: list[dict] = []
+
+
+def _to_sampling_messages(messages: list[dict]) -> list[dict]:
+    """Convert pact's internal message list to MCP sampling format."""
+    out = []
+    for m in messages:
+        role = m.get("role", "user")
+        if role not in ("user", "assistant"):
+            continue
+        content = m.get("content", "")
+        if isinstance(content, str):
+            text = content
+        elif isinstance(content, list):
+            parts = []
+            for block in content:
+                if hasattr(block, "text"):
+                    parts.append(block.text)
+                elif isinstance(block, dict) and block.get("type") == "text":
+                    parts.append(block.get("text", ""))
+            text = "\n".join(parts)
+        else:
+            text = str(content)
+        if text.strip():
+            out.append({"role": role, "content": {"type": "text", "text": text}})
+    return out
+
+
+def _sample(messages: list[dict], max_tokens: int = 8192, system: str = "") -> str:
+    """Send sampling/createMessage to the host LLM; block until response arrives."""
+    sample_id = f"s-{uuid.uuid4().hex[:12]}"
+    params: dict = {
+        "messages": _to_sampling_messages(messages),
+        "maxTokens": max_tokens,
+    }
+    if system:
+        params["systemPrompt"] = system
+    _send(
+        {
+            "jsonrpc": "2.0",
+            "id": sample_id,
+            "method": "sampling/createMessage",
+            "params": params,
+        }
+    )
+    for line in sys.stdin:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            msg = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if msg.get("id") == sample_id:
+            if "result" in msg:
+                content = msg["result"].get("content", {})
+                if isinstance(content, dict):
+                    return content.get("text", "")
+                return str(content)
+            raise RuntimeError(f"Sampling error: {msg.get('error', '?')}")
+        _queued_requests.append(msg)
+    raise RuntimeError("stdin closed while waiting for sampling response")
+
+
+@contextlib.contextmanager
+def _sampling_backend():
+    """Context manager: install _sample as the LLM backend for pact modules."""
+    from . import llm as _llm
+
+    _llm.set_sampling_backend(_sample)
+    try:
+        yield
+    finally:
+        _llm.clear_sampling_backend()
 
 
 # ---------------------------------------------------------------------------
@@ -403,23 +485,23 @@ def _tool_pact_context(params: dict) -> dict:
 
     file_path = Path(params["file_path"])
     repo_root = Path(params["repo_root"]) if params.get("repo_root") else None
-    api_key = _api_key()
 
-    return extract_context(file_path=file_path, repo_root=repo_root, api_key=api_key)
+    with _sampling_backend():
+        return extract_context(file_path=file_path, repo_root=repo_root, api_key="")
 
 
 def _tool_pact_find(params: dict) -> dict:
     from .find import find_violations
 
     file_path = Path(params["file_path"])
-    api_key = _api_key()
 
-    return find_violations(
-        path=file_path,
-        api_key=api_key,
-        use_context=params.get("use_context", True),
-        improve=params.get("improve", False),
-    )
+    with _sampling_backend():
+        return find_violations(
+            path=file_path,
+            api_key="",
+            use_context=params.get("use_context", True),
+            improve=params.get("improve", False),
+        )
 
 
 def _tool_pact_heal(params: dict) -> dict:
@@ -433,21 +515,21 @@ def _tool_pact_heal(params: dict) -> dict:
     except json.JSONDecodeError as exc:
         raise ValueError(f"violations_json is not valid JSON: {exc}") from exc
     project_root = Path(params["project_root"])
-    api_key = _api_key()
 
     with tempfile.NamedTemporaryFile(suffix=".json", mode="w", delete=False) as f:
         json.dump(violations, f)
         tmp = Path(f.name)
 
     try:
-        result = heal_project(
-            violations_path=tmp,
-            api_key=api_key,
-            severity_filter=params.get("severity", ["critical", "high"]),
-            apply=params.get("apply", False),
-            test_cmd=params.get("test_cmd"),
-            project_root=project_root,
-        )
+        with _sampling_backend():
+            result = heal_project(
+                violations_path=tmp,
+                api_key="",
+                severity_filter=params.get("severity", ["critical", "high"]),
+                apply=params.get("apply", False),
+                test_cmd=params.get("test_cmd"),
+                project_root=project_root,
+            )
         return dataclasses.asdict(result)
     finally:
         tmp.unlink(missing_ok=True)
@@ -603,6 +685,8 @@ def _tool_pact_sheaf(params: dict) -> dict:
 
 
 def _tool_pact_loop(params: dict) -> dict:
+    import io as _io
+
     from .pact_loop import main as loop_main
 
     target = params["target"]
@@ -610,7 +694,6 @@ def _tool_pact_loop(params: dict) -> dict:
     max_iters = params.get("max_iters", 10)
     severity = params.get("severity", ["critical", "high"])
     verbose = params.get("verbose", False)
-    api_key = _api_key()
 
     argv = [target, "--max-iters", str(max_iters)]
     if test_cmd:
@@ -619,39 +702,19 @@ def _tool_pact_loop(params: dict) -> dict:
         argv += ["--severity", s]
     if verbose:
         argv.append("--verbose")
-    # Pass API key via environment (already set for _api_key() call)
 
-    import io
-    import sys
-    import os
-
-    old_env = os.environ.get("ANTHROPIC_API_KEY", "")
-    os.environ["ANTHROPIC_API_KEY"] = api_key
-
-    buf = io.StringIO()
+    buf = _io.StringIO()
     old_stdout = sys.stdout
     sys.stdout = buf
     try:
-        exit_code = loop_main(argv)
+        with _sampling_backend():
+            exit_code = loop_main(argv)
     except SystemExit as exc:
         exit_code = exc.code or 0
     finally:
         sys.stdout = old_stdout
-        if old_env:
-            os.environ["ANTHROPIC_API_KEY"] = old_env
 
-    output = buf.getvalue()
-    return {
-        "exit_code": exit_code,
-        "output": output,
-        "target": target,
-    }
-
-
-def _api_key() -> str:
-    import os
-
-    return os.environ.get("ANTHROPIC_API_KEY", "")
+    return {"exit_code": exit_code, "output": buf.getvalue(), "target": target}
 
 
 def _tool_pact_topology(params: dict) -> dict:
@@ -815,7 +878,6 @@ def _tool_pact_spec_learn(params: dict) -> dict:
         return {"corpus_size": len(records), "report": report(records)}
 
     # mode == "record"
-    api_key = _api_key()
     tla_path_str = params.get("tla_spec_path", "")
     tla_path = (
         Path(tla_path_str)
@@ -834,9 +896,10 @@ def _tool_pact_spec_learn(params: dict) -> dict:
         tla_spec_text=tla_text,
     )
 
-    record = analyze_gap(record, key=api_key)
-    record = propose_refinement(record, key=api_key)
-    record = validate_refinement(record, key=api_key)
+    with _sampling_backend():
+        record = analyze_gap(record, key="")
+        record = propose_refinement(record, key="")
+        record = validate_refinement(record, key="")
     save(record)
 
     return {
@@ -880,7 +943,7 @@ def _handle(req: dict) -> None:
             rid,
             {
                 "protocolVersion": "2024-11-05",
-                "capabilities": {"tools": {}, "prompts": {}},
+                "capabilities": {"tools": {}, "prompts": {}, "sampling": {}},
                 "serverInfo": {"name": "pact", "version": "0.1.0"},
             },
         )
@@ -940,38 +1003,6 @@ def _handle(req: dict) -> None:
         if fn is None:
             _error(rid, -32601, f"Unknown tool: {name}")
             return
-        # LLM tools degrade gracefully when no API key is set
-        _LLM_TOOLS = {
-            "pact_context",
-            "pact_find",
-            "pact_heal",
-            "pact_loop",
-            "pact_spec_learn",
-        }
-        if name in _LLM_TOOLS and not _api_key():
-            _respond(
-                rid,
-                {
-                    "content": [
-                        {
-                            "type": "text",
-                            "text": json.dumps(
-                                {
-                                    "error": "ANTHROPIC_API_KEY not set",
-                                    "tool": name,
-                                    "suggestion": (
-                                        f"{name} requires an LLM. Set ANTHROPIC_API_KEY "
-                                        "in the environment, or use the zero-LLM tools: "
-                                        "pact_topology, pact_metrics, pact_z3_verify, "
-                                        "pact_check, pact_sheaf."
-                                    ),
-                                }
-                            ),
-                        }
-                    ]
-                },
-            )
-            return
         try:
             result = fn(args)
             _respond(
@@ -993,6 +1024,9 @@ def _handle(req: dict) -> None:
 
 def main() -> None:
     for line in sys.stdin:
+        # Drain requests that arrived during a sampling/createMessage round-trip
+        while _queued_requests:
+            _handle(_queued_requests.pop(0))
         line = line.strip()
         if not line:
             continue
@@ -1008,6 +1042,8 @@ def main() -> None:
             )
             continue
         _handle(req)
+    while _queued_requests:
+        _handle(_queued_requests.pop(0))
 
 
 if __name__ == "__main__":
