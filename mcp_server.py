@@ -511,6 +511,51 @@ _TOOLS = [
         },
     },
     {
+        "name": "pact_constraint_graph",
+        "description": (
+            "Constraint graph analysis: runs Crosshair symbolic execution on a function, "
+            "builds a Z3 constraint DAG encoding the behavioral contract, and applies "
+            "NetworkX graph analysis to find which constraints are load-bearing (cut vertices "
+            "in the constraint graph = properties that, if violated, allow the most additional "
+            "program states). β₁ measures constraint holes — unconstrained behaviors. "
+            "No LLM required. Use after pact_topology identifies a cut vertex to understand "
+            "which specific properties of that function need formal verification."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "source_file": {
+                    "type": "string",
+                    "description": "Absolute path to Python source file",
+                },
+                "fn_qualname": {
+                    "type": "string",
+                    "description": (
+                        "Function qualified name (e.g. 'MyClass.method' or 'my_function')"
+                    ),
+                },
+                "pattern": {
+                    "type": "string",
+                    "enum": [
+                        "json_loads_unguarded",
+                        "subprocess_unchecked",
+                        "content_index_unguarded",
+                    ],
+                    "description": (
+                        "Contract pattern to encode in Z3 "
+                        "(optional — runs Crosshair only if omitted)"
+                    ),
+                },
+                "timeout": {
+                    "type": "number",
+                    "default": 10.0,
+                    "description": "Crosshair timeout per condition",
+                },
+            },
+            "required": ["source_file", "fn_qualname"],
+        },
+    },
+    {
         "name": "pact_ping",
         "description": (
             "Diagnostic: probe whether MCP sampling/createMessage is working. "
@@ -610,10 +655,59 @@ def _md_topology(r: dict) -> str:
     return "\n".join(lines)
 
 
+def _md_constraint_graph(r: dict) -> str:
+    fn = r.get("function", "?")
+    lines = [f"## pact constraint graph — {fn}\n"]
+
+    violations = r.get("crosshair_violations", [])
+    if violations:
+        lines.append(f"Crosshair: **{len(violations)} violation(s) found**\n")
+        for v in violations[:5]:
+            lines.append(f"- line {v['line']}: {v['message']}")
+        lines.append("")
+    else:
+        lines.append("Crosshair: no violations found\n")
+
+    z3_sat = r.get("z3_sat", "not_run")
+    if z3_sat == "sat":
+        lines.append("Z3: **sat** (violation reachable)\n")
+        model = r.get("z3_model", {})
+        if model:
+            for k, v in list(model.items())[:6]:
+                lines.append(f"- {k} = {v}")
+            lines.append("")
+    elif z3_sat == "unsat":
+        lines.append("Z3: **unsat** (proved safe)\n")
+    elif z3_sat == "unknown":
+        lines.append("Z3: **unknown**\n")
+
+    dag = r.get("constraint_dag", {})
+    lbc = r.get("load_bearing_constraints", [])
+    if lbc:
+        lines.append("### Load-bearing constraints (cut vertices in constraint DAG)")
+        for cv in lbc:
+            btw = cv.get("betweenness", 0.0)
+            label = cv.get("label", "?")
+            lines.append(f"- btw={btw:.4f}  [{label}]")
+        lines.append("")
+
+    beta1 = dag.get("beta1", 0)
+    cc = dag.get("connected_components", 0)
+    n_nodes = dag.get("n_nodes", 0)
+    n_edges = dag.get("n_edges", 0)
+    lines.append(
+        f"β₁={beta1} (constraint cycles)  "
+        f"Connected components={cc}  "
+        f"Nodes={n_nodes}  Edges={n_edges}"
+    )
+    return "\n".join(lines)
+
+
 _MD_RENDERERS = {
     "pact_check": _md_check,
     "pact_heal": _md_heal,
     "pact_topology": _md_topology,
+    "pact_constraint_graph": _md_constraint_graph,
 }
 
 
@@ -1084,6 +1178,22 @@ def _tool_pact_spec_learn(params: dict) -> dict:
     }
 
 
+def _tool_pact_constraint_graph(params: dict) -> dict:
+    from .constraint_graph import analyze_function
+
+    source_file = params["source_file"]
+    fn_qualname = params["fn_qualname"]
+    pattern = params.get("pattern")
+    timeout = float(params.get("timeout", 10.0))
+
+    return analyze_function(
+        source_file=source_file,
+        fn_qualname=fn_qualname,
+        pattern=pattern,
+        timeout=timeout,
+    )
+
+
 def _tool_pact_ping(params: dict) -> dict:
     """Probe sampling/createMessage: send one request, return raw result or error."""
     prompt = params.get("prompt", "Reply with exactly: SAMPLING_OK")
@@ -1105,6 +1215,7 @@ _DISPATCH = {
     "pact_check": _tool_pact_check,
     "pact_sheaf": _tool_pact_sheaf,
     "pact_tda": _tool_pact_tda,
+    "pact_constraint_graph": _tool_pact_constraint_graph,
     # LLM-assisted tools — require ANTHROPIC_API_KEY in environment
     "pact_context": _tool_pact_context,
     "pact_find": _tool_pact_find,
