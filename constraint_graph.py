@@ -379,6 +379,48 @@ def _returncode_checked_in_scope(call_node: ast.Call, scope: ast.AST) -> bool:
     return False
 
 
+def _is_index_guarded(subscript_node: ast.Subscript, scope: ast.AST) -> bool:
+    """True if subscript_node is inside an if-block or after a len/bool check."""
+    container_src = ast.unparse(subscript_node.value)
+
+    for parent in ast.walk(scope):
+        # if container or if len(container) or if container is not None
+        if isinstance(parent, ast.If):
+            test_src = ast.unparse(parent.test)
+            if container_src in test_src:
+                # subscript is in the body of this if
+                in_body = any(
+                    subscript_node is n
+                    for n in ast.walk(
+                        ast.Module(body=parent.body, type_ignores=[])  # type: ignore[arg-type]
+                    )
+                )
+                if in_body:
+                    return True
+        # try/except IndexError or similar
+        if isinstance(parent, ast.Try):
+            for handler in parent.handlers:
+                if handler.type is None:
+                    in_body = any(
+                        subscript_node is n
+                        for n in ast.walk(
+                            ast.Module(body=parent.body, type_ignores=[])  # type: ignore[arg-type]
+                        )
+                    )
+                    if in_body:
+                        return True
+                elif _exc_names(handler.type) & {"IndexError", "KeyError", "Exception"}:
+                    in_body = any(
+                        subscript_node is n
+                        for n in ast.walk(
+                            ast.Module(body=parent.body, type_ignores=[])  # type: ignore[arg-type]
+                        )
+                    )
+                    if in_body:
+                        return True
+    return False
+
+
 def _collect_local_callees(fn_node: ast.AST, all_fns: dict[str, ast.AST]) -> set[str]:
     """Return names of same-file functions called directly from *fn_node* (one level)."""
     callees: set[str] = set()
@@ -489,6 +531,32 @@ def extract_call_sites(source_file: str, fn_qualname: str) -> list[dict]:
                             "pattern": "subprocess_unchecked",
                         }
                     )
+
+        # Index [0] access without prior length/emptiness check
+        for node in ast.walk(scan_node):
+            if not isinstance(node, ast.Subscript):
+                continue
+            # Only flag [0] / [-1] literal index — most dangerous
+            idx = node.slice
+            if not (isinstance(idx, ast.Constant) and idx.value in (0, -1)):
+                continue
+            # The accessed expression (the container)
+            container = ast.unparse(node.value)
+            # Skip simple string/dict literals — those don't index-error at 0
+            if isinstance(node.value, (ast.Constant, ast.Dict, ast.Set)):
+                continue
+            # Check if there's a guard: len(...) > 0, if ..., or similar
+            guarded = _is_index_guarded(node, scan_node)
+            if not guarded:
+                sites.append(
+                    {
+                        "line": node.lineno,
+                        "via": via,
+                        "arg": container,
+                        "guarded": False,
+                        "pattern": "content_index_unguarded",
+                    }
+                )
 
     return sites
 
@@ -763,4 +831,120 @@ def structural_risk_report(root: str, top_n: int = 20) -> dict:
         "n_violated": n_violated,
         "n_clean": n_clean,
         "risk_findings": findings,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Adapter: pact_risk output → pact_heal violations JSON
+# ---------------------------------------------------------------------------
+
+_PATTERN_STATEMENTS = {
+    "json_loads_unguarded": (
+        "json.loads() calls must be wrapped in try/except that catches "
+        "json.JSONDecodeError or ValueError"
+    ),
+    "subprocess_unchecked": (
+        "subprocess invocations must use check=True, check=False with explicit "
+        "returncode inspection, or handle CalledProcessError"
+    ),
+    "content_index_unguarded": (
+        "List index access [0] requires a prior length or emptiness check"
+    ),
+}
+
+
+def risk_to_violations(risk_report: dict) -> dict:
+    """Convert pact_risk output to pact_heal-compatible violations JSON.
+
+    pact_risk produces findings keyed by function and betweenness.
+    pact_heal expects modules with invariants and violations lists.
+    This adapter bridges them so the pipeline is:
+
+        pact_risk → risk_to_violations → pact_heal → oracle → patches
+
+    Args:
+        risk_report: dict returned by :func:`structural_risk_report`.
+
+    Returns:
+        dict in pact_heal violations format::
+
+            {
+                "project": str,
+                "generated_by": "pact.constraint_graph",
+                "modules": [
+                    {
+                        "path": str,
+                        "invariants": [...],
+                        "violations": [...]
+                    }
+                ]
+            }
+    """
+    # Group unguarded sites by file
+    by_file: dict[str, list[dict]] = {}
+    for finding in risk_report.get("risk_findings", []):
+        for site in finding.get("unguarded_sites", []):
+            fpath = finding["file"]
+            if fpath not in by_file:
+                by_file[fpath] = []
+            by_file[fpath].append(
+                {
+                    "function": finding["function"],
+                    "betweenness": finding["betweenness"],
+                    "risk_score": finding["risk_score"],
+                    **site,
+                }
+            )
+
+    modules = []
+    for fpath, sites in sorted(by_file.items()):
+        # One invariant per pattern per file
+        seen_patterns: dict[str, dict] = {}
+        invariants = []
+        violations = []
+
+        for site in sites:
+            pattern = site["pattern"]
+            inv_id = f"{pattern}_{Path(fpath).stem}"
+
+            if pattern not in seen_patterns:
+                inv = {
+                    "id": inv_id,
+                    "type": pattern,
+                    "statement": _PATTERN_STATEMENTS.get(
+                        pattern, f"Violation: {pattern}"
+                    ),
+                    "severity": "high",
+                    "confidence": 0.9,
+                }
+                invariants.append(inv)
+                seen_patterns[pattern] = inv
+
+            via_note = f" (via {site['via']})" if site.get("via") else ""
+            violations.append(
+                {
+                    "invariant_id": inv_id,
+                    "file": fpath,
+                    "line": site["line"],
+                    "severity": "high",
+                    "evidence": (
+                        "subprocess.run(...)"
+                        if "subprocess" in pattern
+                        else f"json.loads({site.get('arg', '...')})"
+                    ),
+                    "explanation": (
+                        f"{pattern} at line {site['line']}{via_note} "
+                        f"in {site['function']} (btw={site['betweenness']:.4f})"
+                    ),
+                }
+            )
+
+        modules.append(
+            {"path": fpath, "invariants": invariants, "violations": violations}
+        )
+
+    return {
+        "project": risk_report.get("project", "?"),
+        "generated_by": "pact.constraint_graph",
+        "modules": modules,
     }

@@ -264,9 +264,57 @@ class PactEngine:
 
 
 def run(root: Path) -> list[Z3Violation]:
+    """Run Z3 contract verification on *root*.
+
+    Combines two engines:
+    1. PactEngine (Django ORM field constraints) — original engine.
+    2. constraint_graph.structural_risk_report — function-specific Z3
+       contract analysis on top call-graph cut vertices. Finds
+       json_loads_unguarded and subprocess_unchecked violations at
+       load-bearing joints on general Python codebases.
+    """
+    violations: list[Z3Violation] = []
+
+    # Engine 1: Django ORM constraints
     engine = PactEngine()
     engine.load(root)
-    return engine.violations()
+    violations.extend(engine.violations())
+
+    # Engine 2: structural risk — works on any Python codebase
+    try:
+        from .constraint_graph import structural_risk_report
+
+        report = structural_risk_report(str(root), top_n=20)
+        for finding in report.get("risk_findings", []):
+            for site in finding.get("unguarded_sites", []):
+                via = f" via {site['via']}" if site.get("via") else ""
+                violations.append(
+                    Z3Violation(
+                        file=finding["file"],
+                        line=site["line"],
+                        call=(
+                            "subprocess.run(...)"
+                            if "subprocess" in site["pattern"]
+                            else f"json.loads({site.get('arg', '...')})"
+                        ),
+                        missing=[
+                            (
+                                "check=True or returncode inspection"
+                                if "subprocess" in site["pattern"]
+                                else "try/except json.JSONDecodeError"
+                            )
+                        ],
+                        context=site["pattern"] + via,
+                    )
+                )
+    except Exception as exc:
+        import warnings
+
+        warnings.warn(
+            f"z3_engine: structural_risk_report failed: {exc}", RuntimeWarning
+        )
+
+    return violations
 
 
 # ── LLM Response Guard engine ─────────────────────────────────────────────────

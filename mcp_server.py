@@ -579,6 +579,11 @@ _TOOLS = [
                     "default": 20,
                     "description": "How many cut vertices to analyse",
                 },
+                "as_violations": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "Return pact_heal-compatible violations JSON instead of risk report. Use this to pipe directly into pact_heal.",
+                },
             },
             "required": ["root"],
         },
@@ -1275,11 +1280,16 @@ def _tool_pact_constraint_graph(params: dict) -> dict:
 
 
 def _tool_pact_risk(params: dict) -> dict:
-    from .constraint_graph import structural_risk_report
+    from .constraint_graph import risk_to_violations, structural_risk_report
 
     root = params["root"]
     top_n = int(params.get("top_n", 20))
-    return structural_risk_report(root, top_n=top_n)
+    as_violations = params.get("as_violations", False)
+
+    report = structural_risk_report(root, top_n=top_n)
+    if as_violations:
+        return risk_to_violations(report)
+    return report
 
 
 def _tool_pact_ping(params: dict) -> dict:
