@@ -897,6 +897,15 @@ def _tool_pact_topology(params: dict) -> dict:
     top_by_btw: list[dict] = []
     sccs: list[dict] = []
 
+    def _is_entry_point(file: str) -> bool:
+        """Entry-point scripts (seed_corpus, cli, __main__) are stars, not joints."""
+        stem = Path(file).stem
+        return stem in ("seed_corpus", "__main__") or stem.startswith("test_")
+
+    def _is_test_file(file: str) -> bool:
+        stem = Path(file).stem
+        return stem.startswith("test_")
+
     if G is not None:
         G_u = G.to_undirected()
         btw: dict[str, float] = nx.betweenness_centrality(G_u, normalized=True)
@@ -904,8 +913,10 @@ def _tool_pact_topology(params: dict) -> dict:
 
         for name in sorted(cv_set, key=lambda n: btw.get(n, 0.0), reverse=True):
             f = func_by_name.get(name)
-            if f is None:  # skip unresolved builtins/stdlib
+            if f is None:
                 continue
+            if _is_test_file(f.file) or _is_entry_point(f.file):
+                continue  # test hubs and entry-point stars are not load-bearing joints
             cut_verts.append(
                 {
                     "function": name,
@@ -918,7 +929,9 @@ def _tool_pact_topology(params: dict) -> dict:
             (
                 (n, b)
                 for n, b in btw.items()
-                if n not in cv_set and func_by_name.get(n) is not None
+                if n not in cv_set
+                and func_by_name.get(n) is not None
+                and not _is_test_file(func_by_name[n].file)
             ),
             key=lambda x: x[1],
             reverse=True,
