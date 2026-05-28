@@ -8,10 +8,12 @@ invariant — remove it and the violation proof collapses.
 
 from __future__ import annotations
 
+import ast
 import re
 import subprocess
 import sys
 import warnings
+from pathlib import Path
 from typing import Any
 
 import networkx as nx
@@ -288,6 +290,213 @@ def contract_dag_for_pattern(
 
 
 # ---------------------------------------------------------------------------
+# Function-specific AST extraction
+# ---------------------------------------------------------------------------
+
+_JSON_GUARD_NAMES = {"JSONDecodeError", "ValueError", "Exception"}
+
+
+def _exc_names(exc_node: ast.expr) -> set[str]:
+    """Collect exception names from a handler type node (Name, Attribute, Tuple)."""
+    if isinstance(exc_node, ast.Name):
+        return {exc_node.id}
+    if isinstance(exc_node, ast.Attribute):
+        return {exc_node.attr}
+    if isinstance(exc_node, ast.Tuple):
+        names: set[str] = set()
+        for elt in exc_node.elts:
+            names |= _exc_names(elt)
+        return names
+    return set()
+
+
+def _find_function_node(
+    tree: ast.AST, fn_qualname: str
+) -> ast.FunctionDef | ast.AsyncFunctionDef | None:
+    """Find the AST node for *fn_qualname* (supports 'Class.method' dotted names)."""
+    parts = fn_qualname.split(".", 1)
+    name = parts[0]
+    rest = parts[1] if len(parts) > 1 else None
+
+    for node in ast.iter_child_nodes(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            if node.name == name:
+                if rest is None:
+                    return node
+                return _find_function_node(node, rest)
+        if isinstance(node, ast.ClassDef) and node.name == name and rest:
+            return _find_function_node(node, rest)
+    return None
+
+
+def _is_guarded_in_fn(
+    call_node: ast.Call, fn_node: ast.AST, guard_names: set[str]
+) -> bool:
+    """True if *call_node* is inside a try/except that catches any of *guard_names*."""
+    for parent in ast.walk(fn_node):
+        if not isinstance(parent, ast.Try):
+            continue
+        # Check if call_node is in the try body (not the handlers)
+        in_body = any(call_node is n for n in ast.walk(ast.Module(body=parent.body, type_ignores=[])))  # type: ignore[arg-type]
+        if not in_body:
+            continue
+        for handler in parent.handlers:
+            if handler.type is None:
+                return True  # bare except catches everything
+            if _exc_names(handler.type) & guard_names:
+                return True
+    return False
+
+
+def _collect_local_callees(fn_node: ast.AST, all_fns: dict[str, ast.AST]) -> set[str]:
+    """Return names of same-file functions called directly from *fn_node* (one level)."""
+    callees: set[str] = set()
+    for node in ast.walk(fn_node):
+        if isinstance(node, ast.Call):
+            func = node.func
+            # Direct call: foo(...)
+            if isinstance(func, ast.Name) and func.id in all_fns:
+                callees.add(func.id)
+            # Module-qualified: self.foo(...) or obj.foo(...) — skip (cross-file)
+    return callees
+
+
+def extract_call_sites(source_file: str, fn_qualname: str) -> list[dict]:
+    """Walk *fn_qualname*'s AST and find contract-relevant call sites.
+
+    Returns a list of dicts::
+
+        {"line": int, "arg": str, "guarded": bool, "pattern": str}
+
+    Patterns detected:
+    - ``json_loads_unguarded``: ``json.loads(...)`` not inside try/except JSONDecodeError
+    - ``subprocess_unchecked``: ``subprocess.run(...)`` / ``subprocess.call(...)`` without ``check=True``
+    - ``content_index_unguarded``: ``expr[0]`` / ``expr.content[0]`` without length guard
+    """
+    try:
+        source = Path(source_file).read_text(encoding="utf-8")
+        tree = ast.parse(source)
+    except (OSError, SyntaxError) as exc:
+        warnings.warn(
+            f"extract_call_sites: cannot parse {source_file}: {exc}", RuntimeWarning
+        )
+        return []
+
+    fn_node = _find_function_node(tree, fn_qualname)
+    if fn_node is None:
+        return []
+
+    # Build index of all top-level functions in the file for interprocedural walk
+    all_fns: dict[str, ast.AST] = {}
+    for node in ast.iter_child_nodes(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            all_fns[node.name] = node
+
+    # Scan the target + its direct same-file callees (one interprocedural hop)
+    to_scan: dict[str, ast.AST] = {fn_qualname: fn_node}
+    for callee_name in _collect_local_callees(fn_node, all_fns):
+        if callee_name not in to_scan:
+            to_scan[callee_name] = all_fns[callee_name]
+
+    sites: list[dict] = []
+
+    for scan_name, scan_node in to_scan.items():
+        via = "" if scan_name == fn_qualname else f"{scan_name}→"
+        for node in ast.walk(scan_node):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+
+            # json.loads(...)
+            if (
+                isinstance(func, ast.Attribute)
+                and func.attr == "loads"
+                and isinstance(func.value, ast.Name)
+                and func.value.id == "json"
+            ):
+                guarded = _is_guarded_in_fn(node, scan_node, _JSON_GUARD_NAMES)
+                arg_str = ast.unparse(node.args[0]) if node.args else "?"
+                sites.append(
+                    {
+                        "line": node.lineno,
+                        "via": via,
+                        "arg": arg_str,
+                        "guarded": guarded,
+                        "pattern": "json_loads_unguarded",
+                    }
+                )
+
+            # subprocess.run / subprocess.call / subprocess.popen
+            elif (
+                isinstance(func, ast.Attribute)
+                and func.attr in ("run", "call", "popen")
+                and isinstance(func.value, ast.Name)
+                and func.value.id == "subprocess"
+            ):
+                check_val = None
+                for kw in node.keywords:
+                    if kw.arg == "check":
+                        check_val = kw.value
+                checked = (
+                    isinstance(check_val, ast.Constant) and check_val.value is True
+                )
+                if not checked:
+                    sites.append(
+                        {
+                            "line": node.lineno,
+                            "via": via,
+                            "arg": "...",
+                            "guarded": False,
+                            "pattern": "subprocess_unchecked",
+                        }
+                    )
+
+    return sites
+
+
+def contract_dag_for_function(
+    source_file: str, fn_qualname: str
+) -> tuple[nx.DiGraph, z3.Solver, list[dict]]:
+    """Build a function-specific Z3 constraint DAG from actual AST call sites.
+
+    Unlike :func:`contract_dag_for_pattern` which uses generic templates, this
+    function extracts the real unguarded call sites from *fn_qualname*'s AST
+    and encodes each one as a distinct Z3 sub-problem keyed by line number.
+
+    Returns:
+        (DAG, solver, sites) — sites is the list of extracted call sites.
+        The solver's assertions() encodes only the unguarded sites found.
+        If no unguarded sites exist, returns an empty graph and empty sites.
+    """
+    sites = extract_call_sites(source_file, fn_qualname)
+    unguarded = [s for s in sites if not s["guarded"]]
+
+    s = z3.Solver()
+
+    for site in unguarded:
+        line = site["line"]
+        p = site["pattern"]
+
+        if p == "json_loads_unguarded":
+            text = z3.String(f"text_L{line}")
+            valid = z3.Function(f"valid_json_L{line}", z3.StringSort(), z3.BoolSort())
+            raises = z3.Bool(f"raises_L{line}")
+            guarded = z3.Bool(f"guarded_L{line}")
+            s.add(z3.Implies(z3.Not(valid(text)), raises))
+            s.add(z3.Implies(valid(text), z3.Not(raises)))
+            s.add(z3.And(raises, z3.Not(guarded)))
+
+        elif p == "subprocess_unchecked":
+            exit_code = z3.Int(f"exit_code_L{line}")
+            checked = z3.Bool(f"checked_L{line}")
+            s.add(exit_code != 0)
+            s.add(z3.Not(checked))
+
+    G = build_constraint_dag(list(s.assertions()))
+    return G, s, sites
+
+
+# ---------------------------------------------------------------------------
 # Main entry point
 # ---------------------------------------------------------------------------
 
@@ -344,8 +553,10 @@ def analyze_function(
         "connected_components": 0,
     }
     G: nx.DiGraph = nx.DiGraph()
+    extracted_sites: list[dict] = []
 
     if pattern is not None:
+        # Generic template mode (caller-specified pattern)
         try:
             G, solver = contract_dag_for_pattern(pattern)
             result = solver.check()
@@ -355,28 +566,162 @@ def analyze_function(
                 z3_model = {str(d): str(m[d]) for d in m.decls() if m[d] is not None}
         except ValueError as exc:
             warnings.warn(str(exc), RuntimeWarning, stacklevel=2)
-
-        full_stats = analyze_constraint_dag(G)
-        dag_stats = {
-            k: full_stats[k]
-            for k in (
-                "n_nodes",
-                "n_edges",
-                "cut_vertices",
-                "beta1",
-                "connected_components",
-            )
-        }
-        load_bearing = full_stats.get("cut_vertices", [])
     else:
-        load_bearing = []
+        # Function-specific mode: extract actual call sites from AST
+        G, solver, extracted_sites = contract_dag_for_function(source_file, fn_qualname)
+        if G.number_of_nodes() > 0:
+            result = solver.check()
+            z3_sat = str(result)
+            if result == z3.sat:
+                m = solver.model()
+                z3_model = {str(d): str(m[d]) for d in m.decls() if m[d] is not None}
+        else:
+            z3_sat = "unsat"  # no unguarded sites found
+
+    full_stats = analyze_constraint_dag(G)
+    dag_stats = {
+        k: full_stats[k]
+        for k in ("n_nodes", "n_edges", "cut_vertices", "beta1", "connected_components")
+    }
+    load_bearing = full_stats.get("cut_vertices", [])
 
     return {
         "function": fn_qualname,
         "file": source_file,
         "crosshair_violations": crosshair_violations,
+        "extracted_sites": extracted_sites,
         "z3_sat": z3_sat,
         "z3_model": z3_model,
         "constraint_dag": dag_stats,
         "load_bearing_constraints": load_bearing,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Structural risk report — topology + constraint analysis in one pass
+# ---------------------------------------------------------------------------
+
+
+def structural_risk_report(root: str, top_n: int = 20) -> dict:
+    """Chain topology analysis → constraint analysis for the top cut vertices.
+
+    For each of the top *top_n* call-graph cut vertices (by betweenness),
+    runs :func:`contract_dag_for_function` to extract function-specific
+    violations and their formal Z3 encoding.
+
+    Rankings:
+    - Primary: call-graph betweenness × (1 + unguarded_site_count)
+      so a central function with real violations ranks above a central
+      function with none.
+    - Secondary: betweenness alone (for functions with no violations).
+
+    Args:
+        root: Absolute path to project root.
+        top_n: How many cut vertices to analyse (default 20).
+
+    Returns:
+        dict with keys:
+        - ``project``: project name
+        - ``n_cut_vertices``: total cut vertices found
+        - ``n_analysed``: how many were run through constraint analysis
+        - ``n_violated``: how many have at least one formally-provable violation
+        - ``n_clean``: formally clean (no unguarded sites found)
+        - ``risk_findings``: list of finding dicts, highest-risk first
+    """
+    import networkx as nx
+    from pathlib import Path as _Path
+
+    from .extractor import extract_from_codebase
+    from .reduce import _build_digraph
+
+    root_path = _Path(root)
+
+    _, functions, call_sites = extract_from_codebase(root_path)
+
+    def _is_noise(file: str) -> bool:
+        stem = _Path(file).stem
+        return stem.startswith("test_") or stem in ("seed_corpus", "__main__")
+
+    prod_fns = [f for f in functions if not _is_noise(f.file)]
+    prod_cs = [c for c in call_sites if not _is_noise(c.file)]
+
+    G, func_by_name = _build_digraph(prod_fns, prod_cs)
+    if G is None:
+        return {
+            "project": root_path.name,
+            "n_cut_vertices": 0,
+            "n_analysed": 0,
+            "n_violated": 0,
+            "n_clean": 0,
+            "risk_findings": [],
+        }
+
+    G_u = G.to_undirected()
+    btw: dict = nx.betweenness_centrality(G_u, normalized=True)
+    cv_set: set = set(nx.articulation_points(G_u))
+
+    # Top cut vertices by betweenness, excluding noise
+    top_cvs = sorted(
+        [
+            (name, btw.get(name, 0.0), func_by_name[name])
+            for name in cv_set
+            if name in func_by_name and not _is_noise(func_by_name[name].file)
+        ],
+        key=lambda x: x[1],
+        reverse=True,
+    )[:top_n]
+
+    findings: list[dict] = []
+
+    for fn_name, btw_score, fn_obj in top_cvs:
+        source_file = fn_obj.file
+
+        G_dag, solver, sites = contract_dag_for_function(source_file, fn_name)
+        unguarded = [s for s in sites if not s["guarded"]]
+
+        z3_sat = "not_run"
+        z3_model: dict = {}
+        if G_dag.number_of_nodes() > 0:
+            result = solver.check()
+            z3_sat = str(result)
+            if result == z3.sat:
+                m = solver.model()
+                z3_model = {str(d): str(m[d]) for d in m.decls() if m[d] is not None}
+        elif sites:
+            z3_sat = "unsat"  # sites found but all guarded
+
+        dag_stats = analyze_constraint_dag(G_dag)
+
+        # Risk score: betweenness amplified by number of formal violations
+        risk_score = btw_score * (1 + len(unguarded))
+
+        findings.append(
+            {
+                "function": fn_name,
+                "file": source_file,
+                "betweenness": round(btw_score, 4),
+                "risk_score": round(risk_score, 4),
+                "unguarded_sites": unguarded,
+                "guarded_sites": [s for s in sites if s["guarded"]],
+                "z3_sat": z3_sat,
+                "z3_model": z3_model,
+                "load_bearing_constraints": dag_stats.get("cut_vertices", [])[:5],
+                "beta1": dag_stats.get("beta1", 0),
+                "constraint_dag_nodes": dag_stats.get("n_nodes", 0),
+            }
+        )
+
+    # Sort by risk score descending
+    findings.sort(key=lambda x: x["risk_score"], reverse=True)
+
+    n_violated = sum(1 for f in findings if f["unguarded_sites"])
+    n_clean = sum(1 for f in findings if not f["unguarded_sites"])
+
+    return {
+        "project": root_path.name,
+        "n_cut_vertices": len(cv_set),
+        "n_analysed": len(findings),
+        "n_violated": n_violated,
+        "n_clean": n_clean,
+        "risk_findings": findings,
     }

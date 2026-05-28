@@ -556,6 +556,34 @@ _TOOLS = [
         },
     },
     {
+        "name": "pact_risk",
+        "description": (
+            "Structural risk report — topology + constraint analysis in one pass. "
+            "Finds the top call-graph cut vertices (load-bearing joints), runs "
+            "function-specific Z3 constraint analysis on each, and returns a ranked "
+            "list of findings: functions that are both structurally critical AND have "
+            "formally-provable violations rank highest. Risk score = betweenness × "
+            "(1 + unguarded_site_count). No LLM required. This is the connected "
+            "pipeline: topology → constraint extraction → formal verification → "
+            "ranked structural risk report."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "root": {
+                    "type": "string",
+                    "description": "Absolute path to project root",
+                },
+                "top_n": {
+                    "type": "integer",
+                    "default": 20,
+                    "description": "How many cut vertices to analyse",
+                },
+            },
+            "required": ["root"],
+        },
+    },
+    {
         "name": "pact_ping",
         "description": (
             "Diagnostic: probe whether MCP sampling/createMessage is working. "
@@ -668,16 +696,34 @@ def _md_constraint_graph(r: dict) -> str:
     else:
         lines.append("Crosshair: no violations found\n")
 
+    # Show extracted call sites when running in function-specific mode
+    sites = r.get("extracted_sites", [])
+    if sites:
+        guarded = [s for s in sites if s["guarded"]]
+        unguarded = [s for s in sites if not s["guarded"]]
+        lines.append(
+            f"**{len(sites)} call site(s) found** — {len(unguarded)} unguarded\n"
+        )
+        for s in unguarded[:8]:
+            lines.append(
+                f"- line {s['line']} `{s['pattern']}` arg=`{s['arg']}`  ← unguarded"
+            )
+        for s in guarded[:4]:
+            lines.append(
+                f"- line {s['line']} `{s['pattern']}` arg=`{s['arg']}`  ✓ guarded"
+            )
+        lines.append("")
+
     z3_sat = r.get("z3_sat", "not_run")
     if z3_sat == "sat":
         lines.append("Z3: **sat** (violation reachable)\n")
         model = r.get("z3_model", {})
         if model:
-            for k, v in list(model.items())[:6]:
+            for k, v in list(model.items())[:8]:
                 lines.append(f"- {k} = {v}")
             lines.append("")
     elif z3_sat == "unsat":
-        lines.append("Z3: **unsat** (proved safe)\n")
+        lines.append("Z3: **unsat** — no unguarded call sites found\n")
     elif z3_sat == "unknown":
         lines.append("Z3: **unknown**\n")
 
@@ -703,11 +749,45 @@ def _md_constraint_graph(r: dict) -> str:
     return "\n".join(lines)
 
 
+def _md_risk(r: dict) -> str:
+    lines = [f"## pact risk — {r.get('project', '?')}\n"]
+    lines.append(
+        f"**{r['n_cut_vertices']} cut vertices** · analysed {r['n_analysed']} · "
+        f"**{r['n_violated']} violated** · {r['n_clean']} clean\n"
+    )
+    findings = r.get("risk_findings", [])
+    if not findings:
+        lines.append("_No findings._")
+        return "\n".join(lines)
+
+    for i, f in enumerate(findings[:15], 1):
+        violated = bool(f.get("unguarded_sites"))
+        icon = "🔴" if violated else "🟢"
+        lines.append(
+            f"### {i}. {icon} `{f['function']}` in `{f['file'].rsplit('/', 1)[-1]}`"
+        )
+        lines.append(
+            f"btw={f['betweenness']}  risk={f['risk_score']}  "
+            f"β₁={f['beta1']}  z3={f['z3_sat']}"
+        )
+        for s in f.get("unguarded_sites", [])[:4]:
+            via = f" via `{s['via']}`" if s.get("via") else ""
+            lines.append(f"- line {s['line']}{via} `{s['pattern']}` arg=`{s['arg']}`")
+        lbc = f.get("load_bearing_constraints", [])
+        if lbc:
+            top = ", ".join(f"`{c['label']}`({c['betweenness']})" for c in lbc[:3])
+            lines.append(f"  load-bearing: {top}")
+        lines.append("")
+
+    return "\n".join(lines)
+
+
 _MD_RENDERERS = {
     "pact_check": _md_check,
     "pact_heal": _md_heal,
     "pact_topology": _md_topology,
     "pact_constraint_graph": _md_constraint_graph,
+    "pact_risk": _md_risk,
 }
 
 
@@ -1194,6 +1274,14 @@ def _tool_pact_constraint_graph(params: dict) -> dict:
     )
 
 
+def _tool_pact_risk(params: dict) -> dict:
+    from .constraint_graph import structural_risk_report
+
+    root = params["root"]
+    top_n = int(params.get("top_n", 20))
+    return structural_risk_report(root, top_n=top_n)
+
+
 def _tool_pact_ping(params: dict) -> dict:
     """Probe sampling/createMessage: send one request, return raw result or error."""
     prompt = params.get("prompt", "Reply with exactly: SAMPLING_OK")
@@ -1216,6 +1304,7 @@ _DISPATCH = {
     "pact_sheaf": _tool_pact_sheaf,
     "pact_tda": _tool_pact_tda,
     "pact_constraint_graph": _tool_pact_constraint_graph,
+    "pact_risk": _tool_pact_risk,
     # LLM-assisted tools — require ANTHROPIC_API_KEY in environment
     "pact_context": _tool_pact_context,
     "pact_find": _tool_pact_find,
