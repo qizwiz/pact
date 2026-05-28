@@ -389,20 +389,26 @@ def run_crosshair_purified(
         return []
 
     pure_name = fn_qualname.replace(".", "_") + "_pure"
+    mod_name = f"_pact_shadow_{pure_name}"
 
-    with tempfile.NamedTemporaryFile(
-        suffix=".py", mode="w", delete=False, dir="/tmp", encoding="utf-8"
-    ) as f:
-        f.write(shadow_src)
-        tmp_path = f.name
-
+    # Write to a named module in a temp dir so Crosshair can import it
+    tmp_dir = Path(tempfile.mkdtemp(prefix="pact_shadow_"))
+    tmp_path = tmp_dir / f"{mod_name}.py"
     try:
+        tmp_path.write_text(shadow_src, encoding="utf-8")
+
+        env_copy = {**__import__("os").environ}
+        existing_pp = env_copy.get("PYTHONPATH", "")
+        env_copy["PYTHONPATH"] = str(tmp_dir) + (
+            ":" + existing_pp if existing_pp else ""
+        )
+
         cmd = [
             sys.executable,
             "-m",
             "crosshair",
             "cover",
-            f"{tmp_path}::{pure_name}",
+            f"{mod_name}.{pure_name}",
             "--example_output_format",
             "pytest",
             "--per_condition_timeout",
@@ -416,30 +422,30 @@ def run_crosshair_purified(
             text=True,
             timeout=timeout + 10,
             check=False,
+            env=env_copy,
         )
         raw = proc.stdout + proc.stderr
     except (subprocess.TimeoutExpired, FileNotFoundError):
         return []
     finally:
-        Path(tmp_path).unlink(missing_ok=True)
+        import shutil
+
+        shutil.rmtree(tmp_dir, ignore_errors=True)
 
     violations: list[dict] = []
 
-    # Execute generated test cases against the shadow; flag raisers
-    _assert_re = re.compile(r"assert \w+\((.+)\) ==")
-    for line in raw.splitlines():
-        m = _assert_re.match(line.strip())
-        if not m:
-            continue
-        args_src = m.group(1)
+    # Load the shadow into a namespace for execution
+    ns: dict = {}
+    try:
+        exec(shadow_src, ns)  # noqa: S102
+    except Exception:
+        return []
+    fn = ns.get(pure_name)
+    if fn is None:
+        return []
+
+    def _try_call(args_repr: str, args: tuple) -> None:
         try:
-            # Inline execution against the purified source
-            ns: dict = {}
-            exec(shadow_src, ns)  # noqa: S102
-            fn = ns.get(pure_name)
-            if fn is None:
-                continue
-            args = eval(f"({args_src},)", ns)  # noqa: S307
             fn(*args)
         except Exception as exc:
             violations.append(
@@ -448,11 +454,50 @@ def run_crosshair_purified(
                     "line": 0,
                     "message": (
                         f"{type(exc).__name__}: {exc} — "
-                        f"purified input: {args_src[:80]}"
+                        f"purified input: {args_repr[:80]}"
                     ),
                     "type": "crosshair_purified",
                 }
             )
+
+    # 1. Execute Crosshair-generated test cases
+    _assert_re = re.compile(r"assert \w+\((.+)\) ==")
+    for line in raw.splitlines():
+        m = _assert_re.match(line.strip())
+        if not m:
+            continue
+        args_src = m.group(1)
+        try:
+            args = eval(f"({args_src},)", ns)  # noqa: S307
+            _try_call(args_src, args)
+        except Exception:
+            pass
+
+    # 2. Edge-case probing: mutate each symbolic param to boundary values.
+    # For each Crosshair-generated test, flip each str param to "" and each
+    # int param to 0/-1 — targets IndexError/KeyError in data-structure logic.
+    _assert_lines = [
+        m.group(1) for line in raw.splitlines() if (m := _assert_re.match(line.strip()))
+    ]
+    for args_src in _assert_lines[:5]:  # limit probing overhead
+        try:
+            base_args = list(eval(f"({args_src},)", ns))  # noqa: S307
+        except Exception:
+            continue
+        for i, val in enumerate(base_args):
+            edges: list = []
+            if isinstance(val, str) and val:
+                edges.append("")  # empty string → triggers [0] IndexError
+            elif isinstance(val, int) and val not in (0, -1):
+                edges.extend([0, -1])
+            elif isinstance(val, list) and val:
+                edges.append([])  # empty list
+            elif isinstance(val, dict) and val:
+                edges.append({})  # empty dict
+            for edge_val in edges:
+                probed = base_args[:]
+                probed[i] = edge_val
+                _try_call(f"probe#{i}={edge_val!r}", tuple(probed))
 
     return violations
 
