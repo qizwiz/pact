@@ -191,6 +191,273 @@ def run_crosshair(
 
 
 # ---------------------------------------------------------------------------
+# Purity lifting — convert impure functions to pure Crosshair-analysable shadows
+# ---------------------------------------------------------------------------
+
+_STUB_PREAMBLE = '''
+import typing
+from typing import Any, Optional
+
+class _SymProc:
+    """Symbolic subprocess result for lifted functions."""
+    def __init__(self, returncode: int, stdout: str = "", stderr: str = "") -> None:
+        self.returncode = returncode
+        self.stdout = stdout
+        self.stderr = stderr
+
+def _sym_open_text() -> str: ...
+def _sym_bool() -> bool: ...
+def _sym_int() -> int: ...
+def _sym_str() -> str: ...
+def _sym_dict() -> dict: ...
+def _sym_list() -> list: ...
+'''
+
+# Attribute names that signal I/O reads → return symbolic str
+_READ_ATTRS = frozenset(
+    {
+        "read_text",
+        "read_bytes",
+        "read",
+        "readline",
+        "readlines",
+        "open",
+        "load",
+        "loads",
+    }
+)
+# Function call patterns → (replacement_factory, type_annotation)
+# replacement_factory receives (node, fresh_name) and returns new AST node
+_SIDE_EFFECT_ATTRS = frozenset(
+    {
+        "echo",
+        "print",
+        "write",
+        "write_text",
+        "write_bytes",
+        "info",
+        "debug",
+        "warning",
+        "error",
+        "critical",
+        "exception",
+        "log",
+        "append_event",
+    }
+)
+
+
+class _PurityLifter(ast.NodeTransformer):
+    """Replace I/O calls in a function AST with symbolic stubs."""
+
+    def __init__(self) -> None:
+        self._counter = 0
+        self.extra_params: list[tuple[str, str]] = []  # (name, annotation)
+
+    def _fresh(self, prefix: str) -> str:
+        self._counter += 1
+        return f"_sym_{prefix}_{self._counter}"
+
+    def _add_param(self, prefix: str, annotation: str) -> ast.Name:
+        name = self._fresh(prefix)
+        self.extra_params.append((name, annotation))
+        return ast.Name(id=name, ctx=ast.Load())
+
+    def visit_Call(self, node: ast.Call) -> ast.expr:  # type: ignore[override]
+        self.generic_visit(node)
+        func = node.func
+
+        # Attribute call: x.method(...)
+        if isinstance(func, ast.Attribute):
+            attr = func.attr
+
+            # File reads → symbolic str
+            if attr in _READ_ATTRS:
+                return self._add_param("str", "str")
+
+            # os.path.exists / isfile / isdir → symbolic bool
+            if attr in ("exists", "isfile", "isdir", "isabs"):
+                return self._add_param("bool", "bool")
+
+            # subprocess.run / call / popen → symbolic _SymProc
+            if attr in ("run", "call", "Popen", "check_output", "check_call"):
+                rc = self._add_param("rc", "int")
+                out = self._add_param("stdout", "str")
+                err = self._add_param("stderr", "str")
+                return ast.Call(
+                    func=ast.Name(id="_SymProc", ctx=ast.Load()),
+                    args=[rc, out, err],
+                    keywords=[],
+                )
+
+            # Side-effect-only calls (echo, print, log) → evaluate arg, discard output
+            if attr in _SIDE_EFFECT_ATTRS:
+                if node.args:
+                    # `_ = arg` — keeps computation, drops I/O
+                    return ast.NamedExpr(
+                        target=ast.Name(id="_", ctx=ast.Store()),
+                        value=node.args[0],
+                    )
+                return ast.Constant(value=None)
+
+        # Name call: bare function
+        if isinstance(func, ast.Name):
+            name = func.id
+            if name == "print":
+                if node.args:
+                    return ast.NamedExpr(
+                        target=ast.Name(id="_", ctx=ast.Store()),
+                        value=node.args[0],
+                    )
+                return ast.Constant(value=None)
+            if name == "open":
+                return self._add_param("str", "str")
+
+        # json.loads / json.load via module access
+        if (
+            isinstance(func, ast.Attribute)
+            and func.attr in ("loads", "load", "dumps", "dump")
+            and isinstance(func.value, ast.Name)
+            and func.value.id == "json"
+        ):
+            if func.attr in ("loads", "load"):
+                return self._add_param("dict", "dict")
+
+        return node  # type: ignore[return-value]
+
+
+def _purify_function(source_file: str, fn_qualname: str) -> str | None:
+    """Return source of a pure shadow of *fn_qualname*, or None if not found.
+
+    The shadow replaces I/O calls with symbolic parameters so Crosshair
+    can analyse data-structure logic that would otherwise be blocked by
+    side effects.
+    """
+    try:
+        source = Path(source_file).read_text(encoding="utf-8")
+        tree = ast.parse(source)
+    except (OSError, SyntaxError):
+        return None
+
+    fn_node = _find_function_node(tree, fn_qualname)
+    if fn_node is None:
+        return None
+
+    import copy
+
+    fn_copy = copy.deepcopy(fn_node)
+    lifter = _PurityLifter()
+    pure_fn = lifter.visit(fn_copy)
+
+    if not lifter.extra_params and _is_pure_function(source_file, fn_qualname):
+        return None  # already pure — use normal cover mode
+
+    # Inject new symbolic params into the signature (after existing params)
+    for param_name, annotation in lifter.extra_params:
+        new_arg = ast.arg(
+            arg=param_name, annotation=ast.Name(id=annotation, ctx=ast.Load())
+        )
+        pure_fn.args.args.append(new_arg)
+
+    # Rename to avoid collision
+    pure_fn.name = fn_qualname.replace(".", "_") + "_pure"
+    ast.fix_missing_locations(pure_fn)
+
+    try:
+        fn_src = ast.unparse(pure_fn)
+    except Exception:
+        return None
+
+    return _STUB_PREAMBLE + "\n" + fn_src
+
+
+def run_crosshair_purified(
+    fn_qualname: str, source_file: str, timeout: float = 10.0
+) -> list[dict]:
+    """Run Crosshair cover on a purity-lifted shadow of *fn_qualname*.
+
+    For impure functions that ``run_crosshair`` can't analyse, this generates
+    a pure shadow by replacing I/O with symbolic stubs, then runs cover mode
+    on the shadow to find exception-raising paths in the data-structure logic.
+
+    Returns the same violation dict format as :func:`run_crosshair`.
+    """
+    import tempfile
+
+    shadow_src = _purify_function(source_file, fn_qualname)
+    if shadow_src is None:
+        return []
+
+    pure_name = fn_qualname.replace(".", "_") + "_pure"
+
+    with tempfile.NamedTemporaryFile(
+        suffix=".py", mode="w", delete=False, dir="/tmp", encoding="utf-8"
+    ) as f:
+        f.write(shadow_src)
+        tmp_path = f.name
+
+    try:
+        cmd = [
+            sys.executable,
+            "-m",
+            "crosshair",
+            "cover",
+            f"{tmp_path}::{pure_name}",
+            "--example_output_format",
+            "pytest",
+            "--per_condition_timeout",
+            str(timeout),
+            "--max_uninteresting_iterations",
+            "10",
+        ]
+        proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=timeout + 10,
+            check=False,
+        )
+        raw = proc.stdout + proc.stderr
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        return []
+    finally:
+        Path(tmp_path).unlink(missing_ok=True)
+
+    violations: list[dict] = []
+
+    # Execute generated test cases against the shadow; flag raisers
+    _assert_re = re.compile(r"assert \w+\((.+)\) ==")
+    for line in raw.splitlines():
+        m = _assert_re.match(line.strip())
+        if not m:
+            continue
+        args_src = m.group(1)
+        try:
+            # Inline execution against the purified source
+            ns: dict = {}
+            exec(shadow_src, ns)  # noqa: S102
+            fn = ns.get(pure_name)
+            if fn is None:
+                continue
+            args = eval(f"({args_src},)", ns)  # noqa: S307
+            fn(*args)
+        except Exception as exc:
+            violations.append(
+                {
+                    "file": source_file,
+                    "line": 0,
+                    "message": (
+                        f"{type(exc).__name__}: {exc} — "
+                        f"purified input: {args_src[:80]}"
+                    ),
+                    "type": "crosshair_purified",
+                }
+            )
+
+    return violations
+
+
+# ---------------------------------------------------------------------------
 # Z3 DAG builder
 # ---------------------------------------------------------------------------
 
