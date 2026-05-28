@@ -379,6 +379,119 @@ def _returncode_checked_in_scope(call_node: ast.Call, scope: ast.AST) -> bool:
     return False
 
 
+def _optional_param_names(fn_node: ast.AST) -> set[str]:
+    """Return parameter names annotated Optional[X] or X | None."""
+    optional: set[str] = set()
+    if not isinstance(fn_node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        return optional
+    for arg in fn_node.args.args + fn_node.args.posonlyargs + fn_node.args.kwonlyargs:
+        if arg.annotation is None:
+            continue
+        ann = arg.annotation
+        # Optional[X] → Subscript(Name("Optional"), ...)
+        if (
+            isinstance(ann, ast.Subscript)
+            and isinstance(ann.value, ast.Name)
+            and ann.value.id == "Optional"
+        ):
+            optional.add(arg.arg)
+        # X | None → BinOp(X, BitOr, Constant(None))
+        elif isinstance(ann, ast.BinOp) and isinstance(ann.op, ast.BitOr):
+            if (isinstance(ann.right, ast.Constant) and ann.right.value is None) or (
+                isinstance(ann.left, ast.Constant) and ann.left.value is None
+            ):
+                optional.add(arg.arg)
+        # None | X same
+    return optional
+
+
+def _is_none_guarded(name: str, access_node: ast.AST, scope: ast.AST) -> bool:
+    """True if *name* is checked for None before *access_node* in *scope*."""
+    for parent in ast.walk(scope):
+        if not isinstance(parent, ast.If):
+            continue
+        test = parent.test
+        test_src = ast.unparse(test)
+        # if x is not None / if x / if x is not None and ...
+        guarded_positive = (
+            f"{name} is not None" in test_src
+            or test_src.strip() == name
+            or test_src.startswith(f"{name} ")
+            or f"isinstance({name}," in test_src
+        )
+        if guarded_positive:
+            in_body = any(
+                access_node is n
+                for n in ast.walk(
+                    ast.Module(body=parent.body, type_ignores=[])  # type: ignore[arg-type]
+                )
+            )
+            if in_body:
+                return True
+        # if x is None → in else branch
+        if f"{name} is None" in test_src:
+            in_else = any(
+                access_node is n
+                for n in ast.walk(
+                    ast.Module(body=parent.orelse, type_ignores=[])  # type: ignore[arg-type]
+                )
+            )
+            if in_else:
+                return True
+    return False
+
+
+def _find_optional_deref_sites(fn_node: ast.AST, via: str) -> list[dict]:
+    """Find Optional[T] parameter dereferences without a None guard."""
+    optional_params = _optional_param_names(fn_node)
+    if not optional_params:
+        return []
+    sites: list[dict] = []
+    for node in ast.walk(fn_node):
+        # attr access: x.field where x is Optional
+        if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name):
+            name = node.value.id
+            if name not in optional_params:
+                continue
+            if not _is_none_guarded(name, node, fn_node):
+                sites.append(
+                    {
+                        "line": node.lineno,
+                        "via": via,
+                        "arg": f"{name}.{node.attr}",
+                        "guarded": False,
+                        "pattern": "optional_deref_unguarded",
+                    }
+                )
+        # method call: x.method() where x is Optional
+        elif (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and isinstance(node.func.value, ast.Name)
+        ):
+            name = node.func.value.id
+            if name not in optional_params:
+                continue
+            if not _is_none_guarded(name, node, fn_node):
+                sites.append(
+                    {
+                        "line": node.lineno,
+                        "via": via,
+                        "arg": f"{name}.{node.func.attr}()",
+                        "guarded": False,
+                        "pattern": "optional_deref_unguarded",
+                    }
+                )
+    # Deduplicate by line (attr and method call can both match the same line)
+    seen: set[int] = set()
+    deduped = []
+    for s in sites:
+        if s["line"] not in seen:
+            seen.add(s["line"])
+            deduped.append(s)
+    return deduped
+
+
 def _is_index_guarded(subscript_node: ast.Subscript, scope: ast.AST) -> bool:
     """True if subscript_node is inside an if-block or after a len/bool check."""
     container_src = ast.unparse(subscript_node.value)
@@ -536,16 +649,22 @@ def extract_call_sites(source_file: str, fn_qualname: str) -> list[dict]:
         for node in ast.walk(scan_node):
             if not isinstance(node, ast.Subscript):
                 continue
-            # Only flag [0] / [-1] literal index — most dangerous
             idx = node.slice
             if not (isinstance(idx, ast.Constant) and idx.value in (0, -1)):
                 continue
-            # The accessed expression (the container)
-            container = ast.unparse(node.value)
-            # Skip simple string/dict literals — those don't index-error at 0
-            if isinstance(node.value, (ast.Constant, ast.Dict, ast.Set)):
+            container_node = node.value
+            container = ast.unparse(container_node)
+            # Skip literals that can never be empty
+            if isinstance(container_node, (ast.Constant, ast.Dict, ast.Set)):
                 continue
-            # Check if there's a guard: len(...) > 0, if ..., or similar
+            # Skip str.split() — always returns ≥1 element
+            if (
+                isinstance(container_node, ast.Call)
+                and isinstance(container_node.func, ast.Attribute)
+                and container_node.func.attr
+                in ("split", "splitlines", "partition", "rpartition")
+            ):
+                continue
             guarded = _is_index_guarded(node, scan_node)
             if not guarded:
                 sites.append(
@@ -557,6 +676,10 @@ def extract_call_sites(source_file: str, fn_qualname: str) -> list[dict]:
                         "pattern": "content_index_unguarded",
                     }
                 )
+
+        # Optional parameter dereference without None guard
+        for site in _find_optional_deref_sites(scan_node, via):
+            sites.append(site)
 
     return sites
 
@@ -598,6 +721,12 @@ def contract_dag_for_function(
             checked = z3.Bool(f"checked_L{line}")
             s.add(exit_code != 0)
             s.add(z3.Not(checked))
+
+        elif p == "optional_deref_unguarded":
+            is_none = z3.Bool(f"is_none_L{line}")
+            guarded_n = z3.Bool(f"guarded_L{line}")
+            s.add(is_none)
+            s.add(z3.Not(guarded_n))
 
     G = build_constraint_dag(list(s.assertions()))
     return G, s, sites
@@ -849,6 +978,10 @@ _PATTERN_STATEMENTS = {
     ),
     "content_index_unguarded": (
         "List index access [0] requires a prior length or emptiness check"
+    ),
+    "optional_deref_unguarded": (
+        "Optional[T] parameters must be checked for None before attribute or "
+        "method access"
     ),
 }
 
