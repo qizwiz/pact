@@ -17,7 +17,6 @@ _KEY_HELP = (
 )
 
 
-
 def resolve_key(api_key: Optional[str] = None) -> str:
     """Resolve the API key string.
 
@@ -83,8 +82,16 @@ class _SamplingMessages:
     def __init__(self, fn: Callable) -> None:
         self._fn = fn
 
-    def create(self, *, model: str, max_tokens: int, messages: list,
-               system: str = "", tools: Optional[list] = None, **_: object) -> _SamplingResponse:
+    def create(
+        self,
+        *,
+        model: str,
+        max_tokens: int,
+        messages: list,
+        system: str = "",
+        tools: Optional[list] = None,
+        **_: object,
+    ) -> _SamplingResponse:
         # Tools are stripped — source context is pre-injected in the prompt.
         # Multi-turn tool use falls back gracefully: model works with prompt context.
         sys_str = system if isinstance(system, str) else ""
