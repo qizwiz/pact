@@ -610,6 +610,7 @@ def _run_mypy(root: Path) -> list[Violation]:
             text=True,
             timeout=120,
             cwd=root,
+            check=False,
         )
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
         return []

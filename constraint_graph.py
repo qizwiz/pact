@@ -348,6 +348,37 @@ def _is_guarded_in_fn(
     return False
 
 
+def _returncode_checked_in_scope(call_node: ast.Call, scope: ast.AST) -> bool:
+    """True if the result of *call_node* is assigned and .returncode is accessed."""
+    # Look for: var = subprocess.run(...) then var.returncode
+    # Walk the scope looking for assignments where the RHS is our call node.
+    assigned_names: set[str] = set()
+    for node in ast.walk(scope):
+        if isinstance(node, ast.Assign):
+            if any(n is call_node for n in ast.walk(node.value)):
+                for target in node.targets:
+                    if isinstance(target, ast.Name):
+                        assigned_names.add(target.id)
+        elif isinstance(node, ast.AnnAssign) and node.value is not None:
+            if any(n is call_node for n in ast.walk(node.value)):
+                if isinstance(node.target, ast.Name):
+                    assigned_names.add(node.target.id)
+
+    if not assigned_names:
+        return False
+
+    # Check if .returncode is accessed on any of those names
+    for node in ast.walk(scope):
+        if (
+            isinstance(node, ast.Attribute)
+            and node.attr == "returncode"
+            and isinstance(node.value, ast.Name)
+            and node.value.id in assigned_names
+        ):
+            return True
+    return False
+
+
 def _collect_local_callees(fn_node: ast.AST, all_fns: dict[str, ast.AST]) -> set[str]:
     """Return names of same-file functions called directly from *fn_node* (one level)."""
     callees: set[str] = set()
@@ -437,10 +468,18 @@ def extract_call_sites(source_file: str, fn_qualname: str) -> list[dict]:
                 for kw in node.keywords:
                     if kw.arg == "check":
                         check_val = kw.value
-                checked = (
+                # Guarded if:
+                #   check=True  → raises CalledProcessError on failure
+                #   check=False → developer explicitly acknowledged non-zero exit
+                #   .returncode accessed → developer inspects exit code manually
+                check_true = (
                     isinstance(check_val, ast.Constant) and check_val.value is True
                 )
-                if not checked:
+                check_false_explicit = (
+                    isinstance(check_val, ast.Constant) and check_val.value is False
+                )
+                returncode_used = _returncode_checked_in_scope(node, scan_node)
+                if not check_true and not check_false_explicit and not returncode_used:
                     sites.append(
                         {
                             "line": node.lineno,
