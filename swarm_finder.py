@@ -37,7 +37,9 @@ N_CHALLENGERS = 3
 
 def _call(prompt: str, max_tokens: int = 1200) -> str:
     r = _CLIENT.messages.create(
-        model=_MODEL, max_tokens=max_tokens, messages=[{"role": "user", "content": prompt}]
+        model=_MODEL,
+        max_tokens=max_tokens,
+        messages=[{"role": "user", "content": prompt}],
     )
     return r.content[0].text if r.content else ""
 
@@ -58,7 +60,8 @@ def propose(src: str, n: int = 3) -> list[dict]:
     p = (
         f"You are auditing this Solidity contract. Propose up to {n} candidate vulnerabilities — "
         "ONLY ones you can back with a concrete, reachable exploit. No speculation, no style nits. "
-        'Return ONLY a JSON array of {"id","title","where","claim","exploit"}.\n\nCONTRACT:\n' + src
+        'Return ONLY a JSON array of {"id","title","where","claim","exploit"}.\n\nCONTRACT:\n'
+        + src
     )
     out = _parse(_call(p)) or []
     return out if isinstance(out, list) else []
@@ -89,8 +92,12 @@ def run(path: str) -> None:
         survived = reals >= (N_CHALLENGERS // 2 + 1)
         survivors += survived
         flag = "🟢 SURVIVES" if survived else "🔴 KILLED  "
-        print(f"  {flag}  [{reals}/{N_CHALLENGERS} skeptics say REAL]  {c.get('title','?')}")
-    print(f"  --> {survivors}/{len(cands)} candidate(s) survived the adversarial filter")
+        print(
+            f"  {flag}  [{reals}/{N_CHALLENGERS} skeptics say REAL]  {c.get('title','?')}"
+        )
+    print(
+        f"  --> {survivors}/{len(cands)} candidate(s) survived the adversarial filter"
+    )
 
 
 if __name__ == "__main__":

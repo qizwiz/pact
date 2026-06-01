@@ -35,7 +35,9 @@ FINDING = (
 
 
 def _llm(prompt: str) -> str:
-    r = _CLIENT.messages.create(model=_MODEL, max_tokens=2000, messages=[{"role": "user", "content": prompt}])
+    r = _CLIENT.messages.create(
+        model=_MODEL, max_tokens=2000, messages=[{"role": "user", "content": prompt}]
+    )
     code = r.content[0].text if r.content else ""
     code = re.sub(r"^```[a-zA-Z]*\n?", "", code.strip())
     return re.sub(r"```\s*$", "", code).strip()
@@ -43,7 +45,7 @@ def _llm(prompt: str) -> str:
 
 def _initial() -> str:
     return (
-        "Write a Foundry PoC (forge-std allowed: `import \"forge-std/Test.sol\";`, `contract X is Test`, "
+        'Write a Foundry PoC (forge-std allowed: `import "forge-std/Test.sol";`, `contract X is Test`, '
         "vm cheatcodes, assertions) that CONFIRMS this vulnerability against the real contract.\n\n"
         "Contract (src/PuppyRaffle.sol):\n" + SRC + "\n\n"
         "VULNERABILITY:\n" + FINDING + "\n\n"
@@ -57,7 +59,11 @@ def _initial() -> str:
 
 def _repair(code: str, err: str) -> str:
     return (
-        "Your Foundry PoC failed. Code:\n\n" + code + "\n\nforge output:\n" + err + "\n\n"
+        "Your Foundry PoC failed. Code:\n\n"
+        + code
+        + "\n\nforge output:\n"
+        + err
+        + "\n\n"
         "Fix it so it COMPILES and PASSES iff the reentrancy is genuinely exploitable. "
         "Return ONLY corrected Solidity — no prose, no fences."
     )
@@ -66,7 +72,9 @@ def _repair(code: str, err: str) -> str:
 def _forge() -> str:
     res = subprocess.run(
         [FORGE, "test", "--root", PROJ, "--match-path", "test/AutoPoC.t.sol", "-vv"],
-        capture_output=True, text=True, timeout=180,
+        capture_output=True,
+        text=True,
+        timeout=180,
     )
     return res.stdout + res.stderr
 
@@ -78,7 +86,9 @@ def main():
             f.write(code)
         out = _forge()
         if "[PASS]" in out:
-            print(f"attempt {attempt} -> 🟢 KEEP: reentrancy CONFIRMED by forge on real PuppyRaffle")
+            print(
+                f"attempt {attempt} -> 🟢 KEEP: reentrancy CONFIRMED by forge on real PuppyRaffle"
+            )
             return
         if "[FAIL" in out:
             print(f"attempt {attempt} -> 🔴 ran but exploit FAILED")

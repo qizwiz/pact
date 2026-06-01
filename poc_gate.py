@@ -32,7 +32,9 @@ YIELDBANK = open(os.path.join(POC, "src/YieldBank.sol")).read()
 
 
 def _llm(prompt: str) -> str:
-    r = _CLIENT.messages.create(model=_MODEL, max_tokens=1700, messages=[{"role": "user", "content": prompt}])
+    r = _CLIENT.messages.create(
+        model=_MODEL, max_tokens=1700, messages=[{"role": "user", "content": prompt}]
+    )
     code = r.content[0].text if r.content else ""
     code = re.sub(r"^```[a-zA-Z]*\n?", "", code.strip())
     return re.sub(r"```\s*$", "", code).strip()
@@ -56,7 +58,11 @@ def _initial(finding: str) -> str:
 
 def _repair(code: str, err: str) -> str:
     return (
-        "Your Foundry PoC failed. Here is the code:\n\n" + code + "\n\nforge output:\n" + err + "\n\n"
+        "Your Foundry PoC failed. Here is the code:\n\n"
+        + code
+        + "\n\nforge output:\n"
+        + err
+        + "\n\n"
         "Fix it so it COMPILES and the test PASSES iff the vulnerability is genuinely real (FAILS if "
         "not). Return ONLY the corrected Solidity — no prose, no fences."
     )
@@ -65,7 +71,9 @@ def _repair(code: str, err: str) -> str:
 def _forge() -> str:
     res = subprocess.run(
         [FORGE, "test", "--root", POC, "--match-path", "test/AutoPoC.t.sol", "-vv"],
-        capture_output=True, text=True, timeout=150,
+        capture_output=True,
+        text=True,
+        timeout=150,
     )
     return res.stdout + res.stderr
 
@@ -80,7 +88,9 @@ def run_gate(label: str, finding: str, max_tries: int = 4) -> bool:
             print(f"{label}: attempt {attempt} -> 🟢 KEEP (exploit executed)")
             return True
         if "[FAIL" in out:
-            print(f"{label}: attempt {attempt} -> 🔴 KILL (ran, exploit FAILED — bug not real)")
+            print(
+                f"{label}: attempt {attempt} -> 🔴 KILL (ran, exploit FAILED — bug not real)"
+            )
             return False
         err = "\n".join(out.strip().splitlines()[-22:])
         print(f"{label}: attempt {attempt} -> compile error, repairing...")
