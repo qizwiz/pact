@@ -25,3 +25,8 @@ graphify-out/
 .env
 .pact_stages/
 .venv/
+.venv/
+**/out/
+**/cache/
+**/AutoPoC.t.sol
+examples/solidity/poc/out/
