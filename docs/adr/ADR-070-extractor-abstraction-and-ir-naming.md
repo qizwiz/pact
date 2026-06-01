@@ -1,6 +1,6 @@
 # ADR-070: Language Extractor Abstraction and IR Naming
 
-**Status**: Proposed  
+**Status**: Accepted — *seam validated 2026-05-31 (commits 804d7a4, 7b23f69): `.sol → ModelManifest + FunctionManifest + ConservationObligation → z3` proves/refutes `sum(balances)==totalSupply` on real Solidity (GoodToken→UNSAT, BadToken→SAT+PoC). Two acknowledged stubs remain: the parse is a regex heuristic (tree-sitter Extractor pending), and the z3 model is a 2-account transfer (general N-account/quantified mapping pending).*  
 **Date**: 2026-05-31  
 
 ---
