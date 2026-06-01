@@ -19,6 +19,7 @@ Usage:
 
 from __future__ import annotations
 
+import difflib
 import json
 import tempfile
 import textwrap
@@ -574,6 +575,35 @@ def apply_patch(source: str, original: str, replacement: str) -> Optional[str]:
     return source.replace(original, replacement, 1)
 
 
+def apply_patch_smart(
+    source: str,
+    original: str,
+    replacement: str,
+    *,
+    min_confidence: float = 0.75,
+) -> tuple[Optional[str], float, str]:
+    """apply_patch + a confidence-gated local fuzzy merge fallback.
+
+    Tries the strict exact/dedent replace first (unchanged semantics). Only
+    when that returns None — the LLM's "original" block didn't match verbatim,
+    a common dead-end — does it fall back to instant_apply's fuzzy chunk merge.
+    Returns (patched_or_None, confidence, strategy).
+
+    Safety: a wrong fuzzy splice leaves the original violation in place, so the
+    checker/Z3 layers in _verify reject it. Confidence never accepts a patch on
+    its own — it only decides whether the merge is worth verifying.
+    """
+    patched = apply_patch(source, original, replacement)
+    if patched is not None:
+        return patched, 1.0, "exact"
+    try:
+        from pact.instant_apply import instant_apply
+    except ImportError:
+        return None, 0.0, "none"
+    res = instant_apply(source, original, replacement, min_confidence=min_confidence)
+    return res.merged, res.confidence, res.strategy
+
+
 def _find_blocks(source: str, stripped_target: str) -> list[str]:
     """Find source blocks that match stripped_target after dedenting."""
     lines = source.splitlines(keepends=True)
@@ -723,13 +753,22 @@ def _verify(
       3. LLM rubric (fallback): only when Z3 cannot encode the contract (unknown/encoding_failed).
     """
     source = "".join(source_lines)
-    patched = apply_patch(source, result.patch.original, result.patch.replacement)
+    patched, apply_conf, apply_strategy = apply_patch_smart(
+        source, result.patch.original, result.patch.replacement
+    )
+    if (
+        patched is not None
+        and apply_strategy not in ("exact", "dedent_replace")
+        and verbose
+    ):
+        print(f"    apply: fuzzy merge (confidence={apply_conf:.2f}, {apply_strategy})")
 
     if patched is None:
         return (
             0.0,
             "REJECT",
-            f"Patch failed to apply — original block not found verbatim in source.\n"
+            f"Patch failed to apply — original block not found verbatim in source "
+            f"(best local-merge confidence {apply_conf:.2f}).\n"
             f"Original block to match:\n{result.patch.original[:300]}",
         )
 
@@ -832,6 +871,172 @@ def _verify(
 
 
 # ---------------------------------------------------------------------------
+# Tier 0: zero-LLM local fix (deterministic generation + local merge)
+# ---------------------------------------------------------------------------
+
+
+def _minimal_line_patch(original: str, patched: str) -> Optional[tuple[str, str]]:
+    """Reduce a whole-file diff to the smallest contiguous (orig, repl) block.
+
+    Returns the bounding line span of every non-equal region so that
+    apply_patch(original, orig_block, repl_block) reproduces `patched`
+    verbatim. Returns None if there is no change.
+    """
+    a = original.splitlines(keepends=True)
+    b = patched.splitlines(keepends=True)
+    sm = difflib.SequenceMatcher(None, a, b, autojunk=False)
+    opcodes = [op for op in sm.get_opcodes() if op[0] != "equal"]
+    if not opcodes:
+        return None
+    i1 = opcodes[0][1]
+    i2 = opcodes[-1][2]
+    j1 = opcodes[0][3]
+    j2 = opcodes[-1][4]
+    return "".join(a[i1:i2]), "".join(b[j1:j2])
+
+
+def _deterministic_patch(violation: dict, source_lines: list[str]) -> Optional[Patch]:
+    """Generate a patch with pact's existing zero-LLM fixers (fixer.py).
+
+    Returns a minimal Patch for fixable modes, or None when the violation's
+    mode has no deterministic fixer or the fixer produced no usable change.
+    The patch is round-tripped through apply_patch to guarantee _verify can
+    re-apply it; if it can't, we return None and let the LLM path handle it.
+    """
+    try:
+        from pact import fixer
+        from pact.failure_mode import FailureEvidence
+    except ImportError:
+        return None
+
+    mode = violation.get("mode") or violation.get("mode_name")
+    if not mode or mode not in getattr(fixer, "FIX_MODES", frozenset()):
+        return None
+
+    source = "".join(source_lines)
+    ev = FailureEvidence(
+        mode_name=mode,
+        file=str(violation.get("file", "?")),
+        line=int(violation.get("line", 1)),
+        call=violation.get("call", ""),
+        message=violation.get("message") or violation.get("evidence", ""),
+        missing=violation.get("missing", []) or [],
+    )
+
+    tmp_path = Path(tempfile.mktemp(suffix=".py", prefix="pact_local_"))
+    try:
+        tmp_path.write_text(source, encoding="utf-8")
+        result = fixer.fix_file(tmp_path, [ev])
+    except Exception:
+        return None
+    finally:
+        tmp_path.unlink(missing_ok=True)
+
+    if not result.changed or not result.applied:
+        return None
+
+    minimal = _minimal_line_patch(source, result.patched)
+    if minimal is None:
+        return None
+    original_block, replacement_block = minimal
+
+    # Round-trip guard: _verify re-applies via apply_patch, so the minimal
+    # block must reproduce the fixer's output exactly.
+    if apply_patch(source, original_block, replacement_block) != result.patched:
+        return None
+
+    added = replacement_block.count("\n")
+    removed = original_block.count("\n")
+    return Patch(
+        original=original_block,
+        replacement=replacement_block,
+        lines_added=added,
+        lines_removed=removed,
+        net_change=added - removed,
+    )
+
+
+def _try_local_fix(
+    violation: dict,
+    invariant: dict,
+    source_lines: list[str],
+    model: str,
+    key: str,
+    verbose: bool,
+    test_cmd: Optional[str] = None,
+    project_root: Optional[Path] = None,
+) -> Optional[SynthesisResult]:
+    """Attempt a zero-LLM repair: deterministic patch → existing verification.
+
+    The patch is *generated* without any LLM call, then gated through the same
+    _verify pipeline (checker → Z3 → CrossHair) the LLM path uses, plus the
+    oracle when configured. Returns a verified SynthesisResult on success, or
+    None to fall back to the LLM CEGIS loop. Verification — not confidence — is
+    the arbiter; this only skips the expensive synthesis call when the
+    deterministic fix already provably holds.
+    """
+    patch = _deterministic_patch(violation, source_lines)
+    if patch is None:
+        return None
+
+    mode = violation.get("mode") or violation.get("mode_name") or "?"
+    line = int(violation.get("line", 1))
+    result = SynthesisResult(
+        violation_id=str(violation.get("id", violation.get("violation_id", "?"))),
+        file=str(violation.get("file", "?")),
+        line=line,
+        invariant_statement=invariant.get("statement", ""),
+        diagnosis=Diagnosis(
+            root_cause=violation.get("evidence", ""),
+            fix_class=f"deterministic:{mode}",
+            verification_oracle=invariant.get("formal", ""),
+        ),
+        patch=patch,
+        justification=Justification(
+            invariant_now_holds=invariant.get("formal", ""),
+            counterexample_before="",
+            counterexample_after="",
+            z3_property=invariant.get("formal"),
+            behavioral_contract_preserved="deterministic fixer; no LLM synthesis",
+        ),
+        cegis_iters=0,
+    )
+
+    if verbose:
+        print(f"    tier-0: trying zero-LLM fixer for {mode}, verifying...")
+
+    score, verdict, _fb = _verify(result, source_lines, model, key, verbose)
+    result.verify_score = score
+    result.verify_verdict = verdict
+    if verbose:
+        print(f"    tier-0 verify: {verdict} (score={score:.2f})")
+
+    if not (verdict == "ACCEPT" and score >= 0.8):
+        return None
+
+    if test_cmd and project_root:
+        path = Path(result.file)
+        try:
+            original_source = path.read_text(encoding="utf-8")
+        except OSError:
+            return None
+        patched = apply_patch(original_source, patch.original, patch.replacement)
+        if patched is None:
+            return None
+        path.write_text(patched, encoding="utf-8")
+        passed, _out = _run_oracle(test_cmd, project_root, verbose)
+        if not passed:
+            path.write_text(original_source, encoding="utf-8")
+            if verbose:
+                print("    tier-0: oracle rejected — falling back to LLM")
+            return None
+        result.oracle_confirmed = True
+
+    result.applied = bool(test_cmd and project_root)
+    return result
+
+
+# ---------------------------------------------------------------------------
 # CEGIS loop
 # ---------------------------------------------------------------------------
 
@@ -846,7 +1051,21 @@ def _heal_violation(
     test_cmd: Optional[str] = None,
     project_root: Optional[Path] = None,
 ) -> Optional[SynthesisResult]:
-    """CEGIS: synthesize → verify → [oracle] → feedback → synthesize ... MAX_CEGIS_ITERS."""
+    """CEGIS: synthesize → verify → [oracle] → feedback → synthesize ... MAX_CEGIS_ITERS.
+
+    Tier 0 first: if pact's deterministic fixers can repair this violation and
+    the existing verification accepts it, return immediately with zero LLM
+    calls. Only fall back to LLM synthesis when there's no deterministic fixer,
+    or its patch fails to verify.
+    """
+    local = _try_local_fix(
+        violation, invariant, source_lines, model, key, verbose, test_cmd, project_root
+    )
+    if local is not None and local.verify_verdict == "ACCEPT":
+        if verbose:
+            print("    tier-0: deterministic patch verified — skipping LLM synthesis")
+        return local
+
     feedback = ""
     result = None
 
