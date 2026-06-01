@@ -24,3 +24,4 @@ graphify-out/
 # Local credentials — never commit
 .env
 .pact_stages/
+.venv/
