@@ -15,6 +15,7 @@ Two honesty stamps:
 What is threaded properly is the IR: `.sol -> Manifests -> template`, not
 `.sol -> bool -> template`. The z3 verification is fully real.
 """
+
 from __future__ import annotations
 
 import json
