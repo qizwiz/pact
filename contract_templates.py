@@ -361,6 +361,78 @@ def _error_contract(params: dict) -> str:
 
 
 # ---------------------------------------------------------------------------
+# conservation_invariant   (smart-contract: sum(balances) == total_supply)
+# ---------------------------------------------------------------------------
+# A token transfer must preserve the conservation law: the sum of all balances
+# always equals total_supply (no value created or destroyed outside mint/burn).
+# We model one transfer of `amount` from `bal_from` to `bal_to`, with the
+# invariant holding BEFORE, and check whether it can be broken AFTER.
+# SAT  when preserves_sum=False → transfer credits receiver without debiting
+#                                 sender → tokens minted from nothing (bug)
+# UNSAT when preserves_sum=True → debit + credit cancel → conservation holds
+# ---------------------------------------------------------------------------
+
+_CONSERVATION_TEMPLATE = """\
+import z3
+import json
+
+s = z3.Solver()
+
+# Conservation invariant: sum(balances) == total_supply.
+# Model ONE transfer of `amount` from bal_from to bal_to.
+bal_from = z3.Int('bal_from')
+bal_to   = z3.Int('bal_to')
+amount   = z3.Int('amount')
+total    = z3.Int('total_supply')
+
+# Preconditions: non-negative balances, a real transfer the sender can afford,
+# and the invariant holds BEFORE the transfer.
+s.add(bal_from >= 0, bal_to >= 0, total >= 0)
+s.add(amount > 0, amount <= bal_from)
+s.add(bal_from + bal_to == total)          # invariant holds before
+
+if PRESERVES_SUM:
+    # Correct: debit sender, credit receiver — sum is conserved
+    bal_from_after = bal_from - amount
+    bal_to_after   = bal_to + amount
+else:
+    # Bug: credit receiver but FORGET to debit sender → value minted from nothing
+    bal_from_after = bal_from
+    bal_to_after   = bal_to + amount
+
+# Violation = invariant broken AFTER the transfer (total_supply unchanged)
+s.add(bal_from_after + bal_to_after != total)
+
+result = s.check()
+if str(result) == 'sat':
+    m = s.model()
+    sum_after = m.eval(bal_from_after + bal_to_after, model_completion=True)
+    ce = {
+        'bal_from_before': str(m.eval(bal_from, model_completion=True)),
+        'bal_to_before': str(m.eval(bal_to, model_completion=True)),
+        'amount': str(m.eval(amount, model_completion=True)),
+        'total_supply': str(m.eval(total, model_completion=True)),
+        'sum_balances_after': str(sum_after),
+        'explanation': 'TOKEN.transfer breaks sum(balances)==total_supply — value created/destroyed'
+    }
+    print(json.dumps({'status': 'sat', 'counterexample': ce,
+                      'explanation': 'TOKEN.transfer can violate conservation: sum(balances) != total_supply'}))
+else:
+    print(json.dumps({'status': 'unsat', 'counterexample': None,
+                      'explanation': 'TOKEN.transfer preserves sum(balances)==total_supply — conservation holds'}))
+"""
+
+
+def _conservation_invariant(params: dict) -> str:
+    token = params.get("token", "Token")
+    preserves_sum = params.get("preserves_sum", True)
+    script = _CONSERVATION_TEMPLATE
+    script = script.replace("TOKEN", token)
+    script = script.replace("PRESERVES_SUM", "True" if preserves_sum else "False")
+    return script
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -371,6 +443,7 @@ SUPPORTED_KINDS = {
     "ordering",
     "resource_lifecycle",
     "error_contract",
+    "conservation_invariant",
 }
 
 _RENDERERS = {
@@ -380,6 +453,7 @@ _RENDERERS = {
     "ordering": _ordering,
     "resource_lifecycle": _resource_lifecycle,
     "error_contract": _error_contract,
+    "conservation_invariant": _conservation_invariant,
 }
 
 
