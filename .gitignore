@@ -24,3 +24,7 @@ graphify-out/
 # Local credentials — never commit
 .env
 .pact_stages/
+
+# Python bytecode
+__pycache__/
+*.py[cod]
