@@ -21,6 +21,11 @@ intent*.json
 pact_tool.egg-info/
 graphify-out/
 
+# Python bytecode cache
+__pycache__/
+*.pyc
+*.pyo
+
 # Local credentials — never commit
 .env
 .pact_stages/
