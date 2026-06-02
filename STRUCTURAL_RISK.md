@@ -1,6 +1,6 @@
 # Structural Risk Report
 
-**Date:** 2026-06-01  
+**Date:** 2026-06-02  
 **Cut vertices in call graph:** 363  
 **Top-N analysed:** 20  
 **Violated:** 5  **Clean:** 15
@@ -103,14 +103,20 @@
 
 ## Trend
 
-**Baseline run** — no previous report to compare against.
+**Compared to 2026-06-01:** No change — violation set and scores are identical.
+
+- **New violations:** none
+- **Resolved violations:** none
+- **Score deltas:** all 0.0000
+
+The 5 persistent violations (`extract_project_intent`, `_extract_git_log`, `heal_project`, `_collect_cut_vertices`, `run_pipeline`) remain unaddressed. All are `content_index_unguarded` pattern — unguarded sequence indexing at call-graph cut vertices.
 
 ---
 
 ## Full JSON Report
 
 <details>
-<summary>structural_risk_report output (2026-06-01)</summary>
+<summary>structural_risk_report output (2026-06-02)</summary>
 
 ```json
 {
@@ -179,7 +185,7 @@
           "line": 1378,
           "operation": "worst[0]",
           "wp": "len(worst) > 0",
-          "counterexample": "worst = []"
+          "counterexample": "worst = []`"
         }
       ],
       "discharged_obligations": [
