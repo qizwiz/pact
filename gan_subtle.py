@@ -48,15 +48,18 @@ def main() -> None:
         return
     valid = len(rounds)
     found = sum(r["found"] for r in rounds)
-    on_target = sum(r["on_target"] for r in rounds)
     cands = sum(r["candidates"] for r in rounds)
-    verified = sum(r["verified"] for r in rounds)
+    genuine = sum(r["genuine"] for r in rounds)
+    twins = sum(r["has_twin"] for r in rounds)
+    genuine_found = sum(r["genuine"] > 0 for r in rounds if r["has_twin"])
     print("\n" + "=" * 56)
-    print(f"disguised challenges (defect survived):     {valid}/{len(bugspec.CATALOG)}")
-    print(f"recall   (finder forge-verified an exploit): {found}/{valid}")
-    print(f"on-target (matched planted bug, soft judge): {on_target}/{valid}")
     print(
-        (f"precision (verified / proposed candidates):  {verified}/{cands}")
+        f"disguised challenges (defect survived):       {valid}/{len(bugspec.CATALOG)}"
+    )
+    print(f"recall (found the planted bug):               {found}/{valid}")
+    print(f"  sound (differential-genuine, twin built):   {genuine_found}/{twins}")
+    print(
+        f"precision (differential-genuine / candidates): {genuine}/{cands}"
         if cands
         else "precision: 0/0"
     )

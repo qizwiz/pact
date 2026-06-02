@@ -50,24 +50,29 @@ def run_spec(spec: bugspec.BugSpec) -> dict | None:
     gan._clean_tests()
     cands = gan.finder_propose(spec.contract)
     print(f"  finder: proposed {len(cands)} candidate(s) (blind)")
-    verified = 0
-    on_target = False
+    genuine = 0  # differential-verified: targets THE planted defect (no soft judge)
+    verified = 0  # forge-passed but no differential twin available (weaker)
     for c in cands:
-        ok = gan.finder_gate(spec.contract, c)
-        verified += ok
-        tag = "🟢 forge-VERIFIED" if ok else "🔴 unverified   "
-        hit = ""
-        if ok and gan.judge_match(f"{spec.invariant} — {spec.bug_class}", c):
-            on_target = True
-            hit = "  [matches planted bug]"
-        print(f"    {tag}  {c.get('title','?')}{hit}")
+        verdict = gan.finder_gate(spec.contract, c, fixed_contract=spec.fixed_contract)
+        genuine += verdict == "genuine"
+        verified += verdict == "verified"
+        mark = {
+            "genuine": "🟢 GENUINE (passes buggy, fails fixed)",
+            "trivial": "🟡 trivial  (passes both — not the bug)",
+            "verified": "🟢 verified (no fixed twin — weaker)",
+            "rejected": "🔴 rejected (no working exploit)",
+        }[verdict]
+        print(f"    {mark}  {c.get('title','?')}")
 
+    has_twin = spec.fixed_contract is not None
     return {
         "name": spec.name,
         "candidates": len(cands),
+        "genuine": genuine,
         "verified": verified,
-        "found": verified > 0,
-        "on_target": on_target,
+        "has_twin": has_twin,
+        # differential ⇒ provably the planted bug; else fall back to forge-verified
+        "found": (genuine > 0) if has_twin else (verified > 0),
     }
 
 
@@ -79,15 +84,15 @@ def main() -> None:
         return
     valid = len(rounds)
     found = sum(r["found"] for r in rounds)
-    on_target = sum(r["on_target"] for r in rounds)
     cands = sum(r["candidates"] for r in rounds)
-    verified = sum(r["verified"] for r in rounds)
+    genuine = sum(r["genuine"] for r in rounds)
+    twins = sum(r["has_twin"] for r in rounds)
     print("\n" + "=" * 56)
     print(f"valid challenges (symbolic+forge verified): {valid}/{len(bugspec.CATALOG)}")
-    print(f"recall   (finder forge-verified an exploit): {found}/{valid}")
-    print(f"on-target (matched planted bug, soft judge): {on_target}/{valid}")
+    print(f"recall (found the planted bug):              {found}/{valid}")
+    print(f"  of which had a differential twin (sound):  {twins}/{valid}")
     print(
-        f"precision (verified / proposed candidates):  " f"{verified}/{cands}"
+        f"precision (differential-genuine / candidates): {genuine}/{cands}"
         if cands
         else "precision: 0/0"
     )

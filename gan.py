@@ -235,19 +235,38 @@ def _poc_repair(code: str, err: str) -> str:
     )
 
 
-def finder_gate(contract: str, finding: dict, max_tries: int = 4) -> bool:
+def finder_gate(
+    contract: str, finding: dict, max_tries: int = 4, fixed_contract: str | None = None
+) -> str:
+    """Drive Claude to write a forge PoC for the finding. Returns a verdict:
+      'rejected'  — never produced a passing exploit on the buggy contract
+      'verified'  — exploit passes on buggy (no fixed variant to differentiate)
+      'genuine'   — passes on buggy AND fails on fixed (provably the planted defect)
+      'trivial'   — passes on buggy AND on fixed (always-true assertion, not the bug)
+    With a fixed_contract, 'genuine' is the only honest success — it removes the
+    Claude-writes-and-grades-its-own-PoC loophole: forge alone, on two contracts.
+    """
     code = _strip_fence(_ask(FINDER_MODEL, _poc_initial(contract, finding)))
     for _ in range(max_tries):
         _write("src/Target.sol", contract)
         _write("test/FinderPoC.t.sol", _normalize_poc(code))
         out = _forge("FinderPoC.t.sol")
         if "[PASS]" in out:
-            return True
+            if fixed_contract is None:
+                return "verified"
+            _write("src/Target.sol", fixed_contract)
+            out_fixed = _forge("FinderPoC.t.sol")
+            ran = "[FAIL" in out_fixed or "[PASS]" in out_fixed
+            if not ran:
+                return (
+                    "rejected"  # PoC won't compile against fixed → cannot differentiate
+                )
+            return "trivial" if "[PASS]" in out_fixed else "genuine"
         if "[FAIL" in out:
-            return False  # ran but exploit failed → not real
+            return "rejected"  # ran but exploit failed → not real
         err = "\n".join(out.strip().splitlines()[-20:])
         code = _strip_fence(_ask(FINDER_MODEL, _poc_repair(code, err)))
-    return False
+    return "rejected"
 
 
 # --------------------------------------------------------------------------- #

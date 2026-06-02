@@ -72,9 +72,37 @@ def _repair(spec: bugspec.BugSpec, code: str, err: str) -> str:
     )
 
 
+def _fix_prompt(spec: bugspec.BugSpec, disguised: str) -> str:
+    return (
+        "Below is a Solidity contract that contains a vulnerability, plus a PoC that exploits it. "
+        "Produce the FIXED version of THIS EXACT contract: repair ONLY the vulnerability, keep the "
+        "contract named `Target`, keep every function signature identical, and change as little else "
+        "as possible. After your fix, the provided PoC must FAIL (revert or failed assertion).\n\n"
+        f"Vulnerability class: {spec.bug_class}. Invariant that must hold after the fix: "
+        f"{spec.invariant}.\n\nCONTRACT:\n"
+        + disguised
+        + "\n\nPoC THAT MUST NOW FAIL:\n"
+        + spec.poc
+        + "\n\nReturn ONLY the fixed Solidity source — no prose, no fences."
+    )
+
+
+def _make_disguised_fixed(spec, disguised: str, tries: int = 2) -> str | None:
+    """Ask the disguiser for the repaired twin; keep it only if the planted PoC is
+    'genuine' on (disguised, fixed) — passes buggy, fails fixed."""
+    for _ in range(tries):
+        fixed = gan._strip_fence(
+            gan._ask(DISGUISE_MODEL, _fix_prompt(spec, disguised), 3000)
+        )
+        if bugspec.differential(disguised, fixed, spec.poc) == "genuine":
+            return fixed
+    return None
+
+
 def disguise(spec: bugspec.BugSpec, max_tries: int = 4) -> bugspec.BugSpec | None:
     """Return a disguised copy of spec whose contract still fails the planted PoC,
-    or None if a surviving disguise could not be produced."""
+    or None if a surviving disguise could not be produced. Also attaches a disguised
+    FIXED twin (for the differential test) when one can be produced."""
     code = gan._strip_fence(gan._ask(DISGUISE_MODEL, _prompt(spec), 3000))
     for attempt in range(1, max_tries + 1):
         ok, out = bugspec.confirm_contract(code, spec.poc)
@@ -84,7 +112,16 @@ def disguise(spec: bugspec.BugSpec, max_tries: int = 4) -> bugspec.BugSpec | Non
                 f"  disguise: survived re-confirm on attempt {attempt} "
                 f"({len(code)} chars, {grew:.1f}× original)"
             )
-            return replace(spec, name=spec.name + "_disguised", contract=code)
+            fixed = _make_disguised_fixed(spec, code)
+            print(
+                f"  disguise: differential twin {'built ✓' if fixed else 'unavailable'}"
+            )
+            return replace(
+                spec,
+                name=spec.name + "_disguised",
+                contract=code,
+                fixed_contract=fixed,
+            )
         err = "\n".join(out.strip().splitlines()[-16:])
         print(f"  disguise: attempt {attempt} broke the PoC, repairing...")
         code = gan._strip_fence(

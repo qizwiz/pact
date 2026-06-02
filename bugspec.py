@@ -53,9 +53,10 @@ class BugSpec:
     name: str
     bug_class: str
     invariant: str
-    contract: str
+    contract: str  # the DEFECTIVE contract
     poc: str
     symbolic_check: Optional[Callable[[], dict]] = None  # None = forge-only
+    fixed_contract: Optional[str] = None  # same interface, bug repaired (differential)
 
 
 # --------------------------------------------------------------------------- #
@@ -160,6 +161,23 @@ def confirm_contract(
 
 def confirm_forge(spec: BugSpec, test_name: str = "Planted.t.sol") -> tuple[bool, str]:
     return confirm_contract(spec.contract, spec.poc, test_name)
+
+
+def differential(buggy: str, fixed: str, poc: str) -> str:
+    """Run a PoC against the buggy AND the fixed contract. A PoC that genuinely
+    exploits the planted defect passes on buggy and FAILS on fixed. One that passes
+    on both is a trivial/always-true assertion not targeting the bug.
+
+    Returns: 'genuine' | 'trivial' | 'no_exploit' | 'fixed_broken'.
+    """
+    pass_buggy, _ = confirm_contract(buggy, poc, "Diff.t.sol")
+    if not pass_buggy:
+        return "no_exploit"
+    pass_fixed, out_fixed = confirm_contract(fixed, poc, "Diff.t.sol")
+    ran_fixed = "[FAIL" in out_fixed or "[PASS]" in out_fixed
+    if not ran_fixed:
+        return "fixed_broken"  # PoC didn't compile against fixed → cannot differentiate
+    return "trivial" if pass_fixed else "genuine"
 
 
 # --------------------------------------------------------------------------- #
@@ -393,6 +411,36 @@ contract PlantedPoC is Test {
 }
 """
 
+# --- fixed variants (same interface, vulnerability repaired) --------------- #
+_ACCOUNTING_FIXED = _ACCOUNTING_TARGET.replace(
+    "        // BUG: sender debited only half of what receiver is credited.\n"
+    "        balanceOf[msg.sender] -= amount / 2;",
+    "        balanceOf[msg.sender] -= amount;",
+)
+
+_REENTRANCY_FIXED = _REENTRANCY_TARGET.replace(
+    "        // BUG: external call happens BEFORE the balance is zeroed (CEI violation).\n"
+    '        (bool ok, ) = msg.sender.call{value: amt}("");\n'
+    '        require(ok, "send failed");\n'
+    "        credit[msg.sender] = 0;",
+    "        credit[msg.sender] = 0; // effects before interaction (CEI)\n"
+    '        (bool ok, ) = msg.sender.call{value: amt}("");\n'
+    '        require(ok, "send failed");',
+)
+
+_ACCESS_FIXED = _ACCESS_TARGET.replace(
+    "    // BUG: missing access control — any caller can sweep the whole balance.\n"
+    "    function sweep(address payable to) external {",
+    "    function sweep(address payable to) external {\n"
+    '        require(msg.sender == owner, "not owner");',
+)
+
+_DONATION_FIXED = _DONATION_TARGET.replace(
+    "            minted = (msg.value * totalShares) / assetsBefore;",
+    "            minted = (msg.value * totalShares) / assetsBefore;\n"
+    '            require(minted > 0, "zero shares");',
+)
+
 CATALOG = [
     BugSpec(
         name="accounting_underdebit",
@@ -401,6 +449,7 @@ CATALOG = [
         contract=_ACCOUNTING_TARGET,
         poc=_ACCOUNTING_POC,
         symbolic_check=_sym_conservation,
+        fixed_contract=_ACCOUNTING_FIXED,
     ),
     BugSpec(
         name="reentrancy_cei",
@@ -409,6 +458,7 @@ CATALOG = [
         contract=_REENTRANCY_TARGET,
         poc=_REENTRANCY_POC,
         symbolic_check=_sym_reentrancy,
+        fixed_contract=_REENTRANCY_FIXED,
     ),
     BugSpec(
         name="access_control_sweep",
@@ -417,6 +467,7 @@ CATALOG = [
         contract=_ACCESS_TARGET,
         poc=_ACCESS_POC,
         symbolic_check=_sym_access_control,
+        fixed_contract=_ACCESS_FIXED,
     ),
     BugSpec(
         name="donation_inflation",
@@ -425,6 +476,7 @@ CATALOG = [
         contract=_DONATION_TARGET,
         poc=_DONATION_POC,
         symbolic_check=None,  # forge-only for now
+        fixed_contract=_DONATION_FIXED,
     ),
 ]
 
@@ -444,6 +496,10 @@ def _self_test() -> None:
         print(f"  forge:    planted bug PASS={ok}")
         if not ok:
             print("\n".join(out.strip().splitlines()[-14:]))
+        if spec.fixed_contract:
+            verdict = differential(spec.contract, spec.fixed_contract, spec.poc)
+            mark = "✓" if verdict == "genuine" else "✗ FIXED VARIANT WRONG"
+            print(f"  diff:     planted PoC is '{verdict}' {mark}")
 
 
 if __name__ == "__main__":
