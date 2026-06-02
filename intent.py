@@ -2106,6 +2106,11 @@ def _verify_intent_gaps(
         from pact.contract_encoder import verify_contract
     except ImportError:
         return
+    try:
+        # positive EXECUTION oracle for gaps z3 cannot encode (twin-free)
+        from pact.prove import execution_confirm
+    except Exception:
+        execution_confirm = None
 
     for module in intent.modules:
         source = module_sources.get(module.path, "")
@@ -2181,6 +2186,32 @@ def _verify_intent_gaps(
                         )
                 if verbose:
                     print(f"    → SAT: confirmed gap, counterexample: {ce[:80]}")
+
+            elif execution_confirm is not None:
+                # z3 could not decide/encode → positive EXECUTION oracle (twin-free):
+                # render the invariant as a predicate, fuzz the real function, confirm
+                # ONLY with a real input that violates it. NOTE: this EXECUTES the
+                # analyzed function — safe for first-party code; sandbox untrusted code.
+                try:
+                    verdict, witness = execution_confirm(
+                        inv.statement, source, func_name, api_key=key, model=model
+                    )
+                except Exception:
+                    verdict, witness = "error", None
+                if verdict == "confirmed":
+                    inv.confidence = max(inv.confidence, 0.9)
+                    inv.derived_from = (
+                        f"exec_confirmed: {inv.derived_from} "
+                        f"[execution witness: {str(witness)[:120]}]"
+                    )
+                    for v in module.violations:
+                        if v.invariant_id == inv.id:
+                            v.severity = "high"
+                            v.explanation = f"{v.explanation}\nExecution witness: {str(witness)[:200]}"
+                    if verbose:
+                        print(
+                            f"    → EXEC: confirmed by execution, witness {str(witness)[:80]}"
+                        )
 
 
 def extract_project_intent(
