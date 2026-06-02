@@ -88,6 +88,7 @@ def _setup_project(name: str, contract_src: str) -> None:
     with open(os.path.join(PROJECT, "foundry.toml"), "w") as f:
         f.write(
             '[profile.default]\nsrc = "src"\ntest = "test"\nout = "out"\nlibs = []\n'
+            "ast = true\n"  # Halmos needs AST in artifacts; without it it skips all tests
             f'remappings = ["forge-std/={FORGE_STD}"]\n'
         )
     with open(os.path.join(PROJECT, f"src/{name}.sol"), "w") as f:
