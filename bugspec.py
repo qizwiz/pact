@@ -138,12 +138,16 @@ def _write(rel: str, content: str) -> None:
         f.write(content)
 
 
-def confirm_forge(spec: BugSpec, test_name: str = "Planted.t.sol") -> tuple[bool, str]:
+def confirm_contract(
+    contract: str, poc: str, test_name: str = "Planted.t.sol"
+) -> tuple[bool, str]:
+    """Run a PoC against a given Target.sol source. Used both for the planted
+    contract and to RE-CONFIRM that a disguised contract still carries the bug."""
     for fn in os.listdir(os.path.join(GAN, "test")):
         if fn.endswith(".sol"):
             os.remove(os.path.join(GAN, "test", fn))
-    _write("src/Target.sol", spec.contract)
-    _write(f"test/{test_name}", spec.poc)
+    _write("src/Target.sol", contract)
+    _write(f"test/{test_name}", poc)
     res = subprocess.run(
         [FORGE, "test", "--root", GAN, "--match-path", f"test/{test_name}", "-vv"],
         capture_output=True,
@@ -152,6 +156,10 @@ def confirm_forge(spec: BugSpec, test_name: str = "Planted.t.sol") -> tuple[bool
     )
     out = res.stdout + res.stderr
     return ("[PASS]" in out), out
+
+
+def confirm_forge(spec: BugSpec, test_name: str = "Planted.t.sol") -> tuple[bool, str]:
+    return confirm_contract(spec.contract, spec.poc, test_name)
 
 
 # --------------------------------------------------------------------------- #
