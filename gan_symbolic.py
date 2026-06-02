@@ -32,10 +32,13 @@ def run_spec(spec: bugspec.BugSpec) -> dict | None:
     print(f"\n=== {spec.name} ({spec.bug_class}) ===")
 
     sym = bugspec.verify_symbolic(spec)
-    if not sym["verified"]:
+    if sym["verified"] is False:
         print(f"  symbolic gate FAILED ({sym}); skipping")
         return None
-    print("  symbolic: z3 proves correct holds & defect breaks invariant ✓")
+    if sym["verified"] is None:
+        print("  symbolic: (forge-only — no z3 model yet); relying on forge")
+    else:
+        print("  symbolic: z3 proves correct holds & defect breaks invariant ✓")
 
     planted_ok, _ = bugspec.confirm_forge(spec)
     if not planted_ok:

