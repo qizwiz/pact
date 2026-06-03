@@ -29,6 +29,11 @@ MAX_LINES = 160  # Halmos-tractability heuristic
 
 def classify(path: str, src: str) -> tuple[bool, str]:
     lines = src.splitlines()
+    # must define a real contract (not just an interface/library — nothing to mutate)
+    if not re.search(r"\bcontract\s+\w+", src):
+        return False, "no contract (interface/library only)"
+    if not re.search(r"\bfunction\b[^;{]*\{", src):
+        return False, "no function with a body (nothing to mutate)"
     # pragma
     m = re.search(r"pragma\s+solidity\s+([^\n;]+)", src)
     if not m:
