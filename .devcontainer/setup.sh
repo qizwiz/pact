@@ -16,6 +16,13 @@ python -m venv .venv
   || ./.venv/bin/pip -q install z3-solver networkx anthropic python-dotenv requests \
         tree-sitter tree-sitter-solidity
 
+echo ">>> [2b/4] Halmos (symbolic EVM) + HuggingFace (datasets / embeddings)..."
+./.venv/bin/pip -q install halmos huggingface_hub datasets || true
+echo "    - real-0.8 contract source = clone a recent contest repo, e.g.:"
+echo "        git clone --depth 1 https://github.com/Cyfrin/<first-flight> /workspaces/target"
+echo "      then: ./.venv/bin/python sol_filter.py /workspaces/target"
+echo "    - HF_TOKEN: set as a Codespaces secret (Settings > Codespaces > Secrets)."
+
 echo ">>> [3/4] Verifying with doctor preflight..."
 ./.venv/bin/python doctor.py || true
 
