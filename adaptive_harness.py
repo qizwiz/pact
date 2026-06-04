@@ -117,13 +117,16 @@ def validate_replay(project_root: str, harness: str, p: dict, cex: dict) -> tupl
     call = ", ".join(str(v) for v in vals)
     # imports MUST be at file top (after pragma) — appending after a contract is invalid Solidity and
     # silently false-rejects (the validator bug we caught). Inject the Test import after the pragma.
-    h2 = re.sub(r"(pragma solidity[^\n]*\n)", r'\1import {Test} from "forge-std/Test.sol";\n',
+    h2 = re.sub(r"(pragma solidity[^\n]*\n)",
+                r'\1import {Test} from "forge-std/Test.sol";\nimport {stdError} from "forge-std/StdError.sol";\n',
                 harness, count=1)
     replay = h2 + f"""
 contract Replay is Test {{
     function test_replay() public {{
         Invariants inv = new Invariants();
-        vm.expectRevert();          // real exploit => check_inv asserts/reverts on the concrete cex
+        // RIGOROUS: the revert must be the INVARIANT assertion (Panic 0x01), not an incidental
+        // balance/require revert. (DVT mints type(uint256).max, so the cex is within balance.)
+        vm.expectRevert(stdError.assertionError);
         inv.check_inv({call});
     }}
 }}
