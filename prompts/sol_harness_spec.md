@@ -4,6 +4,7 @@ funds + approves the caller (address(this)). Do NOT write any minting, approval,
 only the slots below. The acting account is always address(this), already funded and approved.
 
 Return ONE JSON object with exactly these keys:
+- "statement": a ONE-LINE natural-language statement of the invariant you are testing (so an intent judge can vet it), e.g. "a positive deposit must mint more than zero shares"
 - "contract": "{{name}}"
 - "imports": names to import from the src besides {{name}} (e.g. ["ERC20","IERC20"] if you declare a mock ERC20); [] if none
 - "mocks": [] or [{"name":"token","kind":"erc20"}] — declare a mock ERC20 ONLY if the contract's constructor needs an ERC20 asset
