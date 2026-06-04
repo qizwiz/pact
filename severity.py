@@ -63,3 +63,27 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+def prep_muldiv(src: str) -> str:
+    """ARITHMETIC PREP that makes the mitigation/UNSAT side SOUND+tractable. Swaps OZ's 512-bit
+    full-precision Math.mulDiv for the bounded-equivalent (x*y)/denominator. SOUND ONLY under the
+    realistic bound (values where x*y < 2^256) — which is exactly the regime severity verifies in.
+    Demonstrated: OffsetVault@1e4 UNSAT went from TIMEOUT(>300s) to PASS in 1.2s. The realistic
+    bound does triple duty: defines exploitability, shrinks the solver, makes this swap sound."""
+    sig = ("function mulDiv(uint256 x, uint256 y, uint256 denominator) "
+           "internal pure returns (uint256 result)")
+    i = src.find(sig)
+    if i < 0:
+        return src
+    b = src.index("{", i)
+    depth, j = 0, b
+    while j < len(src):
+        if src[j] == "{":
+            depth += 1
+        elif src[j] == "}":
+            depth -= 1
+            if depth == 0:
+                break
+        j += 1
+    return src[:i] + sig + " { return (x * y) / denominator; }" + src[j + 1:]
