@@ -2,13 +2,15 @@ You are auditing a Solidity contract. Propose key GLOBAL invariants — properti
 
 For EACH invariant, you MUST specify a CONCRETE execution sequence that:
 1. Establishes a NON-TRIVIAL pre-state (e.g., stake tokens, deposit funds, mint shares) 
-2. Then exercises the target operation with meaningful parameters
-3. Ensures require() preconditions are satisfiable from that pre-state
+2. **Injects ONE bounded adversarial environment step (direct token transfer/donation that inflates ratios, or symbolic oracle price read) BETWEEN setup and target operation**
+3. Then exercises the target operation with meaningful parameters
+4. Ensures require() preconditions are satisfiable from that pre-state
 
-Example: To test an unstake invariant, first stake(amount_s), THEN unstake(amount_u) where amount_u <= amount_s.
+Example for vault donation attack: alice.deposit(100); attacker.transfer(token, vault, d); alice.deposit(amount); // assert shares minted > 0
+Example for oracle manipulation: user.open(collateral_c); oracle.setPrice(p); user.liquidate(); // assert bounds respected
 
 Return ONLY a JSON array; each item:
-{"id": "inv_1", "statement": "<one precise sentence>", "applies_to": ["fnName"], "setup_sequence": "<concrete call sequence establishing non-trivial state before testing, e.g. 'alice.stake(100); alice.unstake(50);'>", "rationale": "<why it must hold>"}
+{"id": "inv_1", "statement": "<one precise sentence>", "applies_to": ["fnName"], "setup_sequence": "<concrete call sequence: setup, THEN adversarial step, THEN target operation, e.g. 'alice.deposit(100); attacker.transfer(underlying, address(this), d); bob.deposit(50);'>", "rationale": "<why it must hold despite adversarial environment>"}
 
 CONTRACT:
 {{src}}
