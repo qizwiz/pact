@@ -51,15 +51,51 @@ import prompt_improve as pi  # noqa: E402  the improve decorator (file-backed pr
 from halmos_check import run_halmos  # noqa: E402
 
 
+def _salvage_objects(txt: str) -> list[dict]:
+    """Recover complete top-level JSON objects from a possibly-truncated array.
+    Real contracts + verbose invariants can overflow the token budget, cutting the
+    closing ]; we keep every object that did close rather than dropping all of them."""
+    out, depth, start, instr, esc = [], 0, None, False, False
+    for i, ch in enumerate(txt):
+        if instr:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                instr = False
+            continue
+        if ch == '"':
+            instr = True
+        elif ch == "{":
+            if depth == 0:
+                start = i
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0 and start is not None:
+                try:
+                    out.append(json.loads(txt[start : i + 1]))
+                except Exception:
+                    pass
+                start = None
+    return out
+
+
 def propose_invariants(src: str) -> list[dict]:
     # file-backed, self-improving prompt (prompts/sol_invariant_propose.md)
-    txt = agent._ask(pi.render(pi.load_prompt("sol_invariant_propose"), src=src), 1600)
+    # budget raised 1600 -> 4000: improved prompt emits setup_sequence + richer rationale,
+    # which overflowed 1600 on real (flattened) contracts and truncated the JSON.
+    txt = agent._ask(pi.render(pi.load_prompt("sol_invariant_propose"), src=src), 4000)
     m = re.search(r"\[.*\]", txt, re.S)
     try:
         out = json.loads(m.group(0) if m else txt)
-        return out if isinstance(out, list) else []
+        if isinstance(out, list):
+            return out
     except Exception:
-        return []
+        pass
+    # truncation-tolerant fallback: salvage whatever objects closed
+    return _salvage_objects(txt)
 
 
 def render_tests(name: str, src: str, invs: list[dict]) -> str:
@@ -79,7 +115,13 @@ def render_tests(name: str, src: str, invs: list[dict]) -> str:
     )
 
 
-def run(contract_path: str, name: str, improve: bool = True) -> dict:
+def run(contract_path: str, name: str) -> dict:
+    # NOTE: this LIVE path no longer self-improves the prompts. The former hooks scored
+    # propose on skeptic-survival and render on build-success — both rate a VACUOUS test
+    # 1.0 (it survives the skeptic and builds) while it catches nothing, so they churned
+    # the prompt on a signal blind to recall. Prompt improvement now happens OFFLINE in
+    # recall_loop.py, grounded on mutation RECALL (did the test catch a known bug), which
+    # needs ground-truth mutants that only exist in the benchmark, not on a live contract.
     src = open(contract_path).read()
     model, key = resolve_model(), resolve_key()
 
@@ -97,15 +139,6 @@ def run(contract_path: str, name: str, improve: bool = True) -> dict:
     print(
         f"  skeptic kept {len(surviving)}/{len(invs)} (falsified: {falsified or 'none'})"
     )
-    # GROUNDED improve: propose prompt scored on skeptic-survival rate
-    if improve:
-        pscore = len(surviving) / max(len(invs), 1)
-        pi.improve_if_weak(
-            "sol_invariant_propose",
-            pscore,
-            f"skeptic falsified {falsified} of {len(invs)} proposed invariants",
-            agent._ask,
-        )
 
     agent._setup_project(name, src)
     test_src = render_tests(name, src, surviving)
@@ -120,19 +153,6 @@ def run(contract_path: str, name: str, improve: bool = True) -> dict:
             agent._repair_prompt(test_src, "\n".join(out.splitlines()[-25:]))
         )
     verdicts = run_halmos(agent.PROJECT) if built else []
-    # GROUNDED improve: render prompt scored on build + Halmos actually running
-    if improve:
-        rscore = 1.0 if (built and verdicts) else 0.0
-        pi.improve_if_weak(
-            "sol_invariant_render",
-            rscore,
-            (
-                ("test never built: " + "\n".join(out.splitlines()[-12:]))
-                if not built
-                else "built but Halmos produced no verdicts"
-            ),
-            agent._ask,
-        )
     return {"built": built, "verdicts": verdicts}
 
 
