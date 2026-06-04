@@ -55,6 +55,16 @@ def build_scaffold(name: str, import_path: str, params: list[dict]) -> tuple[str
                 fund += (f"        {an}.mint(address(this), type(uint192).max);\n"
                          f"        {an}.approve(address(c), type(uint256).max);\n")
                 args.append(f"{t}(address({an}))")
+            elif t in ("ERC20", "IERC20", "ERC4626"):
+                # library BASE type (solmate/OZ ERC20) — NOT a concrete project token and NOT an
+                # I-prefixed custom interface. Can't `new ERC20()` (abstract). Deploy the project's
+                # canonical concrete ERC20 and upcast to the param type. (DVD uses DamnValuableToken,
+                # which `is` solmate ERC20; true cross-project generality needs asset-token detection.)
+                imports["DamnValuableToken"] = "../src/DamnValuableToken.sol"
+                fields += f"    DamnValuableToken {an};\n"
+                deploys += f"        {an} = new DamnValuableToken();\n"  # mints to deployer (us)
+                fund += f"        {an}.approve(address(c), type(uint256).max);\n"
+                args.append(an)
             else:  # concrete deployable token in the project -> deploy the REAL one
                 imports[t] = f"../src/{t}.sol"
                 fields += f"    {t} {an};\n"
