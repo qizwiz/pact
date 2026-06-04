@@ -1,0 +1,7 @@
+[profile.default]
+src = "src"
+test = "test"
+out = "out"
+libs = []
+ast = true
+remappings = ["forge-std/=/Users/jonathanhill/src/damn-vulnerable-defi/lib/forge-std/src/"]

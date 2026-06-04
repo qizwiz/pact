@@ -15,6 +15,10 @@ docs/tla/generated/
 # Loop runtime state and artifacts
 .pact_loop/
 .pact_oracle_baseline
+# Ephemeral per-run state snapshots (timestamped dirs)
+states/
+# macOS cruft
+.DS_Store
 heal_*.json
 intent*.json
 !intent_pact_self.json
