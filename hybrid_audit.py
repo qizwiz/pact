@@ -35,8 +35,10 @@ def build_scaffold(name: str, import_path: str, params: list[dict]) -> tuple[str
     """THE MACRO: deterministic. From the constructor signature, emit imports + deploys + the
     funded actor + an empty check_inv to be filled. In-place advantage: deploy the project's
     REAL concrete deps (new DamnValuableToken()), only mock genuine interfaces."""
-    # the generator OWNS structural requirements: forge-std Test provides `vm` (warp/assume/etc.)
-    imports = {name: import_path, "Test": "forge-std/Test.sol"}
+    # NOTE: the body prompt SELF-IMPROVED to forbid vm/cheatcodes -> no forge-std Test needed.
+    # Extending Test was breaking Halmos's verdict (my hand-proof worked WITHOUT it). The macro and
+    # the prompt co-evolved: the prompt's learning made this structural decision obsolete.
+    imports = {name: import_path}
     fields, deploys, fund, args, assets, mock_defs = "", "", "", [], [], ""
     for i, p in enumerate(params):
         t = p.get("type", "").strip()
@@ -74,7 +76,7 @@ def build_scaffold(name: str, import_path: str, params: list[dict]) -> tuple[str
 pragma solidity ^0.8.20;
 {imp_lines}
 
-{mock_defs}contract Invariants is Test {{
+{mock_defs}contract Invariants {{
     {name} c;
 {fields}
     constructor() {{
@@ -109,8 +111,12 @@ CONTRACT ({name}):
 """
 
 
+import prompt_improve as pi  # file-backed, self-improving body prompt
+
+
 def fill_body(name: str, src: str, assets: list[str], feedback: str = "") -> tuple[str, str]:
-    prompt = FILL.format(name=name, src=src, assets=", ".join(assets) or "(none)")
+    prompt = pi.render(pi.load_prompt("sol_body_fill"), name=name, src=src,
+                       assets=", ".join(assets) or "(none)")
     if feedback:
         prompt += f"\n\nA previous invariant was REJECTED as not-intended: \"{feedback}\". Choose a DIFFERENT, genuinely-promised invariant."
     txt = agent._ask(prompt, 1200)
