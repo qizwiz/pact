@@ -3,6 +3,8 @@ name: pact-ci
 # sidestepping the codespace sshd->Alpine/musl trap entirely. Driven via `gh workflow run pact-ci`
 # and read via `gh run view --log`. This is the cloud path that actually works for forge/halmos.
 on:
+  push:
+    paths: ['.github/workflows/pact-ci.yml', 'pact_check.py', 'adaptive_harness.py']
   workflow_dispatch: {}
 
 jobs:
