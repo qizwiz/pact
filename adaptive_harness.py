@@ -80,18 +80,23 @@ def plan(name: str, src: str, context: str) -> dict:
         return {}
 
 
-def emit(p: dict, target: str) -> str:
-    args = ", ".join(p.get("symbolic_args", ["uint256 a", "uint256 b"]))
-    imports = "\n".join(i for i in p.get("imports", []) if "ERC1967" in i or "DamnValuable" in i or "Mock" in i)
+def emit(p: dict, orig: str, target: str, target_import: str) -> str:
+    """Assemble the harness from the plan, RETARGETED to the summarized subclass (orig -> target).
+    Deploy/attack are the LLM's (variance-absorbing); the build-repair loop fixes compile slips."""
+    args = ", ".join(p.get("symbolic_args") or ["uint256 a", "uint256 b"])
+    fields = p.get("fields", "").replace(orig, target)
+    setup = p.get("setup", "").replace(orig, target)
+    extra = "\n".join(i for i in p.get("imports", [])
+                      if ("ERC1967" in i or "DamnValuable" in i or "Mock" in i) and orig not in i)
     return f"""// SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
-import {{{target}}} from "../src/_target/{target}.sol";
-{imports}
+import {{{target}}} from "{target_import}";
+{extra}
 
 contract Invariants {{
-{p.get("fields","")}
+{fields}
     constructor() {{
-{p.get("setup","")}
+{setup}
     }}
     function check_inv({args}) public {{
 {p.get("attack_body","")}
@@ -100,7 +105,46 @@ contract Invariants {{
 """
 
 
-def verify(project_root: str, harness: str, max_repair: int = 3) -> tuple[str, str]:
+def validate_replay(project_root: str, harness: str, p: dict, cex: dict) -> tuple[bool, str]:
+    """THE soundness gate for blind findings: a halmos [FAIL] on a nonlinear contract may be a
+    SPURIOUS counterexample. Replay the cex CONCRETELY in a forge test; the finding is REAL only if
+    check_inv actually REVERTS (assert fails) on those concrete values."""
+    # derive arg names+order from the BUILT harness signature (robust to repair renames), map cex by name
+    msig = re.search(r"function\s+check_inv\(([^)]*)\)", harness)
+    arg_names = [seg.strip().split()[-1] for seg in msig.group(1).split(",") if seg.strip()] if msig else []
+    leftovers = list(cex.values())
+    vals = [cex.get(n) or (leftovers[i] if i < len(leftovers) else "1") for i, n in enumerate(arg_names)]
+    call = ", ".join(str(v) for v in vals)
+    # imports MUST be at file top (after pragma) — appending after a contract is invalid Solidity and
+    # silently false-rejects (the validator bug we caught). Inject the Test import after the pragma.
+    h2 = re.sub(r"(pragma solidity[^\n]*\n)", r'\1import {Test} from "forge-std/Test.sol";\n',
+                harness, count=1)
+    replay = h2 + f"""
+contract Replay is Test {{
+    function test_replay() public {{
+        Invariants inv = new Invariants();
+        vm.expectRevert();          // real exploit => check_inv asserts/reverts on the concrete cex
+        inv.check_inv({call});
+    }}
+}}
+"""
+    test = os.path.join(project_root, "test", "_AdaptiveReplay.t.sol")
+    try:
+        open(test, "w").write(replay)
+        r = subprocess.run([FORGE, "test", "--ast", "--root", project_root,
+                            "--match-path", "test/_AdaptiveReplay.t.sol", "--match-test", "test_replay"],
+                           capture_output=True, text=True, timeout=400)
+        out = r.stdout + r.stderr
+        return ("[PASS]" in out or "1 passed" in out), out[-800:]
+    finally:
+        if os.path.exists(test):
+            os.remove(test)
+
+
+def verify(project_root: str, harness: str, max_repair: int = 3) -> tuple[str, str, str]:
+    """Returns (verdict, halmos_output, HARNESS_THAT_BUILT). The 3rd element is critical: the repair
+    loop may rewrite the harness, and downstream replay-validation must use the version that actually
+    compiled — not the original (a bug that silently false-rejected real findings)."""
     test = os.path.join(project_root, "test", "_Adaptive.t.sol")
     try:
         for _ in range(max_repair + 1):
@@ -113,7 +157,7 @@ def verify(project_root: str, harness: str, max_repair: int = 3) -> tuple[str, s
                 nh = agent._ask(REPAIR.format(errors=errs, harness=harness), 2500)
                 nh = re.sub(r"^```[a-zA-Z]*\n?|```$", "", nh.strip())
                 if "contract Invariants" not in nh:
-                    return "BUILD_FAIL", errs
+                    return "BUILD_FAIL", errs, harness
                 harness = nh
                 continue
             h = subprocess.run([HALMOS, "--root", project_root, "--contract", "Invariants",
@@ -121,11 +165,11 @@ def verify(project_root: str, harness: str, max_repair: int = 3) -> tuple[str, s
                                capture_output=True, text=True, timeout=400)
             out = h.stdout + h.stderr
             if "[FAIL]" in out:
-                return "CAUGHT", out
+                return "CAUGHT", out, harness
             if "[PASS]" in out:
-                return "PROVED", out
-            return "exhausted", out[-1500:]
-        return "BUILD_FAIL", "repair budget exhausted"
+                return "PROVED", out, harness
+            return "exhausted", out[-1500:], harness
+        return "BUILD_FAIL", "repair budget exhausted", harness
     finally:
         if os.path.exists(test):
             os.remove(test)
@@ -147,14 +191,37 @@ def main():
     context = ("Foundry project (DVD). solmate ERC4626 base. Canonical ERC20 = DamnValuableToken "
                "(import ../src/DamnValuableToken.sol), mints supply to deployer. totalAssets() = "
                "asset.balanceOf(this). Constructor: (ERC20 _token, address _owner, address _feeRecipient).")
-    print("adaptive_harness smoke test: LLM plans the attack on a REAL vault, gated end-to-end\n")
+    print("adaptive_harness: LLM plans -> auto-apply summary -> verify -> replay-validate (one button)\n")
     p = plan(name, src, context)
     if not p:
         print("  no plan produced"); return
     print(f"  deploy_kind : {p.get('deploy_kind')}")
     print(f"  invariant   : {p.get('invariant_statement')}")
-    print(f"  nonlinear   : {p.get('nonlinear_ops')}")
-    print("  (auto-applier + verify + replay-validate would run here against the summarized target)")
+    print(f"  nonlinear   : {p.get('nonlinear_ops')}", flush=True)
+
+    # AUTO-APPLIER: splice the admitted bounded summary (ERC4626 convert ops) via override subclass
+    target, subsrc = summarized_subclass(
+        name, "./UnstoppableVault.sol",
+        "ERC20 _token, address _owner, address _feeRecipient", "_token, _owner, _feeRecipient")
+    subpath = os.path.join(DVD, "src/unstoppable", target + ".sol")
+    target_import = "../src/unstoppable/" + target + ".sol"
+    open(subpath, "w").write(subsrc)
+    try:
+        harness = emit(p, name, target, target_import)
+        verdict, out, built = verify(DVD, harness)   # `built` = the harness that actually compiled
+        print(f"\n  verify -> {verdict}", flush=True)
+        if verdict == "CAUGHT":
+            cex = extract_cex(out)
+            print(f"  counterexample: {cex}", flush=True)
+            valid, rout = validate_replay(DVD, built, p, cex)
+            print(f"  concrete replay -> {'REAL EXPLOIT (finding validated)' if valid else 'SPURIOUS (halmos nonlinear artifact) — rejected'}")
+        elif verdict == "PROVED":
+            print("  no counterexample (contract safe under this invariant)")
+        else:
+            print(f"  {verdict} (see output)")
+    finally:
+        if os.path.exists(subpath):
+            os.remove(subpath)
 
 
 if __name__ == "__main__":
