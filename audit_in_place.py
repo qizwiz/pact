@@ -93,17 +93,19 @@ def verify_in_place(project_root, harness, max_repair=3):
             h = subprocess.run([HALMOS, "--root", project_root, "--contract", "Invariants",
                                 "--function", "check"], capture_output=True, text=True, timeout=400)
             out = h.stdout + h.stderr
+            # STRUCTURAL: halmos skipped our contract (e.g. ast-less artifact) and a [PASS] here would
+            # be a stale-artifact phantom, not a proof. Don't trust it. (Should not happen with --ast.)
+            if "Skipped" in out and "[PASS]" not in out and "[FAIL]" not in out:
+                return "skipped"
             if "[FAIL]" in out:
                 return "CAUGHT"
             if "[PASS]" in out:
                 return "PROVED"
-            # timeout / error / all-revert -> repair as revert-vacuity
-            nh, _ = _parse(agent._ask(REPAIR.format(kind="revert", signal="all paths reverted/timed out",
-                                                    harness=harness), 3500))
-            if not nh:
-                return "no_verdict"
-            harness = nh
-        return "exhausted"
+            # The prover RAN but could not decide (nonlinear mulDiv conversion, timeout). This is
+            # EXHAUSTED, NOT revert-vacuity — different failure mode, different layer. Do NOT burn a
+            # revert-repair on it (that was a misattribution that wasted calls and crashed on errors).
+            # Honest inconclusive; the invariant form is not prover-dischargeable (prefer LINEAR).
+            return "exhausted"
     finally:
         if os.path.exists(test_path):
             os.remove(test_path)

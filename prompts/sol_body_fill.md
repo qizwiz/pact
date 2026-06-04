@@ -10,6 +10,18 @@ HOLDS on a correct contract but is VIOLATED if it mis-accounts. The assert MUST 
 STATEMENT. Consider relating different quantities (held tokens vs issued shares, withdrawable vs
 deposited, no-zero-share, conservation). Minimal valid Solidity, require() only.
 
+FAITHFULNESS FIRST: assert ONLY a property the contract GENUINELY guarantees. Do NOT invent a
+property that merely happens to hold in this harness. In particular, for an ERC4626 vault,
+`totalSupply (shares) <= totalAssets` is NOT an invariant — shares and assets have different units
+and the ratio drifts with yield/loss/fees. Asserting it is UNFAITHFUL and will (rightly) be
+rejected. Pick the real promised property even if it requires conversion.
+
+PROVER BOUNDARY (informational, NOT a license to lie): the symbolic prover cannot discharge
+nonlinear arithmetic — share<->asset CONVERSIONS (convertToShares / convertToAssets / previewDeposit
+/ previewRedeem / mulDiv) make it EXHAUST. If the contract's genuine invariant is linear, assert it
+linearly. If the genuine invariant REQUIRES conversion, assert it faithfully anyway — an honest
+"exhausted" is correct; do NOT substitute an unfaithful linear invariant just to force a proof.
+
 Return exactly:
 STATEMENT: <one-line>
 BODY:
