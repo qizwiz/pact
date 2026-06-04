@@ -106,14 +106,33 @@ def screen(width=_SCREEN_BITS) -> tuple[bool, dict]:
     return all(report.values()), report
 
 
-def gate(summary: dict = None) -> tuple[str, dict]:
+# Obligations DISCHARGED in Lean = the sound root of trust. An op is ADMITTED only if its obligation
+# is registered here with a Lean proof verified (0 errors, 0 sorry) via:
+#   cd ~/src/rule30 && lake env lean <abs path to lean/SummaryObligation.lean>
+# Verified 2026-06-04 against Rule 30's Mathlib env. z3 only SCREENS; LEAN ADMITS.
+REGISTRY = {
+    "mulDiv/convertToShares": {
+        "obligation": "floor bracket + zero-case + floor-monotone + product-monotone (over ℕ, a*s<2^256)",
+        "lean_proof": "lean/SummaryObligation.lean",
+        "status": "lean-discharged",
+    },
+}
+
+
+def gate(op_key: str = "mulDiv/convertToShares") -> tuple[str, dict]:
     """THE GATE / root of trust. Two honest stages:
-      1. z3 REFUTATION screen (fast) — kills unsound candidates.
-      2. LEAN proof (sound, unbounded) — the ONLY thing that ADMITS. Not yet wired => verdict
-         'screened-pending-lean'. A summary is NEVER applied on a z3-only basis (unsound — z3 cannot
-         prove the 256-bit claim, measured wall). Returns (verdict, screen_report)."""
+      1. z3 REFUTATION screen (fast) — kills unsound candidates outright.
+      2. LEAN proof (sound, unbounded) — the ONLY thing that ADMITS. A summary is NEVER applied on a
+         z3-only basis (unsound: z3 can't prove the 256-bit claim — measured exponential wall).
+    Verdicts: 'rejected' (z3 refuted an axiom) | 'screened-pending-lean' (survived screen, no Lean
+    proof yet) | 'admitted' (obligation discharged in Lean, in REGISTRY). Returns (verdict, report)."""
     survived, report = screen()
-    return ("screened-pending-lean" if survived else "rejected"), report
+    if not survived:
+        return "rejected", report
+    entry = REGISTRY.get(op_key)
+    if entry and entry.get("status") == "lean-discharged":
+        return "admitted", report
+    return "screened-pending-lean", report
 
 
 if __name__ == "__main__":
@@ -122,7 +141,10 @@ if __name__ == "__main__":
     for label, ok in report.items():
         print(f"  [{'survived' if ok else 'REFUTED'}]  {label}", flush=True)
     print(f"\n  => verdict: {verdict.upper()}")
-    print("     (z3 screens; ADMISSION requires the Lean proof — the sound root of trust. TODO.)")
+    if verdict == "admitted":
+        print("     (z3 screened + obligation DISCHARGED in Lean (lean/SummaryObligation.lean) = sound)")
+    else:
+        print("     (z3 screens; ADMISSION requires the Lean proof — the sound root of trust.)")
     # TEETH: a deliberately FALSE axiom must FAIL to prove (else the gate is decorative).
     # False claim: q*T > n (wrong direction; truly q*T <= n). "Prove" it => check its negation
     # ULE(q*T, n) is UNSAT. It is NOT unsat (it's satisfiable, in fact valid), so the gate cannot
