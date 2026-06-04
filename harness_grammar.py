@@ -33,20 +33,44 @@ externally-triggered inflation (mock asset + donation slot) and in-function cons
 
 from __future__ import annotations
 
+import json
 import os
+import re
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import invariant_agent as agent  # _setup_project, _build, PROJECT
+import prompt_improve as pi  # file-backed, improve-decorated prompts
 from halmos_check import run_halmos
+
+
+def propose_spec(name: str, src: str) -> dict | None:
+    """LLM fills the grammar's SEMANTIC slots (file-backed prompt). Structural correctness
+    (actor model, funding, approval) is the emitter's job, not the model's."""
+    txt = agent._ask(pi.render(pi.load_prompt("sol_harness_spec"), name=name, src=src), 1500)
+    m = re.search(r"\{.*\}", txt, re.S)
+    if not m:
+        return None
+    try:
+        return json.loads(m.group(0))
+    except Exception:
+        return None
 
 
 def emit_harness(spec: dict) -> str:
     name = spec["contract"]
-    imp = ", ".join([name] + spec.get("imports", []))
     src_import = spec.get("src_import", f"../src/{name}.sol")
     sig = ", ".join(spec.get("params", []))
+    # Structural requirement the EMITTER owns, not the LLM: if we generate an ERC20 mock,
+    # ERC20 (+ IERC20 for ctor args) MUST be imported. The proposer forgot ERC20 and the
+    # build failed — exactly the class of bug a correct-by-construction scaffold removes.
+    imports = list(spec.get("imports", []))
+    if any(m.get("kind") == "erc20" for m in spec.get("mocks", [])):
+        for needed in ("ERC20", "IERC20"):
+            if needed not in imports:
+                imports.append(needed)
+    imp = ", ".join([name] + imports)
 
     mock_defs, mock_fields, mock_deploys, mock_fund = "", "", "", ""
     for m in spec.get("mocks", []):
