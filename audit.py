@@ -63,16 +63,7 @@ def _repair(harness: str, signal: str, kind: str) -> str:
     )
 
 
-def audit_contract(name: str, src: str, max_repair: int = 4) -> dict:
-    spec = hg.propose_spec(name, src)
-    if not spec:
-        return {"status": "no_spec"}
-    stmt = spec.get("statement", "")
-    ok, reason = intended(name, src, stmt)
-    if not ok:
-        return {"status": "rejected_unintended", "statement": stmt, "reason": reason}
-
-    harness = hg.emit_harness(spec)
+def _verify(name: str, src: str, harness: str, max_repair: int) -> str:
     for _ in range(max_repair):
         agent._setup_project(name, src)
         built, out = agent._build(harness)
@@ -83,9 +74,36 @@ def audit_contract(name: str, src: str, max_repair: int = 4) -> dict:
         if not verdicts:  # built but no pass/fail = revert-vacuity
             harness = _repair(harness, "every symbolic path reverted", "revert")
             continue
-        caught = any(not v["proved"] for v in verdicts)
-        return {"status": "CAUGHT" if caught else "PROVED", "statement": stmt, "verdicts": verdicts}
-    return {"status": "exhausted", "statement": stmt}
+        return "CAUGHT" if any(not v["proved"] for v in verdicts) else "PROVED"
+    return "exhausted"
+
+
+def audit_contract(name: str, src: str, candidates: int = 3, max_repair: int = 3) -> dict:
+    """Multiplicity restored: propose SEVERAL candidate invariants, intent-gate each, verify
+    each surviving one. Catch the bug if ANY sharp intended invariant exposes it — robust to
+    the proposer picking a weak invariant on a given try (the single-spec fragility the first
+    consolidation introduced, caught by measurement)."""
+    proved_any, gated, last_stmt = False, [], ""
+    for _ in range(candidates):
+        spec = hg.propose_spec(name, src)
+        if not spec:
+            continue
+        stmt = spec.get("statement", "")
+        last_stmt = stmt
+        ok, reason = intended(name, src, stmt)
+        if not ok:
+            gated.append((stmt, reason))
+            continue
+        outcome = _verify(name, src, hg.emit_harness(spec), max_repair)
+        if outcome == "CAUGHT":
+            return {"status": "CAUGHT", "statement": stmt}
+        if outcome == "PROVED":
+            proved_any = True
+    if proved_any:
+        return {"status": "PROVED", "statement": last_stmt}
+    if gated:
+        return {"status": "rejected_unintended", "statement": gated[-1][0], "reason": gated[-1][1]}
+    return {"status": "exhausted", "statement": last_stmt}
 
 
 def main():
