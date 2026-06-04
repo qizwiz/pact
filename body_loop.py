@@ -53,7 +53,8 @@ def eval_body(project, rel, name):
     try:
         with open(test_path, "w") as f:
             f.write(harness)
-        b = subprocess.run([FORGE, "build", "--root", project], capture_output=True, text=True, timeout=400)
+        # --ast REQUIRED: halmos skips artifacts lacking the AST -> stale-artifact fake pass without it.
+        b = subprocess.run([FORGE, "build", "--ast", "--root", project], capture_output=True, text=True, timeout=400)
         if b.returncode != 0:
             err = " ".join(l.strip() for l in (b.stdout + b.stderr).splitlines()
                            if re.search(r"Error|error\[", l))[:200]

@@ -47,7 +47,10 @@ def run_one(name, rel, params, body):
     test = DVD + "/test/_Catch.t.sol"
     try:
         open(test, "w").write(harness)
-        b = subprocess.run([FORGE, "build", "--root", DVD], capture_output=True, text=True, timeout=400)
+        # --ast is REQUIRED: halmos skips contracts whose forge artifact lacks the AST. Without it the
+        # pre-build poisons the cache with ast-less artifacts and halmos silently skips our harness
+        # (KeyError 'ast') -> falls back to a stale artifact -> FAKE pass. Sound oracle needs --ast.
+        b = subprocess.run([FORGE, "build", "--ast", "--root", DVD], capture_output=True, text=True, timeout=400)
         if b.returncode != 0:
             return "BUILD_FAIL"
         h = subprocess.run([HALMOS, "--root", DVD, "--contract", "Invariants", "--function", "check"],
@@ -77,11 +80,12 @@ def eval_pair():
     buggy = run_one("DamnValuableStakingBug", "src/DamnValuableStakingBug.sol", params, body)
     if clean == "PROVED" and buggy == "CAUGHT":
         return 1, f"DISCRIMINATES: PROVED on clean, CAUGHT on buggy — '{stmt[:55]}'"
-    # honest transcript: name the failure, do NOT hand over the fix
-    return 0, (f"clean={clean}, buggy={buggy}; invariant='{stmt[:55]}'. The buggy contract has a "
-               "REAL conservation violation. Your invariant did NOT distinguish clean from buggy "
-               "(too weak to detect it, or it fails on the clean one). Find a STRONGER invariant "
-               "that PROVES on correct behavior but is VIOLATED by the bug.")
+    # honest transcript: name the failure + drive DIMENSION exploration, do NOT hand over the fix
+    return 0, (f"clean={clean}, buggy={buggy}; invariant='{stmt[:55]}'. It did NOT distinguish the "
+               "correct contract from one with a real accounting bug. You keep checking the SAME "
+               "relationship — VARY IT: try a DIFFERENT PAIR of quantities (relate the tokens the "
+               "contract HOLDS to the shares/accounting it ISSUED, rather than to the deposited "
+               "amount). A real accounting bug breaks the relationship you are not yet checking.")
 
 
 def main():
@@ -89,7 +93,7 @@ def main():
     make_bug()
     try:
         history = []
-        for r in range(1, 4):
+        for r in range(1, 5):
             print(f"────────── round {r} ──────────")
             s, t = eval_pair()
             print(f"  {t}")

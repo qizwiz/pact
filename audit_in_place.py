@@ -78,7 +78,9 @@ def verify_in_place(project_root, harness, max_repair=3):
         for _ in range(max_repair + 1):
             with open(test_path, "w") as f:
                 f.write(harness)
-            b = subprocess.run([FORGE, "build", "--root", project_root],
+            # --ast REQUIRED: halmos skips artifacts lacking the AST (KeyError 'ast'). Without it the
+            # pre-build poisons the cache and halmos silently skips the harness -> stale-artifact fake pass.
+            b = subprocess.run([FORGE, "build", "--ast", "--root", project_root],
                                capture_output=True, text=True, timeout=400)
             if b.returncode != 0:
                 errs = "\n".join(l for l in (b.stdout + b.stderr).splitlines()

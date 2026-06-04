@@ -12,6 +12,22 @@ The mental model: "which configuration of popsicle sticks makes the strongest br
 
 ---
 
+## VERIFICATION ORACLE DISCIPLINE (hard-learned)
+
+**halmos needs `--ast`.** Always build with `forge build --ast`. Without it, halmos cannot parse
+the artifact (`KeyError: 'ast'`), **silently SKIPS the contract**, and falls back to running a
+**stale cached `Invariants` artifact** that trivially PASSES. Result: a fake-PASS oracle that
+returns `[PASS]` no matter what the harness asserts. This wasted a multi-session investigation
+("the prompt can't learn to catch") — the prompt was fine; the oracle was lying.
+
+**When a verifier says PASS/PROVED, CONFIRM it actually ran your target.** Check the output for
+`Running N tests for <YOUR test file>`, **0 skipped**, and that the `[PASS]`/`[FAIL]` line belongs
+to YOUR contract — not a phantom from a stale `out/` artifact. A skipped-contract + stale-artifact
+fake-pass is indistinguishable from a real proof unless you look. `forge clean` the target's `out/`
+when in doubt. Every `forge build` in the verify path must carry `--ast`.
+
+---
+
 ## DUAL OUTPUT: JSON + MARKDOWN EVERYWHERE
 
 Every stage of the pipeline produces **two artifacts**:
