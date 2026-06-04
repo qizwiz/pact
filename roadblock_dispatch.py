@@ -67,38 +67,51 @@ def handle_caught(root, out, p, built):
         "bounded-summary + concrete-replay-validation"
 
 
-def dispatch_unstoppable():
+def dispatch_auto():
+    """Two-stage autonomous resolution of the nonlinear roadblock: try the contract RAW; when halmos
+    hits the nonlinear wall (EXHAUSTED, or — the trap — a SPURIOUS [FAIL] because it disables nonlinear
+    by default), DISTRUST it, auto-apply the Lean-gated bounded summary, re-verify, and replay-validate
+    the real finding. The whole session's lesson, run by the machine."""
     DVD = "/Users/jonathanhill/src/damn-vulnerable-defi"
     name, rel = "UnstoppableVault", "src/unstoppable/UnstoppableVault.sol"
     src = open(os.path.join(DVD, rel)).read()
     context = ("DVD, solmate ERC4626, canonical ERC20 = DamnValuableToken (mints uint256.max), "
                "totalAssets()=asset.balanceOf(this), ctor (ERC20,address,address).")
-    print("roadblock_dispatch: autonomous detect -> gated workflow -> log case\n")
+    print("roadblock_dispatch: RAW -> hit wall -> auto-apply gated summary -> resolve -> log case\n")
     p = A.plan(name, src, context)
+
+    # STAGE 1: RAW (no summary). Expect the nonlinear wall.
+    raw = A.emit(p, name, name, "../src/unstoppable/UnstoppableVault.sol")
+    v1, out1, built1 = A.verify(DVD, raw)
+    rb1 = classify(v1, out1)
+    raw_sound = False
+    if rb1 == "CAUGHT":
+        raw_sound, _ = A.validate_replay(DVD, built1, p, A.extract_cex(out1))
+    print(f"  stage1 RAW -> {rb1}" + (f" (replay sound={raw_sound})" if rb1 == "CAUGHT" else ""), flush=True)
+    if rb1 == "CAUGHT" and raw_sound:
+        rec = log_case("CAUGHT", out1, "raw (no summary needed)", "REAL EXPLOIT", True)
+        print(f"  resolved raw; case logged -> {CASE_LIB}"); return rec
+
+    # ROADBLOCK: nonlinear (exhausted / skipped / spurious raw cex). Auto-apply the GATED summary.
+    print(f"  roadblock: nonlinear (halmos can't be trusted raw) -> auto-apply Lean-gated summary", flush=True)
+    assert summarize.gate()[0] == "admitted", "summary obligation must be Lean-discharged before apply"
     target, subsrc = A.summarized_subclass(
         name, "./UnstoppableVault.sol",
         "ERC20 _token, address _owner, address _feeRecipient", "_token, _owner, _feeRecipient")
     subpath = os.path.join(DVD, "src/unstoppable", target + ".sol")
     open(subpath, "w").write(subsrc)
     try:
-        harness = A.emit(p, name, target, "../src/unstoppable/" + target + ".sol")
-        verdict, out, built = A.verify(DVD, harness)
-        rb = classify(verdict, out)
-        print(f"  roadblock detected: {rb}  (verify={verdict})", flush=True)
-        if rb == "CAUGHT":
-            outcome, sound, wf = handle_caught(DVD, out, p, built)
-        elif rb == "EXHAUSTED":
-            outcome, sound, wf = "nonlinear -> route to summary gate (summarize.gate)", \
-                summarize.gate()[0] == "admitted", "Lean-gated bounded summary"
-        elif rb == "NOVEL":
-            nw = novel_workflow(out, context)
-            outcome = f"proposed '{nw.get('roadblock_class')}' ({'ESCALATE->human/Lean' if nw.get('escalate') else 'semantic'})"
-            sound = not nw.get("escalate", True)  # semantic fixes can be auto-gated; trust primitives escalate
-            wf = nw.get("action", "novel")
+        v2, out2, built2 = A.verify(DVD, A.emit(p, name, target, "../src/unstoppable/" + target + ".sol"))
+        rb2 = classify(v2, out2)
+        print(f"  stage2 SUMMARIZED -> {rb2}  (verify={v2})", flush=True)
+        if rb2 == "CAUGHT":
+            outcome, sound, wf = handle_caught(DVD, out2, p, built2)
         else:
-            outcome, sound, wf = f"verdict={verdict}", verdict == "PROVED", "n/a"
+            outcome, sound, wf = f"verdict={v2}", v2 == "PROVED", "Lean-gated summary"
         print(f"  gated workflow -> {wf}\n  outcome -> {outcome}  (sound={sound})", flush=True)
-        rec = log_case(rb, signal=out, workflow=wf, gate_outcome=outcome, sound=sound)
+        rec = log_case(f"{rb1}->summary->{rb2}", signal=out2,
+                       workflow="distrust-raw-nonlinear -> Lean-gated summary -> " + wf,
+                       gate_outcome=outcome, sound=sound)
         print(f"  case logged -> {CASE_LIB}  (seed for the learning layer)")
         return rec
     finally:
@@ -107,4 +120,4 @@ def dispatch_unstoppable():
 
 
 if __name__ == "__main__":
-    dispatch_unstoppable()
+    dispatch_auto()
