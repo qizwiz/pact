@@ -1,0 +1,26 @@
+name: pact-ci
+# Me-drivable cloud compute: GitHub Actions on Ubuntu (glibc) runs Foundry + halmos cleanly,
+# sidestepping the codespace sshd->Alpine/musl trap entirely. Driven via `gh workflow run pact-ci`
+# and read via `gh run view --log`. This is the cloud path that actually works for forge/halmos.
+on:
+  workflow_dispatch: {}
+
+jobs:
+  toolchain:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Foundry (glibc, works)
+        uses: foundry-rs/foundry-toolchain@v1
+      - name: forge version
+        run: forge --version
+      - name: Python + halmos
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: install + check halmos
+        run: |
+          python -m pip install --quiet halmos
+          halmos --version
+      - name: PROOF — cloud Foundry+halmos compute is live and driveable
+        run: echo "PACT_CI_OK forge+halmos run on glibc Actions runner"
