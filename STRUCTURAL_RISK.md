@@ -1,6 +1,6 @@
 # Structural Risk Report
 
-**Date:** 2026-06-04  
+**Date:** 2026-06-05  
 **Cut vertices in call graph:** 363  
 **Top-N analysed:** 20  
 **Violated:** 5  **Clean:** 15
@@ -103,20 +103,20 @@
 
 ## Trend
 
-**Compared to 2026-06-03:** No change — violation set and scores are identical for the fourth consecutive day.
+**Compared to 2026-06-04:** No change — violation set and scores are identical for the fifth consecutive day.
 
 - **New violations:** none
 - **Resolved violations:** none
 - **Score deltas:** all 0.0000
 
-The 5 persistent violations (`extract_project_intent`, `_extract_git_log`, `heal_project`, `_collect_cut_vertices`, `run_pipeline`) remain unaddressed. All are `content_index_unguarded` pattern — unguarded sequence indexing at call-graph cut vertices. These have been stable across 2026-06-01, 2026-06-02, 2026-06-03, and 2026-06-04. These represent the highest-priority targets for the next heal cycle.
+The 5 persistent violations (`extract_project_intent`, `_extract_git_log`, `heal_project`, `_collect_cut_vertices`, `run_pipeline`) remain unaddressed. All are `content_index_unguarded` pattern — unguarded sequence indexing at call-graph cut vertices. These have been stable across 2026-06-01, 2026-06-02, 2026-06-03, 2026-06-04, and 2026-06-05. These represent the highest-priority targets for the next heal cycle.
 
 ---
 
 ## Full JSON Report
 
 <details>
-<summary>structural_risk_report output (2026-06-04)</summary>
+<summary>structural_risk_report output (2026-06-05)</summary>
 
 ```json
 {
@@ -143,16 +143,16 @@ The 5 persistent violations (`extract_project_intent`, `_extract_git_log`, `heal
       "unguarded_sites": [],
       "guarded_sites": [
         {
-          "line": 153,
-          "via": "_dynamic_queue→",
-          "arg": "line",
+          "line": 194,
+          "via": "_load_state→",
+          "arg": "STATE_FILE.read_text()",
           "guarded": true,
           "pattern": "json_loads_unguarded"
         },
         {
-          "line": 194,
-          "via": "_load_state→",
-          "arg": "STATE_FILE.read_text()",
+          "line": 153,
+          "via": "_dynamic_queue→",
+          "arg": "line",
           "guarded": true,
           "pattern": "json_loads_unguarded"
         }
@@ -571,14 +571,7 @@ The 5 persistent violations (`extract_project_intent`, `_extract_git_log`, `heal
       "betweenness": 0.0138,
       "risk_score": 0.0138,
       "missing_obligations": [],
-      "discharged_obligations": [
-        {
-          "line": 108,
-          "operation": "vals[0]",
-          "wp": "len(vals) > 0",
-          "evidence": "`0 in vals and 1 in vals` and-guard L107"
-        }
-      ],
+      "discharged_obligations": [],
       "unguarded_sites": [],
       "guarded_sites": [],
       "z3_sat": "not_run",
