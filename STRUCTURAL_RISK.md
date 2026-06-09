@@ -1,6 +1,6 @@
 # Structural Risk Report
 
-**Date:** 2026-06-08  
+**Date:** 2026-06-09  
 **Cut vertices in call graph:** 363  
 **Top-N analysed:** 20  
 **Violated:** 5  **Clean:** 15
@@ -103,20 +103,20 @@
 
 ## Trend
 
-**Compared to 2026-06-07:** No change — violation set and scores are identical for the eighth consecutive day.
+**Compared to 2026-06-08:** No change — violation set and scores are identical for the ninth consecutive day.
 
 - **New violations:** none
 - **Resolved violations:** none
 - **Score deltas:** all 0.0000
 
-The 5 persistent violations (`extract_project_intent`, `_extract_git_log`, `heal_project`, `_collect_cut_vertices`, `run_pipeline`) remain unaddressed. All are `content_index_unguarded` pattern — unguarded sequence indexing at call-graph cut vertices. These have been stable across 2026-06-01 through 2026-06-08 (eight consecutive days). These represent the highest-priority targets for the next heal cycle.
+The 5 persistent violations (`extract_project_intent`, `_extract_git_log`, `heal_project`, `_collect_cut_vertices`, `run_pipeline`) remain unaddressed. All are `content_index_unguarded` pattern — unguarded sequence indexing at call-graph cut vertices. These have been stable across 2026-06-01 through 2026-06-09 (nine consecutive days). These represent the highest-priority targets for the next heal cycle.
 
 ---
 
 ## Full JSON Report
 
 <details>
-<summary>structural_risk_report output (2026-06-08)</summary>
+<summary>structural_risk_report output (2026-06-09)</summary>
 
 ```json
 {
