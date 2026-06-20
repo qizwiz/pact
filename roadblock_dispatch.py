@@ -22,10 +22,10 @@ import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
-import adaptive_harness as A
+from plumbline import adaptive_harness as A
 import summarize
 import invariant_agent as agent
-import prompt_improve as pi
+from plumbline import prompt_improve as pi
 
 CASE_LIB = os.path.join(HERE, "states", "roadblock_cases.jsonl")
 

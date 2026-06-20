@@ -34,7 +34,7 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import invariant_agent as agent
-import prompt_improve as pi
+from plumbline import prompt_improve as pi
 from halmos_check import run_halmos
 
 _TOKEN_TYPE = re.compile(r"IERC20|ERC20|Token|token")

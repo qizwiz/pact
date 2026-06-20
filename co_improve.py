@@ -25,7 +25,7 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import invariant_agent as agent
-import prompt_improve as pi
+from plumbline import prompt_improve as pi
 import meta_template as mt
 import hybrid_audit as H
 import audit

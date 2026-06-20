@@ -121,7 +121,7 @@ CONTRACT ({name}):
 """
 
 
-import prompt_improve as pi  # file-backed, self-improving body prompt
+from plumbline import prompt_improve as pi  # file-backed, self-improving body prompt
 
 
 def fill_body(name: str, src: str, assets: list[str], feedback: str = "") -> tuple[str, str]:

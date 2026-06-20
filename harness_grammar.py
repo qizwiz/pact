@@ -41,7 +41,7 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import invariant_agent as agent  # _setup_project, _build, PROJECT
-import prompt_improve as pi  # file-backed, improve-decorated prompts
+from plumbline import prompt_improve as pi  # file-backed, improve-decorated prompts
 from halmos_check import run_halmos
 
 

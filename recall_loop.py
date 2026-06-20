@@ -38,7 +38,7 @@ sys.path.insert(0, HERE)
 from sol_mutate import generate_mutants  # noqa: E402
 from solidity_intent import propose_invariants, render_tests  # noqa: E402
 import invariant_agent as agent  # noqa: E402  (_setup_project, _build, _ask, _repair_prompt, PROJECT)
-import prompt_improve as pi  # noqa: E402
+from plumbline import prompt_improve as pi  # noqa: E402
 from halmos_check import run_halmos  # noqa: E402
 
 THRESHOLD = getattr(pi, "THRESHOLD", 0.7)

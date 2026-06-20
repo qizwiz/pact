@@ -47,7 +47,7 @@ from pact.intent import _invariant_skeptic  # noqa: E402  pact's real adversaria
 from pact.llm import resolve_key, resolve_model  # noqa: E402
 
 import invariant_agent as agent  # noqa: E402  reuse _ask, _setup_project, _build, PROJECT
-import prompt_improve as pi  # noqa: E402  the improve decorator (file-backed prompts)
+from plumbline import prompt_improve as pi  # noqa: E402  the improve decorator (file-backed prompts)
 from halmos_check import run_halmos  # noqa: E402
 
 
