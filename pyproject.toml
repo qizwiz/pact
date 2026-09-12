@@ -51,5 +51,12 @@ oracle_cmd = "cd /Users/jonathanhill/src && /Users/jonathanhill/src/pact-standal
 [tool.black]
 target-version = ["py312"]
 
+[tool.ruff.lint]
+# Explicit rule selection so CI lint is deterministic across ruff releases —
+# ruff's unconfigured defaults have broadened over time, and the repo had no
+# ruff config. This is ruff's own documented default: pyflakes (F) plus the
+# pycodestyle logical/syntax subset (E4/E7/E9).
+select = ["E4", "E7", "E9", "F"]
+
 [tool.pytest.ini_options]
 # inherited from pytest.ini
