@@ -20,8 +20,8 @@ from .reduce import (
     cut_vertex_files,
 )
 from .refactor import suggest_refactors
-from .specgen import spec_gen
 from .speccomplete import spec_complete
+from .specgen import spec_gen
 from .visualize import (
     format_pr_comment,
     render_mermaid,
@@ -139,8 +139,8 @@ def _spec_cmd(argv) -> int:
 
 def _fix_cmd(argv) -> int:
     """Entry point for `pact fix [DIR] [--apply] [--mode MODE] [--write-tests]`."""
-    from .fixer import FIX_MODES, apply_fixes, diff_text
     from .checker import check_codebase
+    from .fixer import FIX_MODES, apply_fixes, diff_text
 
     p = argparse.ArgumentParser(
         prog="pact fix",
@@ -758,6 +758,10 @@ def main(argv=None) -> int:
         return _spec_cmd(argv[1:])
     if argv and argv[0] == "fix":
         return _fix_cmd(argv[1:])
+    if argv and argv[0] == "rewrite":
+        from .vrefactor import main as _rewrite_main
+
+        return _rewrite_main(argv[1:])
     if argv and argv[0] == "preflight":
         from .preflight import main as _preflight_main
 
