@@ -7,7 +7,7 @@
 
 **Structural verification for codebases AI builds.**
 
-Every finding pact reports comes with a **witness** — a concrete input, found by Z3, that triggers it — not a heuristic guess. Every fix pact applies is gated by a **sound oracle** before it lands: Z3, your test suite, a compiler, or a proof-assistant kernel. *Structure proposes; the oracle disposes.* That gate is the product; the checks are just the generator feeding it.
+Every finding pact reports comes with a **witness** — a concrete input, found by Z3, that triggers it — not a heuristic guess. Every fix pact applies is gated by a **verification oracle** before it lands — Z3, your test suite, a compiler, or a proof-assistant kernel — and is kept only if that oracle passes. *Structure proposes; the oracle disposes.* The guarantee is exactly as strong as the oracle you point it at: a test suite is necessary but not sufficient; a compiler or the Lean kernel certifies elaboration. That gate is the product; the checks are just the generator feeding it.
 
 ---
 
@@ -50,7 +50,7 @@ pact .
 
 ## Track record
 
-**12 PRs merged upstream** to major open-source projects. Across a sweep of 1,254 repositories, the findings that mattered were concrete contract violations — the kind pattern linters aren't built to catch:
+**1 PR merged upstream so far** — [`Arize-ai/phoenix#13237`](https://github.com/Arize-ai/phoenix/pull/13237) — with 5 more filed and open (tracked in `docs/engagements.md`). Across a sweep of 1,254 repositories, the findings that mattered were concrete contract violations — the kind pattern linters aren't built to catch:
 
 | Repository | Stars | Representative finding |
 |------------|-------|------------------------|
@@ -143,14 +143,14 @@ pact pipeline intent.json -v
 
 ## Verified refactoring (`pact rewrite`)
 
-The dual of `pact heal`: where `heal` *changes* behaviour to fix a bug, `pact rewrite` **preserves** behaviour while shrinking code. tree-sitter proposes a structural rewrite; a **pluggable oracle disposes** — the rewrite is kept only if the oracle still passes *and* the file gets smaller, else it is reverted. So it can only ever emit oracle-passing, smaller code.
+The dual of `pact heal`: where `heal` *changes* behaviour to fix a bug, `pact rewrite` shrinks code while **keeping only rewrites its oracle accepts**. tree-sitter proposes a structural rewrite; a **pluggable oracle disposes** — the rewrite is kept only if the oracle still passes *and* the file gets smaller, else it is reverted. So it can only ever emit oracle-passing, smaller code (behaviour-preserving to the strength of the oracle you choose).
 
 ```bash
 pact rewrite path/to/file.py --oracle 'pytest -q'       # gate on your test suite
 pact rewrite Foo.lean --oracle 'lake env lean {file}'   # gate on the Lean kernel
 ```
 
-The oracle is pluggable on purpose, and the strongest oracle is a proof-assistant kernel. Point `--oracle` at a compiler or `lake env lean {file}` and the same machine refactors a **Lean proof library**, where "still elaborates against the identical statement" is behaviour-preservation *certified by the kernel* — demonstrated on a real proof library (a redundant-tactic drop is accepted; a non-equivalent one is rejected). `{file}` in the oracle command is replaced with the file under test, so per-file oracles work. Grammars install with `pip install "pact-tool[refactor]"`.
+The oracle is pluggable on purpose, and the strongest oracle is a proof-assistant kernel. Point `--oracle` at a compiler or `lake env lean {file}` and the same machine refactors a **Lean proof library**: the kernel certifies the file still **elaborates against the identical statement** — for a proof, that means the theorem still holds (a compiler oracle certifies type-checking, not full behaviour). Demonstrated on a real proof library (a redundant-tactic drop is accepted; a non-equivalent one is rejected). `{file}` is replaced with the file under test, so per-file oracles work — run `pact rewrite` from your build/workspace root so a per-file oracle like `lake env lean {file}` resolves against the right toolchain. Grammars install with `pip install "pact-tool[refactor]"`.
 
 ---
 
