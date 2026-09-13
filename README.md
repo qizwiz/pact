@@ -7,6 +7,8 @@
 
 **Structural verification for codebases AI builds.**
 
+Every finding pact reports comes with a **witness** — a concrete input, found by Z3, that triggers it — not a heuristic guess. Every fix pact applies is gated by a **verification oracle** before it lands — Z3, your test suite, a compiler, or a proof-assistant kernel — and is kept only if that oracle passes. *Structure proposes; the oracle disposes.* The guarantee is exactly as strong as the oracle you point it at: a test suite is necessary but not sufficient; a compiler or the Lean kernel certifies elaboration. That gate is the product; the checks are just the generator feeding it.
+
 ---
 
 ## The problem every engineering leader has right now
@@ -48,17 +50,16 @@ pact .
 
 ## Track record
 
-pact has found violations in **14,148 unique sites across 1,254 repositories**. 12 PRs merged upstream to major open-source projects.
+**1 PR merged upstream so far** — [`Arize-ai/phoenix#13237`](https://github.com/Arize-ai/phoenix/pull/13237) — with 5 more filed and open (tracked in `docs/engagements.md`). Across a sweep of 1,254 repositories, the findings that mattered were concrete contract violations — the kind pattern linters aren't built to catch:
 
-| Repository | Stars | Violations found |
-|------------|-------|-----------------|
-| langchain-ai/langchain | 136k | 438 — including 256 unawaited async calls across every LLM provider |
-| hiyouga/LlamaFactory | 71k | 18 — response array access without length guard, silent training failures |
-| home-assistant/core | 87k | 34,701 across 14,096 files |
-| microsoft/generative-ai-for-beginners | 64k | `choices[0]` without None check in tutorial code |
-| future-agi/future-agi | internal | 755 — 410 concurrent-write races across Django models |
+| Repository | Stars | Representative finding |
+|------------|-------|------------------------|
+| langchain-ai/langchain | 136k | 256 unawaited async calls across LLM providers — silent no-ops |
+| hiyouga/LlamaFactory | 71k | response-array access without a length guard — silent training failures |
+| microsoft/generative-ai-for-beginners | 64k | `choices[0]` without a None check in tutorial code |
+| future-agi/future-agi | internal | 410 concurrent-write races across Django models |
 
-None of these were found by the linters already in those repositories.
+Raw violation counts vary wildly by codebase and aren't the signal — a merged upstream fix is. These are structural/contract issues, not style nits, which is why the pattern linters those repos already run don't flag them.
 
 ---
 
@@ -137,6 +138,19 @@ pact pipeline intent.json -v
 **Hypothesis stress-testing** seeds adversarial search from the Z3 counterexample, finding the full shape of the failure, not just one instance.
 
 **Heal** generates a candidate patch using an LLM, then *verifies the patch with Z3* before accepting it. LLM proposes; Z3 decides. This is counterexample-guided synthesis (CEGIS) — the same technique used in formal program synthesis research, applied to your codebase.
+
+---
+
+## Verified refactoring (`pact rewrite`)
+
+The dual of `pact heal`: where `heal` *changes* behaviour to fix a bug, `pact rewrite` shrinks code while **keeping only rewrites its oracle accepts**. tree-sitter proposes a structural rewrite; a **pluggable oracle disposes** — the rewrite is kept only if the oracle still passes *and* the file gets smaller, else it is reverted. So it can only ever emit oracle-passing, smaller code (behaviour-preserving to the strength of the oracle you choose).
+
+```bash
+pact rewrite path/to/file.py --oracle 'pytest -q'       # gate on your test suite
+pact rewrite Foo.lean --oracle 'lake env lean {file}'   # gate on the Lean kernel
+```
+
+The oracle is pluggable on purpose, and the strongest oracle is a proof-assistant kernel. Point `--oracle` at a compiler or `lake env lean {file}` and the same machine refactors a **Lean proof library**: the kernel certifies the file still **elaborates against the identical statement** — for a proof, that means the theorem still holds (a compiler oracle certifies type-checking, not full behaviour). Demonstrated on a real proof library (a redundant-tactic drop is accepted; a non-equivalent one is rejected). `{file}` is replaced with the file under test, so per-file oracles work — run `pact rewrite` from your build/workspace root so a per-file oracle like `lake env lean {file}` resolves against the right toolchain. Grammars install with `pip install "pact-tool[refactor]"`.
 
 ---
 
