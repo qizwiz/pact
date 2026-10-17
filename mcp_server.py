@@ -1038,9 +1038,19 @@ def _tool_pact_loop(params: dict) -> dict:
     severity = params.get("severity", ["critical", "high"])
     verbose = params.get("verbose", False)
 
-    argv = [target, "--max-iters", str(max_iters)]
-    if test_cmd:
-        argv += ["--test-cmd", test_cmd]
+    if not test_cmd:
+        # The schema makes test_cmd optional but pact loop requires an oracle.
+        from .heal import _autodetect_test_cmd
+
+        test_cmd = _autodetect_test_cmd(Path(target)) or ""
+        if not test_cmd:
+            return {
+                "exit_code": 2,
+                "output": "error: no test_cmd given and no test runner detected",
+                "target": target,
+            }
+
+    argv = [target, "--max-iters", str(max_iters), "--test-cmd", test_cmd]
     for s in severity:
         argv += ["--severity", s]
     if verbose:
@@ -1067,7 +1077,7 @@ def _tool_pact_loop(params: dict) -> dict:
     sys.stdout = _Tee()
     try:
         with _sampling_backend():
-            exit_code = loop_main(argv)
+            exit_code = loop_main(argv) or 0
     except SystemExit as exc:
         exit_code = exc.code or 0
     finally:
