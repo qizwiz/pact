@@ -521,29 +521,64 @@ def _fix_mutable_default_arg(
         skipped.extend(violations)
         return list(lines), applied, skipped
 
-    # Build lookup: (call_str, default_line) → (func_node, param_name, default_node)
-    func_map: dict[tuple[str, int], tuple[ast.AST, str, ast.expr]] = {}
+    def _is_mutable(node: ast.expr) -> bool:
+        if isinstance(node, (ast.List, ast.Dict, ast.Set)):
+            return True
+        return (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id in {"list", "dict", "set", "List", "Dict", "Set"}
+        )
+
+    # Build lookup: (call_str, default_line) → [(func_node, param, default_node)]
+    # for mutable defaults only; several may share a line.
+    func_map: dict[tuple[str, int], list[tuple[ast.AST, str, ast.expr]]] = {}
     for node in ast.walk(tree):
         if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             continue
         call_str = f"def {node.name}"
-        all_args = node.args.args + node.args.posonlyargs
+        # Positional defaults align with the tail of posonlyargs + args.
+        all_args = node.args.posonlyargs + node.args.args
         n_defaults = len(node.args.defaults)
         n_args = len(all_args)
-        for i, default in enumerate(node.args.defaults):
-            param = all_args[n_args - n_defaults + i].arg
-            func_map[(call_str, default.lineno)] = (node, param, default)
-        for kwarg, kw_default in zip(node.args.kwonlyargs, node.args.kw_defaults or []):
-            if kw_default is not None:
-                func_map[(call_str, kw_default.lineno)] = (node, kwarg.arg, kw_default)
+        pairs = [
+            (all_args[n_args - n_defaults + i].arg, d)
+            for i, d in enumerate(node.args.defaults)
+        ] + [
+            (kwarg.arg, kw_default)
+            for kwarg, kw_default in zip(
+                node.args.kwonlyargs, node.args.kw_defaults or []
+            )
+            if kw_default is not None
+        ]
+        for param, default in pairs:
+            if _is_mutable(default):
+                func_map.setdefault((call_str, default.lineno), []).append(
+                    (node, param, default)
+                )
+
+    # One evidence per flagged line is enough to rewrite every mutable default
+    # on it (rewriting an unmutated one is behaviour-preserving). Work
+    # right-to-left within a line so column offsets stay valid.
+    by_key: dict[tuple[str, int], list[FailureEvidence]] = {}
+    for ev in violations:
+        by_key.setdefault((ev.call, ev.line), []).append(ev)
+
+    targets: list[tuple[list[FailureEvidence], tuple[ast.AST, str, ast.expr]]] = []
+    for key, evs in by_key.items():
+        if key not in func_map:
+            skipped.extend(evs)
+            continue
+        entries = func_map[key]
+        for n, entry in enumerate(entries):
+            targets.append((evs if n == 0 else [], entry))
 
     result = list(lines)
-    for ev in sorted(violations, key=lambda e: e.line, reverse=True):
-        key = (ev.call, ev.line)
-        if key not in func_map:
-            skipped.append(ev)
-            continue
-        func_node, param_name, default_node = func_map[key]
+    for evs, (func_node, param_name, default_node) in sorted(
+        targets,
+        key=lambda t: (t[1][2].lineno, t[1][2].col_offset),
+        reverse=True,
+    ):
 
         # Get the original mutable default text via source segment
         try:
@@ -551,17 +586,17 @@ def _fix_mutable_default_arg(
         except Exception:
             default_text = None
         if not default_text:
-            skipped.append(ev)
+            skipped.extend(evs)
             continue
 
         # Step 1: Replace the default value with None using exact column offsets.
-        # ev.line is 1-indexed; default may be on the same line as `def`.
-        def_line_idx = ev.line - 1
+        # lineno is 1-indexed; default may be on the same line as `def`.
+        def_line_idx = default_node.lineno - 1
         raw = result[def_line_idx]
         col_s = default_node.col_offset
         col_e = default_node.end_col_offset
         if len(raw.rstrip("\n")) < col_e:
-            skipped.append(ev)
+            skipped.extend(evs)
             continue
         result[def_line_idx] = raw[:col_s] + "None" + raw[col_e:]
 
@@ -588,7 +623,7 @@ def _fix_mutable_default_arg(
             f"{body_indent}    {param_name} = {default_text}\n",
         ]
         result[insert_idx:insert_idx] = none_check
-        applied.append(ev)
+        applied.extend(evs)
 
     return result, applied, skipped
 
