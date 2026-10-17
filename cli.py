@@ -1237,6 +1237,10 @@ def main(argv=None) -> int:
                     f"✓  pact --verify: SAFE — Z3 proved llm_response_unguarded absent "
                     f"({proof.scopes_analyzed} scope(s) analyzed)"
                 )
+            elif not proof.violations:
+                print(f"?  pact --verify: {proof}")
+                for f in proof.skipped_files:
+                    print(f"  not analyzed: {f}")
             else:
                 print(
                     f"⚡ pact --verify: UNSAFE — Z3 witness confirms "

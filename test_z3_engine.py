@@ -488,3 +488,41 @@ def test_stream_llm_call_detected():
     assert (
         not result.proved_safe
     ), "stream call with unguarded choices[0] must be unsafe"
+
+
+def test_verify_file_not_safe_when_file_cannot_be_parsed():
+    """A file Z3 never saw must not be certified safe."""
+    path = _write_file("""
+        def f(client):
+            response = client.create(model="x")
+            return response.choices[0].message
+        def g(:
+    """)
+    with pytest.warns(RuntimeWarning):
+        result = verify_file(path)
+    assert not result.proved_safe
+    assert result.skipped_files == [path]
+
+
+def test_llm_result_unknown_is_not_proved_safe(monkeypatch):
+    """Z3 UNKNOWN is the absence of a proof, not a proof of safety."""
+    import z3
+
+    engine = LLMResponseEngine()
+    monkeypatch.setattr(engine._fp, "query", lambda *a, **k: z3.unknown)
+    with pytest.warns(RuntimeWarning):
+        result = engine.result()
+    assert not result.proved_safe
+
+
+def test_verify_file_guard_on_similarly_named_variable_is_not_a_guard():
+    """`if response_ok:` says nothing about `response`."""
+    path = _write_file("""
+        def bad(client, response_ok):
+            response = client.completions.create(model="gpt-4o", messages=[])
+            if response_ok:
+                pass
+            return response.choices[0].message.content
+    """)
+    result = verify_file(path)
+    assert not result.proved_safe
