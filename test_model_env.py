@@ -61,3 +61,43 @@ def test_explicit_model_flag_still_wins(monkeypatch, module, worker, argv):
     with pytest.raises(_Called):
         mod.main(argv + ["--model", "flag-model"])
     assert seen["model"] == "flag-model"
+
+
+def test_spec_complete_honours_pact_llm_model(monkeypatch, tmp_path):
+    from . import cli, llm
+
+    seen: dict = {}
+
+    class _Client:
+        class messages:  # noqa: N801 — mirrors anthropic client shape
+            @staticmethod
+            def create(**kw):
+                seen["model"] = kw["model"]
+                raise _Called
+
+    monkeypatch.setattr(llm, "make_client", lambda key=None: _Client)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
+    monkeypatch.setenv("PACT_LLM_MODEL", "env-model")
+    src = tmp_path / "m.py"
+    src.write_text("x = 1\n")
+    cli.main(["spec", "complete", str(src)])
+    assert seen["model"] == "env-model"
+
+
+def test_intent_trigger_honours_pact_llm_model(monkeypatch, tmp_path):
+    from . import cli, intent
+
+    seen: dict = {}
+
+    def fake_extract(path, model=None, api_key=None, **kw):
+        seen["model"] = model
+        raise _Called
+
+    monkeypatch.setattr(intent, "extract_file_intent", fake_extract)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
+    monkeypatch.setenv("PACT_LLM_MODEL", "env-model")
+    (tmp_path / "a.py").write_text(
+        "def a():\n    b()\n\ndef b():\n    c()\n\ndef c():\n    pass\n"
+    )
+    cli.main([str(tmp_path), "--reduce", "--intent-trigger"])
+    assert seen.get("model") == "env-model", seen

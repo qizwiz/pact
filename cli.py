@@ -98,9 +98,9 @@ def _spec_cmd(argv) -> int:
     )
     cmp_p.add_argument(
         "--model",
-        default="claude-haiku-4-5-20251001",
+        default=None,
         metavar="MODEL",
-        help="Claude model to use (default: claude-haiku-4-5-20251001)",
+        help="Claude model to use (default: $PACT_LLM_MODEL or pact's default)",
     )
     cmp_p.add_argument(
         "--api-key",
@@ -375,7 +375,7 @@ def _show_cut_vertex_contracts(
     call_sites: list,
     root: Path,
     intent_trigger: bool = False,
-    model: str = "claude-haiku-4-5-20251001",
+    model: str | None = None,
     api_key: str | None = None,
 ) -> None:
     """Print behavioral contracts for cut vertices, sourced from intent JSON if present.
@@ -464,8 +464,10 @@ def _show_cut_vertex_contracts(
                     try:
                         from .intent import extract_file_intent
 
+                        from .llm import resolve_model
+
                         mi = extract_file_intent(
-                            Path(file_path), model=model, api_key=key
+                            Path(file_path), model=resolve_model(model), api_key=key
                         )
                         extracted = getattr(mi.understanding, "behavioral_contract", "")
                         if extracted:
@@ -904,9 +906,9 @@ def main(argv=None) -> int:
     )
     p.add_argument(
         "--model",
-        default="claude-haiku-4-5-20251001",
+        default=None,
         metavar="MODEL",
-        help="Claude model for --intent-trigger (default: claude-haiku-4-5-20251001)",
+        help="Claude model for --intent-trigger (default: $PACT_LLM_MODEL or pact's default)",
     )
     p.add_argument(
         "--fitness",
