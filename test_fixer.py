@@ -1455,3 +1455,75 @@ def test_eager_any_generator_skipped(tmp_path):
     result = fix_file(str(f), [ev])
     assert not result.changed
     assert len(result.skipped) == 1
+
+
+# ---------------------------------------------------------------------------
+# Several fixes in one file: later fixers must see shifted line numbers
+# ---------------------------------------------------------------------------
+
+
+class TestMultiFixLineShift:
+    def test_bare_excepts_after_inserted_guard_are_fixed(self, tmp_path):
+        import textwrap
+
+        src = textwrap.dedent("""\
+            import requests
+
+
+            def ask(client, url):
+                response = client.chat.completions.create(model="x", messages=[])
+                text = response.choices[0].message.content
+                try:
+                    r = requests.get(url, timeout=5)
+                except:
+                    pass
+                return r
+
+
+            def other():
+                try:
+                    x = 1
+                except:
+                    handle()
+            """)
+        p = tmp_path / "app.py"
+        p.write_text(src)
+        evs = [
+            FailureEvidence(
+                "llm_response_unguarded", str(p), 6, "response.choices[0]", "m"
+            ),
+            FailureEvidence("bare_except", str(p), 9, "except:", "m"),
+            FailureEvidence("bare_except", str(p), 17, "except:", "m"),
+        ]
+        r = fix_file(p, evs)
+        ast.parse(r.patched)
+        assert "except:" not in r.patched
+        assert len(r.applied) == 3, r.skipped
+        # reported lines stay in original-file coordinates
+        assert sorted(e.line for e in r.applied) == [6, 9, 17]
+
+    def test_llm_guard_then_mutable_default_parses(self, tmp_path):
+        import textwrap
+
+        src = textwrap.dedent("""\
+            def ask(client):
+                response = client.chat.completions.create(model="x", messages=[])
+                text = response.choices[0].message.content
+                normalized_text_value = text.strip().lower().replace("a", "b")
+                return normalized_text_value
+            def collect(value, bucket=[]):
+                bucket.append(value)
+                return bucket
+            """)
+        p = tmp_path / "app.py"
+        p.write_text(src)
+        evs = [
+            FailureEvidence(
+                "llm_response_unguarded", str(p), 3, "response.choices[0]", "m"
+            ),
+            FailureEvidence("mutable_default_arg", str(p), 6, "def collect", "m"),
+        ]
+        r = fix_file(p, evs)
+        ast.parse(r.patched)
+        assert "def collect(value, bucket=None):" in r.patched
+        assert "normalized_text_value = text.strip()" in r.patched
