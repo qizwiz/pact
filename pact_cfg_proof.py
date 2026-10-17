@@ -148,6 +148,8 @@ def _fill_block(
 
         if isinstance(stmt, _ast.If):
             test = stmt.test
+            # The condition is evaluated in the current block, before branching.
+            current.stmts.append(_ast.Expr(value=test))
 
             if _is_none_check(test, var) and _body_exits(stmt.body):
                 # `if VAR is None: continue/return/raise`
@@ -166,9 +168,9 @@ def _fill_block(
                 if not guard_bb.successors:
                     guard_bb.successors.append((exit_id, None))
 
-                # False branch: continue filling from here
+                # False branch: the else clause (if any) runs, then the rest
                 current = fall_bb
-                remaining = stmts[i + 1 :]
+                remaining = list(stmt.orelse) + stmts[i + 1 :]
                 return _fill_block(cfg, fall_bb, remaining, exit_id, var)
 
             else:
