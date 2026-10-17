@@ -387,23 +387,35 @@ def _interproc_z3(all_facts: list[FuncFacts]) -> dict[str, list[str]]:
     #   1. Explicit cross-file import → resolve to that specific file's function
     #   2. Same-file definition (no import) → resolve to caller's own file
     #   3. Neither → conservative fallback to all same-named candidates
-    all_fids_set = set(func_ids)
+    # Look up by (file, name), not by "stem::name": two files may share a stem.
+    fid_by_file_name = {(f.file, f.func_name): f.func_id for f in all_facts}
+    files_by_stem: dict[str, set[str]] = {}
+    for f in all_facts:
+        files_by_stem.setdefault(Path(f.file).stem, set()).add(f.file)
 
     def _resolve(f: FuncFacts, names: list[str]) -> list[str]:
         resolved = []
         imports = file_import_maps.get(f.file, {})
-        caller_stem = Path(f.file).stem
         for callee_name in names:
-            # Priority 1: explicit import from another codebase file
+            # Priority 1: explicit import from another codebase file. Prefer a
+            # same-directory file when several share the stem (from .x import).
             source_stem = imports.get(callee_name)
             if source_stem:
-                qualified = f"{source_stem}::{callee_name}"
-                if qualified in all_fids_set:
-                    resolved.append(qualified)
+                src_files = files_by_stem.get(source_stem, set())
+                sibling = str(Path(f.file).with_name(source_stem + ".py"))
+                if sibling in src_files:
+                    src_files = {sibling}
+                cands = [
+                    fid_by_file_name[(fl, callee_name)]
+                    for fl in sorted(src_files)
+                    if (fl, callee_name) in fid_by_file_name
+                ]
+                if cands:
+                    resolved.extend(cands)
                     continue
             # Priority 2: callee defined in the same file (no import needed)
-            same_file_fid = f"{caller_stem}::{callee_name}"
-            if same_file_fid in all_fids_set:
+            same_file_fid = fid_by_file_name.get((f.file, callee_name))
+            if same_file_fid is not None:
                 resolved.append(same_file_fid)
                 continue
             # Priority 3: conservative — all candidates (may be external or unknown)
@@ -603,6 +615,20 @@ def analyze_codebase(root: Path, verbose: bool = False) -> list[InterProcViolati
                 print(
                     f"  {fpath.name}: {len(direct)} direct violations across {len(facts)} funcs"
                 )
+
+    # func_id is "stem::name". When several files share a stem (two utils.py,
+    # every __init__.py) qualify their ids with the root-relative path so
+    # their functions stay distinct nodes.
+    stem_files: dict[str, set[str]] = {}
+    for f in all_facts:
+        stem_files.setdefault(Path(f.file).stem, set()).add(f.file)
+    for f in all_facts:
+        if len(stem_files[Path(f.file).stem]) > 1:
+            try:
+                rel = Path(f.file).relative_to(root).with_suffix("").as_posix()
+            except ValueError:
+                rel = Path(f.file).with_suffix("").as_posix()
+            f.func_id = f"{rel}::{f.func_name}"
 
     if verbose:
         print(f"\n[interproc] {len(files)} files, {len(all_facts)} functions analyzed")

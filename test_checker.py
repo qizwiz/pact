@@ -5499,3 +5499,29 @@ def test_interproc_unrelated_try_does_not_stop_propagation(tmp_path):
     )
     func_ids = {v.func_id for v in analyze_codebase(tmp_path)}
     assert "a::process" in func_ids, func_ids
+
+
+def test_interproc_same_stem_in_different_packages_not_merged(tmp_path):
+    """a/utils.py and b/utils.py must not collapse into one 'utils::parse'."""
+    from .pact_interproc import analyze_codebase
+
+    (tmp_path / "a").mkdir()
+    (tmp_path / "b").mkdir()
+    (tmp_path / "a" / "utils.py").write_text(
+        "import json\ndef parse(s):\n    return json.loads(s)\n"
+    )
+    (tmp_path / "b" / "utils.py").write_text(
+        "import json\n"
+        "def parse(s):\n"
+        "    try:\n"
+        "        return json.loads(s)\n"
+        "    except ValueError:\n"
+        "        return None\n"
+    )
+    (tmp_path / "b" / "user.py").write_text(
+        "from .utils import parse\ndef use(s):\n    return parse(s)\n"
+    )
+    hits = {(v.func_id, Path(v.file).parent.name) for v in analyze_codebase(tmp_path)}
+    files = {f for _, f in hits}
+    assert any(fid.endswith("::parse") and d == "a" for fid, d in hits), hits
+    assert "b" not in files, hits  # b/utils.parse is guarded; b/user.use is clean
