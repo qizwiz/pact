@@ -179,18 +179,16 @@ class PactEngine:
         )
 
         # Intern tables
-        self._site_id: dict[tuple, int] = {}
         self._field_id: dict[str, int] = {}
         self._model_id: dict[str, int] = {}
         self._site_meta: dict[int, dict] = {}
 
     def _sid(self, file: str, line: int, call: str) -> int:
-        key = (file, line)
-        if key not in self._site_id:
-            n = len(self._site_id)
-            self._site_id[key] = n
-            self._site_meta[n] = {"file": file, "line": line, "call": call}
-        return self._site_id[key]
+        # One ID per call, never per (file, line): two create() calls on the
+        # same line would otherwise pool their kwargs and mask each other.
+        n = len(self._site_meta)
+        self._site_meta[n] = {"file": file, "line": line, "call": call}
+        return n
 
     def _fid(self, name: str) -> int:
         if name not in self._field_id:
@@ -214,6 +212,10 @@ class PactEngine:
 
         for call in calls:
             if not call.is_create_call or not call.model_name:
+                continue
+            if call.has_var_kwargs:
+                # **kwargs spread — the provided field set is unknown, so any
+                # "missing" field would be a guess, not a derived violation.
                 continue
             si = self._sid(call.file, call.line, call.callee_name)
             mi = self._mid(call.model_name)
