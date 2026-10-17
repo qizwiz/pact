@@ -479,6 +479,17 @@ def _build_digraph(
     return G, func_by_name
 
 
+def _project_undirected(G, func_by_name: dict):
+    """Undirected call graph restricted to project functions.
+
+    The raw digraph also holds unresolved callees (json.loads, print) and the
+    __root__ pseudo-caller. Each library callee is a degree-1 leaf, so keeping
+    them makes every function that calls a library an articulation point and
+    inflates betweenness. Structural metrics are computed on project nodes only.
+    """
+    return G.subgraph([n for n in G if n in func_by_name]).to_undirected()
+
+
 def _violations_by_func(violations: list[Violation]) -> dict[str, list[Violation]]:
     by_func: dict[str, list[Violation]] = collections.defaultdict(list)
     for v in violations:
@@ -625,7 +636,7 @@ def compute_blast_radii(
 
     # Betweenness on undirected projection: captures structural chokepoints
     # regardless of call direction.  Normalized so values are in [0, 1].
-    G_undirected = G.to_undirected()
+    G_undirected = _project_undirected(G, func_by_name)
     btw: dict[str, float] = nx.betweenness_centrality(G_undirected, normalized=True)
     # Articulation points: nodes whose removal disconnects the undirected graph.
     # Exact (not approximate) — betweenness can miss them when paths are long.
@@ -707,7 +718,7 @@ def cut_vertex_files(
     G, func_by_name = _build_digraph(functions, call_sites)
     if G is None:
         return {}
-    G_undirected = G.to_undirected()
+    G_undirected = nx.Graph(_project_undirected(G, func_by_name))
 
     # Overlay temporal coupling edges: files that always move together are
     # structurally coupled even when the call graph doesn't show it.

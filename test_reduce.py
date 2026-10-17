@@ -7,6 +7,8 @@ Covers the three structural anti-patterns:
   - Fan-out hubs (out-degree > threshold)
 """
 
+from pathlib import Path
+
 import pytest
 
 from .reduce import (
@@ -1367,3 +1369,51 @@ class TestMetricsCmd:
         # Only 2 pain modules shown even though there are 5
         lines = [ln for ln in out.splitlines() if ln.startswith("   ")]
         assert len(lines) == 2
+
+
+# ---------------------------------------------------------------------------
+# Cut vertices must be computed over project functions only
+# ---------------------------------------------------------------------------
+
+
+class TestCutVerticesProjectOnly:
+    """A library call (json.loads, print) is a leaf in the raw digraph; if it
+    is kept, every function that calls a library becomes an articulation point.
+    """
+
+    def _project(self, tmp_path):
+        (tmp_path / "app.py").write_text(
+            "import json\n\n\n"
+            "def load(s):\n    return json.loads(s)\n\n\n"
+            "def show(x):\n    print(x)\n\n\n"
+            "def main():\n    show(load('1'))\n"
+        )
+        from .extractor import extract_from_codebase
+
+        _, fs, cs = extract_from_codebase(tmp_path)
+        return fs, cs
+
+    def test_cut_vertex_files_ignores_library_leaves(self, tmp_path):
+        pytest.importorskip("networkx")
+        from .reduce import cut_vertex_files
+
+        fs, cs = self._project(tmp_path)
+        got = {Path(k).name: sorted(v) for k, v in cut_vertex_files(fs, cs).items()}
+        # project graph is the path load - main - show: only main is a cut vertex
+        assert got == {"app.py": ["main"]}
+
+    def test_blast_radius_cut_flag_ignores_library_leaves(self, tmp_path):
+        pytest.importorskip("networkx")
+        from .reduce import compute_blast_radii
+
+        fs, cs = self._project(tmp_path)
+        v = Violation(
+            file=str(tmp_path / "app.py"),
+            line=5,
+            call="json.loads",
+            missing=[],
+            context="x",
+        )
+        (r,) = compute_blast_radii(fs, cs, [v])
+        assert r.enclosing_func == "load"
+        assert not r.is_cut_vertex

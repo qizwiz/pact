@@ -1118,7 +1118,9 @@ def _tool_pact_topology(params: dict) -> dict:
         return stem.startswith("test_")
 
     if G is not None:
-        G_u = G.to_undirected()
+        from .reduce import _project_undirected
+
+        G_u = _project_undirected(G, func_by_name)
         btw: dict[str, float] = nx.betweenness_centrality(G_u, normalized=True)
         cv_set: set[str] = set(nx.articulation_points(G_u))
 
