@@ -12,11 +12,12 @@ EDB (extracted from AST):
   subprocess_unchecked(func_id) function calls subprocess.run without checking returncode
   api_key_unchecked(func_id)    function calls _call/Anthropic() without key guard
   calls(caller_id, callee_id)   call graph edge (within the codebase)
+  json_calls(caller_id, callee_id)  call edge not inside a try that catches JSON errors
   is_public(func_id)            function is module-level (not _private) and exported
 
 IDB (derived by Z3):
   tainted_json(F)     :- json_unguarded(F)
-  tainted_json(F)     :- calls(F, G), tainted_json(G), not try_wraps_json(F)
+  tainted_json(F)     :- json_calls(F, G), tainted_json(G)
   violation_json(F)   :- tainted_json(F), is_public(F)
 
   tainted_sub(F)      :- subprocess_unchecked(F)
@@ -48,7 +49,6 @@ from z3 import (
     ForAll,
     Function,
     Implies,
-    Not,
 )
 
 # ---------------------------------------------------------------------------
@@ -104,7 +104,8 @@ def _in_try_except(
     cur = node
     while cur in parents:
         parent = parents[cur]
-        if isinstance(parent, ast.Try):
+        # Only the try *body* is protected — not handlers, else or finally.
+        if isinstance(parent, ast.Try) and any(cur is s for s in parent.body):
             for handler in parent.handlers:
                 if handler.type is None:
                     return True
@@ -177,14 +178,18 @@ class FuncFacts:
     json_unguarded: bool = False
     subprocess_unchecked: bool = False
     api_key_unchecked: bool = False
-    try_wraps_json: bool = False  # function has try/except JSONDecodeError|ValueError
     calls: list[str] = None  # func_ids this function calls (within-codebase)
+    # Subset of calls not inside a try body that catches JSON errors; only
+    # these edges propagate json taint.
+    json_calls: list[str] = None
     is_public: bool = False
     line: int = 0
 
     def __post_init__(self):
         if self.calls is None:
             self.calls = []
+        if self.json_calls is None:
+            self.json_calls = []
 
 
 def extract_facts(file_path: Path) -> list[FuncFacts]:
@@ -263,9 +268,12 @@ def extract_facts(file_path: Path) -> list[FuncFacts]:
                     ):
                         has_check = True
                         break
-            kw_names = {kw.arg for kw in node.keywords}
-            if "check" in kw_names:
-                has_check = True
+            # check=True counts; check=False is an explicit opt-out.
+            for kw in node.keywords:
+                if kw.arg == "check" and not (
+                    isinstance(kw.value, ast.Constant) and not kw.value.value
+                ):
+                    has_check = True
             if not has_check:
                 fact.subprocess_unchecked = True
 
@@ -297,6 +305,10 @@ def extract_facts(file_path: Path) -> list[FuncFacts]:
                                     guarded = True
                 if not guarded:
                     fact.api_key_unchecked = True
+
+        # A call inside a try body that catches JSON errors does not propagate
+        # json taint to this caller: record it in calls but not json_calls.
+        json_guarded = _in_try_except(node, parents, _JSON_GUARD_NAMES)
 
         # Within-codebase calls: record func name calls
         if isinstance(func, ast.Name) and func.id not in (
@@ -332,34 +344,12 @@ def extract_facts(file_path: Path) -> list[FuncFacts]:
             "sum",
         ):
             fact.calls.append(func.id)  # resolved to func_id later
+            if not json_guarded:
+                fact.json_calls.append(func.id)
         elif isinstance(func, ast.Attribute):
             fact.calls.append(func.attr)
-
-    # Mark functions that guard json exceptions — used as NOT guard in Z3 propagation
-    _json_exc = {"JSONDecodeError", "ValueError", "Exception"}
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Try):
-            continue
-        for handler in node.handlers:
-            catches_json = handler.type is None or any(
-                (isinstance(handler.type, ast.Name) and handler.type.id in _json_exc)
-                or (
-                    isinstance(handler.type, ast.Attribute)
-                    and handler.type.attr in _json_exc
-                )
-                or (
-                    isinstance(handler.type, ast.Tuple)
-                    and any(
-                        (isinstance(e, ast.Name) and e.id in _json_exc)
-                        or (isinstance(e, ast.Attribute) and e.attr in _json_exc)
-                        for e in handler.type.elts
-                    )
-                )
-                for _ in [None]
-            )
-            if catches_json:
-                enc = _enclosing_func(node, parents) or "<module>"
-                _get_or_create(enc).try_wraps_json = True
+            if not json_guarded:
+                fact.json_calls.append(func.attr)
 
     return list(facts.values())
 
@@ -398,11 +388,12 @@ def _interproc_z3(all_facts: list[FuncFacts]) -> dict[str, list[str]]:
     #   2. Same-file definition (no import) → resolve to caller's own file
     #   3. Neither → conservative fallback to all same-named candidates
     all_fids_set = set(func_ids)
-    for f in all_facts:
+
+    def _resolve(f: FuncFacts, names: list[str]) -> list[str]:
         resolved = []
         imports = file_import_maps.get(f.file, {})
         caller_stem = Path(f.file).stem
-        for callee_name in f.calls:
+        for callee_name in names:
             # Priority 1: explicit import from another codebase file
             source_stem = imports.get(callee_name)
             if source_stem:
@@ -418,7 +409,11 @@ def _interproc_z3(all_facts: list[FuncFacts]) -> dict[str, list[str]]:
             # Priority 3: conservative — all candidates (may be external or unknown)
             for fid in name_to_fids.get(callee_name, []):
                 resolved.append(fid)
-        f.calls = list(set(resolved))  # deduplicate
+        return list(set(resolved))  # deduplicate
+
+    for f in all_facts:
+        f.calls = _resolve(f, f.calls)
+        f.json_calls = _resolve(f, f.json_calls)
 
     # Enumerate all func_ids
     all_ids = list(set(func_ids))
@@ -452,7 +447,7 @@ def _interproc_z3(all_facts: list[FuncFacts]) -> dict[str, list[str]]:
     json_ung = Function("json_unguarded", FuncSort, BoolSort())
     sub_unc = Function("subprocess_unchecked", FuncSort, BoolSort())
     api_key_unc = Function("api_key_unchecked", FuncSort, BoolSort())
-    try_wraps_json_rel = Function("try_wraps_json", FuncSort, BoolSort())
+    json_calls_rel = Function("json_calls", FuncSort, FuncSort, BoolSort())
     is_pub = Function("is_public", FuncSort, BoolSort())
     calls_rel = Function("calls", FuncSort, FuncSort, BoolSort())
     tainted_json = Function("tainted_json", FuncSort, BoolSort())
@@ -466,7 +461,7 @@ def _interproc_z3(all_facts: list[FuncFacts]) -> dict[str, list[str]]:
         json_ung,
         sub_unc,
         api_key_unc,
-        try_wraps_json_rel,
+        json_calls_rel,
         is_pub,
         calls_rel,
         tainted_json,
@@ -489,27 +484,25 @@ def _interproc_z3(all_facts: list[FuncFacts]) -> dict[str, list[str]]:
             fp.add_rule(sub_unc(idx))
         if f.api_key_unchecked:
             fp.add_rule(api_key_unc(idx))
-        if f.try_wraps_json:
-            fp.add_rule(try_wraps_json_rel(idx))
         if f.is_public:
             fp.add_rule(is_pub(idx))
         for callee_fid in f.calls:
             if callee_fid in id_map:
                 fp.add_rule(calls_rel(idx, bv(id_map[callee_fid])))
+        for callee_fid in f.json_calls:
+            if callee_fid in id_map:
+                fp.add_rule(json_calls_rel(idx, bv(id_map[callee_fid])))
 
     # Add IDB rules using ForAll/Implies (required by Z3 Datalog engine)
     _F, _G = BitVecs("_F _G", _BITS)
 
     # tainted_json(F) :- json_unguarded(F)
     fp.add_rule(ForAll([_F], Implies(json_ung(_F), tainted_json(_F))))
-    # tainted_json(F) :- calls(F, G), tainted_json(G), not try_wraps_json(F)
+    # tainted_json(F) :- json_calls(F, G), tainted_json(G)
     fp.add_rule(
         ForAll(
             [_F, _G],
-            Implies(
-                And(calls_rel(_F, _G), tainted_json(_G), Not(try_wraps_json_rel(_F))),
-                tainted_json(_F),
-            ),
+            Implies(And(json_calls_rel(_F, _G), tainted_json(_G)), tainted_json(_F)),
         )
     )
     # violation_json(F) :- tainted_json(F), is_public(F)
