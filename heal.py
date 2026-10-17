@@ -1461,7 +1461,7 @@ def main(argv=None):
         ),
     )
     p.add_argument("--out", type=Path, help="write heal.json output")
-    p.add_argument("--model", default=_DEFAULT_MODEL, help="Claude model to use")
+    p.add_argument("--model", default=None, help="Claude model to use")
     p.add_argument("--api-key", help="Anthropic API key (or set ANTHROPIC_API_KEY)")
     p.add_argument(
         "--improve",
@@ -1480,6 +1480,10 @@ def main(argv=None):
     p.add_argument("-v", "--verbose", action="store_true")
 
     args = p.parse_args(argv)
+    # --model defaults to None so PACT_LLM_MODEL is honoured.
+    from .llm import resolve_model
+
+    args.model = resolve_model(getattr(args, "model", None))
 
     result = heal_project(
         violations_path=args.violations,

@@ -435,7 +435,7 @@ def main(argv=None):
     )
     p.add_argument("path", type=Path)
     p.add_argument("--out", type=Path)
-    p.add_argument("--model", default=_DEFAULT_MODEL)
+    p.add_argument("--model", default=None)
     p.add_argument("--api-key")
     p.add_argument("-v", "--verbose", action="store_true")
     p.add_argument(
@@ -450,6 +450,10 @@ def main(argv=None):
     )
 
     args = p.parse_args(argv)
+    # --model defaults to None so PACT_LLM_MODEL is honoured.
+    from .llm import resolve_model
+
+    args.model = resolve_model(getattr(args, "model", None))
     find_violations(
         path=args.path.resolve(),
         model=args.model,
