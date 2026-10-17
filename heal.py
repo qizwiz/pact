@@ -20,6 +20,7 @@ Usage:
 from __future__ import annotations
 
 import json
+import shlex
 import tempfile
 import textwrap
 import warnings
@@ -311,7 +312,7 @@ def _autodetect_test_cmd(project_root: Path) -> Optional[str]:
         "conftest.py",
     ]
     if any((root / m).exists() for m in pytest_markers):
-        return f"{_sys.executable} -m pytest -q --tb=short"
+        return f"{shlex.quote(_sys.executable)} -m pytest -q --tb=short"
     if (root / "tox.ini").exists():
         return "tox"
     if (root / "Makefile").exists():
@@ -895,7 +896,11 @@ def _heal_violation(
                     continue
 
                 path.write_text(patched, encoding="utf-8")
-                passed, test_out = _run_oracle(test_cmd, project_root, verbose)
+                try:
+                    passed, test_out = _run_oracle(test_cmd, project_root, verbose)
+                except BaseException:
+                    path.write_text(original_source, encoding="utf-8")
+                    raise
 
                 if passed:
                     result.applied = True
@@ -1157,7 +1162,7 @@ def should_auto_apply(
         return False
 
     try:
-        from checker import check_codebase
+        from .checker import check_codebase
 
         new_count = len(check_codebase(project_root))
         if new_count > baseline_checker_count:
@@ -1290,7 +1295,7 @@ def heal_project(
     _baseline_checker_count: Optional[int] = None
     if (auto or apply) and project_root:
         try:
-            from checker import check_codebase as _check_cb
+            from .checker import check_codebase as _check_cb
 
             _baseline_checker_count = len(_check_cb(project_root))
             if verbose:
@@ -1368,6 +1373,13 @@ def heal_project(
                     if verbose:
                         print(f"    auto-oracle: reverted {path.name}")
                 accepted = False
+
+        # The oracle writes the patch to disk to test it. Without --apply (or
+        # an --auto gate acceptance) this is a dry run: restore the original.
+        if result.applied and not (apply or result.auto_applied):
+            if _original_source is not None:
+                path.write_text(_original_source, encoding="utf-8")
+            result.applied = False
 
         if accepted:
             heal.patches_accepted += 1

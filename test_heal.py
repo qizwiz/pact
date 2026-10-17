@@ -143,3 +143,110 @@ class TestOracleWarning:
         r = HealResult(project="test", patches_accepted=2)
         r.oracle_warning = "2 patch(es) applied with Z3 verification only"
         assert "Z3 verification only" in r.oracle_warning
+
+
+# ---------------------------------------------------------------------------
+# Dry run must not modify files; --auto gate must actually run
+# ---------------------------------------------------------------------------
+
+
+class TestHealDiskSafety:
+    ORIG = "def f(x):\n    return x + 1\n"
+
+    def _setup(self, tmp_path, monkeypatch):
+        from . import heal
+
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "fake")
+        src = tmp_path / "mod.py"
+        src.write_text(self.ORIG)
+        intent = tmp_path / "intent.json"
+        intent.write_text(
+            json.dumps(
+                {
+                    "project": "p",
+                    "modules": [
+                        {
+                            "invariants": [{"id": "I1", "type": "t", "statement": "s"}],
+                            "violations": [
+                                {
+                                    "file": str(src),
+                                    "line": 2,
+                                    "severity": "high",
+                                    "invariant_id": "I1",
+                                }
+                            ],
+                        }
+                    ],
+                }
+            )
+        )
+
+        def fake_synth(v, inv, lines, model, key, verbose, feedback):
+            return heal.SynthesisResult(
+                "I1",
+                str(src),
+                2,
+                "s",
+                heal.Diagnosis("r", "c", "o"),
+                heal.Patch("    return x + 1", "    return x + 2"),
+                heal.Justification("", "", "", None, ""),
+            )
+
+        monkeypatch.setattr(heal, "_synthesize", fake_synth)
+        monkeypatch.setattr(heal, "_verify", lambda *a, **k: (1.0, "ACCEPT", ""))
+        return src, intent
+
+    def test_dry_run_with_oracle_leaves_file_unchanged(self, tmp_path, monkeypatch):
+        src, intent = self._setup(tmp_path, monkeypatch)
+        r = heal_project(intent, apply=False, test_cmd="true", project_root=tmp_path)
+        assert r.results[0].oracle_confirmed
+        assert src.read_text() == self.ORIG
+        assert not r.results[0].applied
+
+    def test_apply_with_oracle_writes_file(self, tmp_path, monkeypatch):
+        src, intent = self._setup(tmp_path, monkeypatch)
+        heal_project(intent, apply=True, test_cmd="true", project_root=tmp_path)
+        assert "x + 2" in src.read_text()
+
+    def test_oracle_exception_reverts_file(self, tmp_path, monkeypatch):
+        from . import heal
+
+        src, intent = self._setup(tmp_path, monkeypatch)
+
+        calls = []
+
+        def boom(*a, **k):
+            calls.append(1)
+            if len(calls) == 1:
+                return True, ""  # baseline run passes
+            assert "x + 2" in src.read_text()  # patch is on disk now
+            raise KeyboardInterrupt
+
+        monkeypatch.setattr(heal, "_run_oracle", boom)
+        try:
+            heal_project(intent, apply=True, test_cmd="true", project_root=tmp_path)
+        except KeyboardInterrupt:
+            pass
+        assert src.read_text() == self.ORIG
+
+    def test_checker_baseline_is_computed(self, tmp_path, monkeypatch):
+        import warnings
+
+        src, intent = self._setup(tmp_path, monkeypatch)
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            r = heal_project(intent, auto=True, test_cmd="true", project_root=tmp_path)
+        msgs = [str(x.message) for x in w if "baseline" in str(x.message)]
+        assert msgs == []
+        assert r.results[0].auto_applied
+
+
+class TestAutodetectQuoting:
+    def test_interpreter_path_with_space_is_quoted(self, tmp_path, monkeypatch):
+        import shlex
+        import sys
+
+        monkeypatch.setattr(sys, "executable", "/opt/my venv/bin/python")
+        (tmp_path / "pytest.ini").write_text("[pytest]\n")
+        cmd = _autodetect_test_cmd(tmp_path)
+        assert shlex.split(cmd)[0] == "/opt/my venv/bin/python"
