@@ -941,6 +941,27 @@ class TestModuleMetrics:
         metrics = {m.module: m for m in compute_module_metrics(tmp_path)}
         assert metrics["core"].ca == 2
 
+    def test_ca_resolves_package_and_relative_imports(self, tmp_path):
+        """pkg.core is imported three ways; all credit pkg.core, none are Ce."""
+        self._write(tmp_path, "pkg/__init__.py", "")
+        self._write(tmp_path, "pkg/core.py", "def f():\n    return 1\n")
+        self._write(tmp_path, "pkg/a.py", "from pkg.core import f\n")
+        self._write(tmp_path, "pkg/b.py", "from .core import f\n")
+        self._write(tmp_path, "pkg/c.py", "from . import core\n")
+        metrics = {m.module: m for m in compute_module_metrics(tmp_path)}
+        assert metrics["pkg.core"].ca == 3
+        assert metrics["pkg.__init__"].ca == 0
+        assert [metrics[f"pkg.{n}"].ce for n in "abc"] == [0, 0, 0]
+
+    def test_relative_import_from_parent_package(self, tmp_path):
+        self._write(tmp_path, "pkg/__init__.py", "")
+        self._write(tmp_path, "pkg/util.py", "X = 1\n")
+        self._write(tmp_path, "pkg/sub/__init__.py", "")
+        self._write(tmp_path, "pkg/sub/m.py", "from ..util import X\n")
+        metrics = {m.module: m for m in compute_module_metrics(tmp_path)}
+        assert metrics["pkg.util"].ca == 1
+        assert metrics["pkg.sub.m"].ce == 0
+
     def test_self_import_not_counted(self, tmp_path):
         """A module that imports itself (pathological case) must not bump its own Ca."""
         self._write(tmp_path, "weird.py", "import weird\n")

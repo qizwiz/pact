@@ -151,6 +151,53 @@ except AttributeError:  # pragma: no cover — Python < 3.10 in test environment
     )
 
 
+def _import_targets(path: Path, mod_name: str) -> list[tuple[str, bool]]:
+    """Return (dotted_name, is_relative) for every import in ``path``.
+
+    Relative imports are resolved against ``mod_name`` (the importing module's
+    dotted name relative to the scan root). ``from X import a`` yields
+    ``X.a`` for each alias so a submodule import names the submodule.
+    """
+    try:
+        tree = ast.parse(path.read_text(encoding="utf-8", errors="replace"))
+    except (SyntaxError, OSError):
+        return []
+    parts = mod_name.split(".")
+    package = parts[:-1]  # pkg.a -> pkg ; pkg.__init__ -> pkg
+    out: list[tuple[str, bool]] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            out.extend((alias.name, False) for alias in node.names)
+        elif isinstance(node, ast.ImportFrom):
+            if node.level:
+                if node.level - 1 > len(package):
+                    continue  # beyond the scan root
+                base_parts = package[: len(package) - (node.level - 1)]
+                if node.module:
+                    base_parts = base_parts + node.module.split(".")
+            else:
+                base_parts = (node.module or "").split(".")
+            base = ".".join(p for p in base_parts if p)
+            for alias in node.names:
+                name = alias.name if alias.name != "*" else ""
+                full = ".".join(x for x in (base, name) if x)
+                if full:
+                    out.append((full, bool(node.level)))
+    return out
+
+
+def _resolve_project_module(dotted: str, mod_to_path: dict) -> str | None:
+    """Longest prefix of ``dotted`` that names a project module or package."""
+    parts = dotted.split(".")
+    for i in range(len(parts), 0, -1):
+        cand = ".".join(parts[:i])
+        if cand in mod_to_path:
+            return cand
+        if f"{cand}.__init__" in mod_to_path:
+            return f"{cand}.__init__"
+    return None
+
+
 def _scan_module_imports(path: Path) -> tuple[set[str], int, int]:
     """Parse ``path`` and return (imported_top_level_packages, class_count, abstract_class_count).
 
@@ -314,34 +361,29 @@ def compute_module_metrics(root: Path, top_n: int | None = None) -> list[ModuleM
     ca_count: dict[str, int] = collections.Counter()
     ce_count: dict[str, int] = {}
 
+    project_top = {m.split(".")[0] for m in path_to_mod.values()}
     for p in py_files:
         mod = path_to_mod[p]
-        imported_pkgs, _, _ = file_data[p]
 
-        # Ce: count external (non-stdlib, non-project) top-level packages
-        project_top = {m.split(".")[0] for m in path_to_mod.values()}
-        external_pkgs = {
-            pkg
-            for pkg in imported_pkgs
-            if pkg not in _STDLIB and pkg not in project_top and pkg
-        }
+        # Resolve each import (absolute or relative) to the most specific
+        # project module it names: ``from pkg.core import f`` and
+        # ``from .core import f`` both credit ``pkg.core``. Anything that does
+        # not resolve and is not stdlib/project is an external package (Ce).
+        project_deps: set[str] = set()
+        external_pkgs: set[str] = set()
+        for dotted, is_relative in _import_targets(p, mod):
+            target = _resolve_project_module(dotted, mod_to_path)
+            if target is not None:
+                project_deps.add(target)
+                continue
+            top = dotted.split(".")[0]
+            if not is_relative and top not in _STDLIB and top not in project_top:
+                external_pkgs.add(top)
         ce_count[mod] = len(external_pkgs)
 
-        # Ca contribution: for each imported package that matches a project module
-        # (exact top-level name), credit that project module's Ca.
-        for pkg in imported_pkgs:
-            # Try exact match as a module name (e.g. ``pact.reduce``)
-            # and as a top-level name (e.g. ``pact`` imported by something outside)
-            if pkg in mod_to_path:
-                if mod_to_path[pkg] != p:  # don't self-count
-                    ca_count[pkg] += 1
-            else:
-                # Top-level package match: if ``pact`` is imported and we have
-                # modules ``pact.reduce``, ``pact.checker``, credit all of them
-                # would be over-counting; instead credit the __init__ if present.
-                init_mod = f"{pkg}.__init__"
-                if init_mod in mod_to_path and mod_to_path[init_mod] != p:
-                    ca_count[init_mod] += 1
+        for target in project_deps:
+            if mod_to_path[target] != p:  # don't self-count
+                ca_count[target] += 1
 
     results: list[ModuleMetrics] = []
     for p in py_files:
