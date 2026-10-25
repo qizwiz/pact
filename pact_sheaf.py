@@ -1184,7 +1184,10 @@ def sheaf_summary(path: str, *, call_graph: object = None) -> dict:
     tda_scores: dict[str, dict] = {}
     if call_graph is not None:
         try:
-            from pact_tda import score_function  # type: ignore[import]
+            try:
+                from .pact_tda import score_function
+            except ImportError:  # pact_sheaf imported as a top-level module
+                from pact_tda import score_function  # type: ignore[import]
 
             violating_funcs = {
                 es.func for es in sg.error_sites() if not guarded_map.get(es.id, False)
@@ -1210,6 +1213,7 @@ def sheaf_summary(path: str, *, call_graph: object = None) -> dict:
     # total_persistence_h1 weights long-lived cycles heavily and discounts noise.
     # Falls back to float(beta1) when gudhi is unavailable (backward-compatible).
     persistence_result: dict = {}
+    _nx_graph = None
     if call_graph is not None:
         try:
             import networkx as _nx
@@ -1250,7 +1254,8 @@ def sheaf_summary(path: str, *, call_graph: object = None) -> dict:
         try:
             from .reduce import compute_spectral_gap as _csg
 
-            sr = _csg(call_graph)
+            # compute_spectral_gap needs a networkx graph, not a CallGraph
+            sr = _csg(_nx_graph) if _nx_graph is not None else None
             if sr is not None:
                 spectral = sr.to_dict()
         except Exception as exc:

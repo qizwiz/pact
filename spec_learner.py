@@ -565,13 +565,17 @@ def main(argv=None) -> int:
     rec.add_argument("--bug-fix", default="")
     rec.add_argument("--tla", required=True, help="Path to TLA+ spec")
     rec.add_argument("--tlc-output", default="")
-    rec.add_argument("--model", default=_DEFAULT_MODEL)
+    rec.add_argument("--model", default=None)
     rec.add_argument("--verbose", action="store_true")
 
     sub.add_parser("report", help="Print corpus summary")
     sub.add_parser("improve", help="Trigger prompt self-improvement")
 
     args = parser.parse_args(argv)
+    # --model defaults to None so PACT_LLM_MODEL is honoured.
+    from .llm import resolve_model
+
+    args.model = resolve_model(getattr(args, "model", None))
     from .llm import resolve_key
 
     try:
@@ -615,7 +619,7 @@ def main(argv=None) -> int:
         return 0
 
     if args.cmd == "improve":
-        improve(model=_DEFAULT_MODEL, key=key, verbose=True)
+        improve(model=args.model, key=key, verbose=True)
         return 0
 
     parser.print_help()

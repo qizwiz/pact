@@ -1305,7 +1305,8 @@ def main(argv=None):
     )
     p.add_argument("target", type=Path)
     p.add_argument("--test-cmd", required=True)
-    p.add_argument("--model", default=_DEFAULT_MODEL)
+    # None, not _DEFAULT_MODEL: let resolve_model() honour PACT_LLM_MODEL.
+    p.add_argument("--model", default=None)
     p.add_argument("--api-key")
     p.add_argument("--max-iters", type=int, default=_MAX_ITERS)
     p.add_argument("--epsilon", type=float, default=_EPSILON)
@@ -1324,16 +1325,23 @@ def main(argv=None):
     p.add_argument("-v", "--verbose", action="store_true")
     args = p.parse_args(argv)
 
-    key = args.api_key or _API_KEY or os.environ.get("ANTHROPIC_API_KEY", "")
-    if not key:
-        print("error: set ANTHROPIC_API_KEY or use --api-key", file=sys.stderr)
-        sys.exit(1)
+    from . import llm as _llm
+
+    key = args.api_key or _API_KEY
+    if _llm._sampling_fn is None:
+        # MCP sampling needs no key; otherwise use the shared resolution chain
+        # (PACT_LLM_API_KEY → PACT_ANTHROPIC_API_KEY → ANTHROPIC_API_KEY → token).
+        try:
+            key = _llm.resolve_key(key or None)
+        except RuntimeError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            sys.exit(1)
 
     PactLoop(
         target=args.target.resolve(),
         test_cmd=args.test_cmd,
         api_key=key,
-        model=args.model,
+        model=_llm.resolve_model(args.model),
         max_iters=args.max_iters,
         epsilon=args.epsilon,
         severity=args.severity,

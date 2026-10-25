@@ -1455,3 +1455,115 @@ def test_eager_any_generator_skipped(tmp_path):
     result = fix_file(str(f), [ev])
     assert not result.changed
     assert len(result.skipped) == 1
+
+
+# ---------------------------------------------------------------------------
+# Several fixes in one file: later fixers must see shifted line numbers
+# ---------------------------------------------------------------------------
+
+
+class TestMultiFixLineShift:
+    def test_bare_excepts_after_inserted_guard_are_fixed(self, tmp_path):
+        import textwrap
+
+        src = textwrap.dedent("""\
+            import requests
+
+
+            def ask(client, url):
+                response = client.chat.completions.create(model="x", messages=[])
+                text = response.choices[0].message.content
+                try:
+                    r = requests.get(url, timeout=5)
+                except:
+                    pass
+                return r
+
+
+            def other():
+                try:
+                    x = 1
+                except:
+                    handle()
+            """)
+        p = tmp_path / "app.py"
+        p.write_text(src)
+        evs = [
+            FailureEvidence(
+                "llm_response_unguarded", str(p), 6, "response.choices[0]", "m"
+            ),
+            FailureEvidence("bare_except", str(p), 9, "except:", "m"),
+            FailureEvidence("bare_except", str(p), 17, "except:", "m"),
+        ]
+        r = fix_file(p, evs)
+        ast.parse(r.patched)
+        assert "except:" not in r.patched
+        assert len(r.applied) == 3, r.skipped
+        # reported lines stay in original-file coordinates
+        assert sorted(e.line for e in r.applied) == [6, 9, 17]
+
+    def test_llm_guard_then_mutable_default_parses(self, tmp_path):
+        import textwrap
+
+        src = textwrap.dedent("""\
+            def ask(client):
+                response = client.chat.completions.create(model="x", messages=[])
+                text = response.choices[0].message.content
+                normalized_text_value = text.strip().lower().replace("a", "b")
+                return normalized_text_value
+            def collect(value, bucket=[]):
+                bucket.append(value)
+                return bucket
+            """)
+        p = tmp_path / "app.py"
+        p.write_text(src)
+        evs = [
+            FailureEvidence(
+                "llm_response_unguarded", str(p), 3, "response.choices[0]", "m"
+            ),
+            FailureEvidence("mutable_default_arg", str(p), 6, "def collect", "m"),
+        ]
+        r = fix_file(p, evs)
+        ast.parse(r.patched)
+        assert "def collect(value, bucket=None):" in r.patched
+        assert "normalized_text_value = text.strip()" in r.patched
+
+
+class TestMutableDefaultTargeting:
+    def _fix(self, tmp_path, src):
+        from .checker import check_codebase
+
+        p = tmp_path / "m.py"
+        p.write_text(src)
+        evs = [v for v in check_codebase(tmp_path) if _mode_of(v) == FIX]
+        assert evs, "checker should flag the mutable default"
+        r = fix_file(p, evs)
+        ast.parse(r.patched)
+        return r.patched
+
+    def test_immutable_default_on_same_line_untouched(self, tmp_path):
+        out = self._fix(tmp_path, "def f(b=[], c=1):\n    b.append(c)\n    return b\n")
+        assert "def f(b=None, c=1):" in out
+        assert "b = []" in out
+
+    def test_positional_only_args_map_to_right_param(self, tmp_path):
+        out = self._fix(
+            tmp_path, "def f(a, /, b=[], c=1):\n    b.append(a)\n    return b\n"
+        )
+        assert "def f(a, /, b=None, c=1):" in out
+        assert "a is None" not in out
+
+    def test_two_mutable_defaults_on_one_line(self, tmp_path):
+        out = self._fix(
+            tmp_path,
+            "def f(a=[], b={}):\n    a.append(1)\n    b['k'] = 1\n    return a, b\n",
+        )
+        assert "def f(a=None, b=None):" in out
+        assert "a = []" in out and "b = {}" in out
+
+
+FIX = "mutable_default_arg"
+
+
+def _mode_of(v):
+    return getattr(v, "mode_name", None) or getattr(v, "context", "")

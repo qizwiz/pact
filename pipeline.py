@@ -941,10 +941,14 @@ def main(argv: Optional[list[str]] = None) -> int:
         description="pact pipeline: route intent findings to Z3, TLA+, Hypothesis"
     )
     parser.add_argument("intent_json", help="Path to intent JSON file")
-    parser.add_argument("--model", default=_DEFAULT_MODEL)
+    parser.add_argument("--model", default=None)
     parser.add_argument("--out", help="Write pipeline results to JSON file")
     parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args(argv)
+    # --model defaults to None so PACT_LLM_MODEL is honoured.
+    from .llm import resolve_model
+
+    args.model = resolve_model(getattr(args, "model", None))
 
     result = run_pipeline(
         intent_path=Path(args.intent_json),

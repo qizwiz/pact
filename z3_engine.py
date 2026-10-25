@@ -179,18 +179,16 @@ class PactEngine:
         )
 
         # Intern tables
-        self._site_id: dict[tuple, int] = {}
         self._field_id: dict[str, int] = {}
         self._model_id: dict[str, int] = {}
         self._site_meta: dict[int, dict] = {}
 
     def _sid(self, file: str, line: int, call: str) -> int:
-        key = (file, line)
-        if key not in self._site_id:
-            n = len(self._site_id)
-            self._site_id[key] = n
-            self._site_meta[n] = {"file": file, "line": line, "call": call}
-        return self._site_id[key]
+        # One ID per call, never per (file, line): two create() calls on the
+        # same line would otherwise pool their kwargs and mask each other.
+        n = len(self._site_meta)
+        self._site_meta[n] = {"file": file, "line": line, "call": call}
+        return n
 
     def _fid(self, name: str) -> int:
         if name not in self._field_id:
@@ -214,6 +212,10 @@ class PactEngine:
 
         for call in calls:
             if not call.is_create_call or not call.model_name:
+                continue
+            if call.has_var_kwargs:
+                # **kwargs spread — the provided field set is unknown, so any
+                # "missing" field would be a guess, not a derived violation.
                 continue
             si = self._sid(call.file, call.line, call.callee_name)
             mi = self._mid(call.model_name)
@@ -363,8 +365,19 @@ class LLMProofResult:
     proved_safe: bool
     violations: list[Z3Violation] = field(default_factory=list)
     scopes_analyzed: int = 0
+    # Files that could not be parsed — the proof does not cover them.
+    skipped_files: list[str] = field(default_factory=list)
+    # Z3 returned UNKNOWN: no proof either way.
+    unknown: bool = False
 
     def __str__(self) -> str:
+        if self.unknown or (self.skipped_files and not self.violations):
+            why = (
+                "Z3 returned UNKNOWN"
+                if self.unknown
+                else f"{len(self.skipped_files)} file(s) could not be parsed"
+            )
+            return f"UNPROVED: llm_response_unguarded — {why}"
         if self.proved_safe:
             return (
                 f"SAFE: llm_response_unguarded — Z3 proved no violations "
@@ -376,10 +389,18 @@ class LLMProofResult:
         )
 
 
+def _test_names(test) -> set[str]:
+    """Names referenced in an if/ternary condition (exact identifiers only)."""
+    import ast as _ast
+
+    return {n.id for n in _ast.walk(test) if isinstance(n, _ast.Name)}
+
+
 def _extract_llm_facts(
     path: str,
     scope_intern: dict[str, int],
     var_intern: dict[str, int],
+    skipped: list[str] | None = None,
 ) -> tuple[list[tuple[int, int]], list[tuple[int, int]]]:
     """Extract (llm_var_facts, unguarded_access_facts) from one Python file.
 
@@ -402,6 +423,8 @@ def _extract_llm_facts(
             RuntimeWarning,
             stacklevel=2,
         )
+        if skipped is not None:
+            skipped.append(path)
         return [], []
 
     llm_var_facts: list[tuple[int, int]] = []
@@ -469,18 +492,18 @@ def _extract_llm_facts(
             self.generic_visit(node)
 
         def visit_If(self, node):
-            src = _ast.unparse(node.test) if hasattr(_ast, "unparse") else ""
+            names = _test_names(node.test)
             for var in list(self._llm_vars):
-                if var in src:
+                if var in names:
                     self._guarded.add(var)
             self.generic_visit(node)
 
         def visit_IfExp(self, node):
             self.visit(node.test)
-            src = _ast.unparse(node.test) if hasattr(_ast, "unparse") else ""
+            names = _test_names(node.test)
             newly: set[str] = set()
             for var in list(self._llm_vars):
-                if var in src and var not in self._guarded:
+                if var in names and var not in self._guarded:
                     self._guarded.add(var)
                     newly.add(var)
             self.visit(node.body)
@@ -545,6 +568,7 @@ class LLMResponseEngine:
         self._var_intern: dict[str, int] = {}
         self._scope_meta: dict[int, str] = {}
         self._scopes_with_llm: int = 0
+        self._skipped: list[str] = []
 
     def load(self, root: Path) -> None:
         """Extract facts from all Python files under root and populate Z3."""
@@ -552,7 +576,9 @@ class LLMResponseEngine:
         all_ua: list[tuple[int, int]] = []
 
         for path in iter_python_files(root):
-            lv, ua = _extract_llm_facts(str(path), self._scope_intern, self._var_intern)
+            lv, ua = _extract_llm_facts(
+                str(path), self._scope_intern, self._var_intern, self._skipped
+            )
             all_lv.extend(lv)
             all_ua.extend(ua)
 
@@ -573,25 +599,28 @@ class LLMResponseEngine:
         qs, qv = BitVecs("qs qv", _BITS)
         z3_result = self._fp.query(Exists([qs, qv], _llm_violation_rel(qs, qv)))
 
+        skipped = list(self._skipped)
         if z3_result == unsat:
+            # UNSAT covers only the files Z3 saw; a skipped file is unproved.
             return LLMProofResult(
-                proved_safe=True, scopes_analyzed=self._scopes_with_llm
+                proved_safe=not skipped,
+                scopes_analyzed=self._scopes_with_llm,
+                skipped_files=skipped,
             )
-        if z3_result == unknown:
+        if z3_result != sat:
             import warnings as _warnings
 
             _warnings.warn(
-                "z3_engine: llm_response_unguarded query returned UNKNOWN — "
-                "proved_safe=True is asserted but may not hold",
+                f"z3_engine: llm_response_unguarded query returned {z3_result} — "
+                "no proof; reporting proved_safe=False",
                 RuntimeWarning,
                 stacklevel=2,
             )
             return LLMProofResult(
-                proved_safe=True, scopes_analyzed=self._scopes_with_llm
-            )
-        if z3_result != sat:
-            return LLMProofResult(
-                proved_safe=True, scopes_analyzed=self._scopes_with_llm
+                proved_safe=False,
+                scopes_analyzed=self._scopes_with_llm,
+                skipped_files=skipped,
+                unknown=True,
             )
 
         tuples = _extract_tuples(self._fp.get_answer())
@@ -614,6 +643,7 @@ class LLMResponseEngine:
             proved_safe=False,
             violations=violations,
             scopes_analyzed=self._scopes_with_llm,
+            skipped_files=skipped,
         )
 
 
@@ -636,7 +666,9 @@ def verify_file(path: str) -> LLMProofResult:
     where an LLM-assigned variable is accessed without a guard.
     """
     engine = LLMResponseEngine()
-    lv, ua = _extract_llm_facts(path, engine._scope_intern, engine._var_intern)
+    lv, ua = _extract_llm_facts(
+        path, engine._scope_intern, engine._var_intern, engine._skipped
+    )
 
     id_to_key = {v: k for k, v in engine._scope_intern.items()}
     for sid, vid in lv:

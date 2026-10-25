@@ -18,8 +18,12 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
-from ast_utils import find_enclosing_function_chain
-from graphify_graph import CallGraph
+try:
+    from .ast_utils import find_enclosing_function_chain
+    from .graphify_graph import CallGraph
+except ImportError:  # run as a top-level script with pact/ on sys.path
+    from ast_utils import find_enclosing_function_chain
+    from graphify_graph import CallGraph
 
 
 @dataclass
@@ -90,6 +94,8 @@ def neighborhood_edges(
 
 def _beta1(edges: set[tuple[str, str]]) -> tuple[int, int, int]:
     """Return (n_nodes, beta0, beta1) for the undirected graph defined by edges."""
+    # Undirected: a→b and b→a are the same edge (mutual recursion is not a cycle).
+    edges = {(min(u, v), max(u, v)) for u, v in edges}
     nodes: set[str] = set()
     for u, v in edges:
         nodes.add(u)

@@ -1038,9 +1038,19 @@ def _tool_pact_loop(params: dict) -> dict:
     severity = params.get("severity", ["critical", "high"])
     verbose = params.get("verbose", False)
 
-    argv = [target, "--max-iters", str(max_iters)]
-    if test_cmd:
-        argv += ["--test-cmd", test_cmd]
+    if not test_cmd:
+        # The schema makes test_cmd optional but pact loop requires an oracle.
+        from .heal import _autodetect_test_cmd
+
+        test_cmd = _autodetect_test_cmd(Path(target)) or ""
+        if not test_cmd:
+            return {
+                "exit_code": 2,
+                "output": "error: no test_cmd given and no test runner detected",
+                "target": target,
+            }
+
+    argv = [target, "--max-iters", str(max_iters), "--test-cmd", test_cmd]
     for s in severity:
         argv += ["--severity", s]
     if verbose:
@@ -1067,7 +1077,7 @@ def _tool_pact_loop(params: dict) -> dict:
     sys.stdout = _Tee()
     try:
         with _sampling_backend():
-            exit_code = loop_main(argv)
+            exit_code = loop_main(argv) or 0
     except SystemExit as exc:
         exit_code = exc.code or 0
     finally:
@@ -1108,7 +1118,9 @@ def _tool_pact_topology(params: dict) -> dict:
         return stem.startswith("test_")
 
     if G is not None:
-        G_u = G.to_undirected()
+        from .reduce import _project_undirected
+
+        G_u = _project_undirected(G, func_by_name)
         btw: dict[str, float] = nx.betweenness_centrality(G_u, normalized=True)
         cv_set: set[str] = set(nx.articulation_points(G_u))
 

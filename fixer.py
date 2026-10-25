@@ -29,6 +29,7 @@ Usage
 from __future__ import annotations
 
 import ast
+import dataclasses
 import difflib
 import re
 from pathlib import Path
@@ -520,29 +521,64 @@ def _fix_mutable_default_arg(
         skipped.extend(violations)
         return list(lines), applied, skipped
 
-    # Build lookup: (call_str, default_line) → (func_node, param_name, default_node)
-    func_map: dict[tuple[str, int], tuple[ast.AST, str, ast.expr]] = {}
+    def _is_mutable(node: ast.expr) -> bool:
+        if isinstance(node, (ast.List, ast.Dict, ast.Set)):
+            return True
+        return (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id in {"list", "dict", "set", "List", "Dict", "Set"}
+        )
+
+    # Build lookup: (call_str, default_line) → [(func_node, param, default_node)]
+    # for mutable defaults only; several may share a line.
+    func_map: dict[tuple[str, int], list[tuple[ast.AST, str, ast.expr]]] = {}
     for node in ast.walk(tree):
         if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             continue
         call_str = f"def {node.name}"
-        all_args = node.args.args + node.args.posonlyargs
+        # Positional defaults align with the tail of posonlyargs + args.
+        all_args = node.args.posonlyargs + node.args.args
         n_defaults = len(node.args.defaults)
         n_args = len(all_args)
-        for i, default in enumerate(node.args.defaults):
-            param = all_args[n_args - n_defaults + i].arg
-            func_map[(call_str, default.lineno)] = (node, param, default)
-        for kwarg, kw_default in zip(node.args.kwonlyargs, node.args.kw_defaults or []):
-            if kw_default is not None:
-                func_map[(call_str, kw_default.lineno)] = (node, kwarg.arg, kw_default)
+        pairs = [
+            (all_args[n_args - n_defaults + i].arg, d)
+            for i, d in enumerate(node.args.defaults)
+        ] + [
+            (kwarg.arg, kw_default)
+            for kwarg, kw_default in zip(
+                node.args.kwonlyargs, node.args.kw_defaults or []
+            )
+            if kw_default is not None
+        ]
+        for param, default in pairs:
+            if _is_mutable(default):
+                func_map.setdefault((call_str, default.lineno), []).append(
+                    (node, param, default)
+                )
+
+    # One evidence per flagged line is enough to rewrite every mutable default
+    # on it (rewriting an unmutated one is behaviour-preserving). Work
+    # right-to-left within a line so column offsets stay valid.
+    by_key: dict[tuple[str, int], list[FailureEvidence]] = {}
+    for ev in violations:
+        by_key.setdefault((ev.call, ev.line), []).append(ev)
+
+    targets: list[tuple[list[FailureEvidence], tuple[ast.AST, str, ast.expr]]] = []
+    for key, evs in by_key.items():
+        if key not in func_map:
+            skipped.extend(evs)
+            continue
+        entries = func_map[key]
+        for n, entry in enumerate(entries):
+            targets.append((evs if n == 0 else [], entry))
 
     result = list(lines)
-    for ev in sorted(violations, key=lambda e: e.line, reverse=True):
-        key = (ev.call, ev.line)
-        if key not in func_map:
-            skipped.append(ev)
-            continue
-        func_node, param_name, default_node = func_map[key]
+    for evs, (func_node, param_name, default_node) in sorted(
+        targets,
+        key=lambda t: (t[1][2].lineno, t[1][2].col_offset),
+        reverse=True,
+    ):
 
         # Get the original mutable default text via source segment
         try:
@@ -550,17 +586,17 @@ def _fix_mutable_default_arg(
         except Exception:
             default_text = None
         if not default_text:
-            skipped.append(ev)
+            skipped.extend(evs)
             continue
 
         # Step 1: Replace the default value with None using exact column offsets.
-        # ev.line is 1-indexed; default may be on the same line as `def`.
-        def_line_idx = ev.line - 1
+        # lineno is 1-indexed; default may be on the same line as `def`.
+        def_line_idx = default_node.lineno - 1
         raw = result[def_line_idx]
         col_s = default_node.col_offset
         col_e = default_node.end_col_offset
         if len(raw.rstrip("\n")) < col_e:
-            skipped.append(ev)
+            skipped.extend(evs)
             continue
         result[def_line_idx] = raw[:col_s] + "None" + raw[col_e:]
 
@@ -587,7 +623,7 @@ def _fix_mutable_default_arg(
             f"{body_indent}    {param_name} = {default_text}\n",
         ]
         result[insert_idx:insert_idx] = none_check
-        applied.append(ev)
+        applied.extend(evs)
 
     return result, applied, skipped
 
@@ -1419,6 +1455,64 @@ def _fix_eager_any_guard(
 # ---------------------------------------------------------------------------
 
 
+# Fix passes in application order: (modes, fixer). Each fixer receives the
+# current source and line numbers remapped to it (see fix_file).
+_FIX_PASSES = (
+    # Apply llm_response_unguarded + sheaf_llm_unguarded fixes (same guard pattern)
+    (frozenset({"llm_response_unguarded", "sheaf_llm_unguarded"}), _fix_llm_unguarded),
+    # Apply missing_await fixes
+    (frozenset({"missing_await"}), _fix_missing_await),
+    # Apply optional_dereference fixes
+    (frozenset({"optional_dereference"}), _fix_optional_dereference),
+    # Apply bare_except fixes (bare `except:` → `except Exception:`)
+    (frozenset({"bare_except"}), _fix_bare_except),
+    # Apply mutable_default_arg fixes (mutable defaults → None + if-None guard)
+    (frozenset({"mutable_default_arg"}), _fix_mutable_default_arg),
+    # Apply save_without_update_fields fixes (obj.save() → obj.save(update_fields=[...]))
+    (frozenset({"save_without_update_fields"}), _fix_save_without_update_fields),
+    # Apply unvalidated_lookup_chain fixes (collection[x] → collection.get(x))
+    (frozenset({"unvalidated_lookup_chain"}), _fix_unvalidated_lookup_chain),
+    # Apply asyncio_run_in_async fixes (asyncio.run(expr) → await expr)
+    (frozenset({"asyncio_run_in_async"}), _fix_asyncio_run_in_async),
+    # Apply falsy_or_zero_elision fixes (var or 0 → var if var is not None else 0)
+    (frozenset({"falsy_or_zero_elision"}), _fix_falsy_or_zero_elision),
+    # Apply subprocess_exit_code_unchecked fixes (add check=True)
+    (frozenset({"subprocess_exit_code_unchecked"}), _fix_subprocess_exit_code),
+    # Apply prompt_injection_risk fixes ({var} → {var.replace(chr(10), " ")})
+    (frozenset({"prompt_injection_risk"}), _fix_prompt_injection_risk),
+    # Apply json_loads_unguarded fixes (wrap in try/except json.JSONDecodeError)
+    (frozenset({"json_loads_unguarded"}), _fix_json_loads_unguarded),
+    # Apply required_arg_missing fixes (insert arg=None placeholder)
+    (frozenset({"required_arg_missing"}), _fix_required_arg_missing),
+    # Apply timeout_not_set fixes (add timeout=30 to HTTP calls)
+    (frozenset({"timeout_not_set"}), _fix_timeout_not_set),
+    # Apply eager_any_guard fixes (any([a,b]) → a or b)
+    (frozenset({"eager_any_guard"}), _fix_eager_any_guard),
+)
+
+
+def _compose_line_map(
+    line_map: dict[int, int], old: list[str], new: list[str]
+) -> dict[int, int]:
+    """Extend an original->current line map across one edit (old -> new).
+
+    Unchanged lines move by the edit's net insertion offset. Lines inside a
+    replaced region map to the start of its replacement (single-line rewrites
+    keep their position); deleted lines drop out of the map.
+    """
+    step: dict[int, int] = {}
+    sm = difflib.SequenceMatcher(a=old, b=new, autojunk=False)
+    for tag, i1, i2, j1, j2 in sm.get_opcodes():
+        if tag == "equal":
+            for k in range(i2 - i1):
+                step[i1 + k + 1] = j1 + k + 1
+        elif tag == "replace":
+            for k in range(i2 - i1):
+                step[i1 + k + 1] = j1 + min(k, j2 - j1 - 1) + 1
+    step[len(old) + 1] = len(new) + 1
+    return {o: step[c] for o, c in line_map.items() if c in step}
+
+
 def fix_file(
     path: str | Path,
     violations: list[FailureEvidence],
@@ -1442,6 +1536,8 @@ def fix_file(
         )
 
     lines = original.splitlines(keepends=True)
+    # original 1-based line -> current 1-based line (None once rewritten)
+    line_map: dict[int, int] = {i: i for i in range(1, len(lines) + 2)}
     all_applied: list[FailureEvidence] = []
     all_skipped: list[FailureEvidence] = []
 
@@ -1449,126 +1545,49 @@ def fix_file(
     unfixable = [v for v in violations if _mode(v) not in FIX_MODES]
     all_skipped.extend(unfixable)
 
-    # Apply llm_response_unguarded + sheaf_llm_unguarded fixes (same guard pattern)
-    llm_evs = [
-        v
-        for v in fixable
-        if _mode(v) in {"llm_response_unguarded", "sheaf_llm_unguarded"}
-    ]
-    if llm_evs:
-        lines, applied, skipped = _fix_llm_unguarded(original, lines, llm_evs)
-        all_applied.extend(applied)
-        all_skipped.extend(skipped)
-
-    # Apply missing_await fixes
-    await_evs = [v for v in fixable if _mode(v) == "missing_await"]
-    if await_evs:
-        lines, applied, skipped = _fix_missing_await(original, lines, await_evs)
-        all_applied.extend(applied)
-        all_skipped.extend(skipped)
-
-    # Apply optional_dereference fixes
-    opt_evs = [v for v in fixable if _mode(v) == "optional_dereference"]
-    if opt_evs:
-        lines, applied, skipped = _fix_optional_dereference(original, lines, opt_evs)
-        all_applied.extend(applied)
-        all_skipped.extend(skipped)
-
-    # Apply bare_except fixes (bare `except:` → `except Exception:`)
-    bare_evs = [v for v in fixable if _mode(v) == "bare_except"]
-    if bare_evs:
-        lines, applied, skipped = _fix_bare_except(original, lines, bare_evs)
-        all_applied.extend(applied)
-        all_skipped.extend(skipped)
-
-    # Apply mutable_default_arg fixes (mutable defaults → None + if-None guard)
-    mut_evs = [v for v in fixable if _mode(v) == "mutable_default_arg"]
-    if mut_evs:
-        lines, applied, skipped = _fix_mutable_default_arg(original, lines, mut_evs)
-        all_applied.extend(applied)
-        all_skipped.extend(skipped)
-
-    # Apply save_without_update_fields fixes (obj.save() → obj.save(update_fields=[...]))
-    save_evs = [v for v in fixable if _mode(v) == "save_without_update_fields"]
-    if save_evs:
-        lines, applied, skipped = _fix_save_without_update_fields(
-            original, lines, save_evs
+    for modes, fixer in _FIX_PASSES:
+        evs = [v for v in fixable if _mode(v) in modes]
+        if not evs:
+            continue
+        # Earlier passes may have inserted or removed lines. Hand this fixer
+        # the current source and evidence remapped to current line numbers,
+        # then report the caller's original evidence objects.
+        current = "".join(lines)
+        shifted = {}
+        for v in evs:
+            new_line = line_map.get(v.line)
+            if new_line is None:
+                all_skipped.append(v)  # its line was rewritten by an earlier fix
+                continue
+            shifted[id(v)] = (dataclasses.replace(v, line=new_line), v)
+        if not shifted:
+            continue
+        back = {id(sv): orig for sv, orig in shifted.values()}
+        new_lines, applied, skipped = fixer(
+            current, list(lines), [sv for sv, _ in shifted.values()]
         )
-        all_applied.extend(applied)
-        all_skipped.extend(skipped)
-
-    # Apply unvalidated_lookup_chain fixes (collection[x] → collection.get(x))
-    lookup_evs = [v for v in fixable if _mode(v) == "unvalidated_lookup_chain"]
-    if lookup_evs:
-        lines, applied, skipped = _fix_unvalidated_lookup_chain(
-            original, lines, lookup_evs
-        )
-        all_applied.extend(applied)
-        all_skipped.extend(skipped)
-
-    # Apply asyncio_run_in_async fixes (asyncio.run(expr) → await expr)
-    async_run_evs = [v for v in fixable if _mode(v) == "asyncio_run_in_async"]
-    if async_run_evs:
-        lines, applied, skipped = _fix_asyncio_run_in_async(
-            original, lines, async_run_evs
-        )
-        all_applied.extend(applied)
-        all_skipped.extend(skipped)
-
-    # Apply falsy_or_zero_elision fixes (var or 0 → var if var is not None else 0)
-    falsy_evs = [v for v in fixable if _mode(v) == "falsy_or_zero_elision"]
-    if falsy_evs:
-        lines, applied, skipped = _fix_falsy_or_zero_elision(original, lines, falsy_evs)
-        all_applied.extend(applied)
-        all_skipped.extend(skipped)
-
-    # Apply subprocess_exit_code_unchecked fixes (add check=True)
-    subproc_evs = [v for v in fixable if _mode(v) == "subprocess_exit_code_unchecked"]
-    if subproc_evs:
-        lines, applied, skipped = _fix_subprocess_exit_code(
-            original, lines, subproc_evs
-        )
-        all_applied.extend(applied)
-        all_skipped.extend(skipped)
-
-    # Apply prompt_injection_risk fixes ({var} → {var.replace(chr(10), " ")})
-    inject_evs = [v for v in fixable if _mode(v) == "prompt_injection_risk"]
-    if inject_evs:
-        lines, applied, skipped = _fix_prompt_injection_risk(
-            original, lines, inject_evs
-        )
-        all_applied.extend(applied)
-        all_skipped.extend(skipped)
-
-    # Apply json_loads_unguarded fixes (wrap in try/except json.JSONDecodeError)
-    json_evs = [v for v in fixable if _mode(v) == "json_loads_unguarded"]
-    if json_evs:
-        lines, applied, skipped = _fix_json_loads_unguarded(original, lines, json_evs)
-        all_applied.extend(applied)
-        all_skipped.extend(skipped)
-
-    # Apply required_arg_missing fixes (insert arg=None placeholder)
-    req_evs = [v for v in fixable if _mode(v) == "required_arg_missing"]
-    if req_evs:
-        lines, applied, skipped = _fix_required_arg_missing(original, lines, req_evs)
-        all_applied.extend(applied)
-        all_skipped.extend(skipped)
-
-    # Apply timeout_not_set fixes (add timeout=30 to HTTP calls)
-    timeout_evs = [v for v in fixable if _mode(v) == "timeout_not_set"]
-    if timeout_evs:
-        lines, applied, skipped = _fix_timeout_not_set(original, lines, timeout_evs)
-        all_applied.extend(applied)
-        all_skipped.extend(skipped)
-
-    # Apply eager_any_guard fixes (any([a,b]) → a or b)
-    eager_evs = [v for v in fixable if _mode(v) == "eager_any_guard"]
-    if eager_evs:
-        lines, applied, skipped = _fix_eager_any_guard(original, lines, eager_evs)
-        all_applied.extend(applied)
-        all_skipped.extend(skipped)
+        all_applied.extend(back.get(id(e), e) for e in applied)
+        all_skipped.extend(back.get(id(e), e) for e in skipped)
+        line_map = _compose_line_map(line_map, lines, new_lines)
+        lines = new_lines
 
     patched = "".join(lines)
+    if path.endswith(".py") and _parses(original) and not _parses(patched):
+        # Never hand back (or write) code that no longer parses.
+        import warnings
+
+        warnings.warn(
+            f"fixer: fixes for {path} produced unparseable code; not applied",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+        return FileResult(
+            path=path,
+            original=original,
+            patched=original,
+            applied=[],
+            skipped=all_skipped + all_applied,
+        )
     return FileResult(
         path=path,
         original=original,
@@ -1576,6 +1595,14 @@ def fix_file(
         applied=all_applied,
         skipped=all_skipped,
     )
+
+
+def _parses(source: str) -> bool:
+    try:
+        ast.parse(source)
+    except SyntaxError:
+        return False
+    return True
 
 
 def apply_fixes(

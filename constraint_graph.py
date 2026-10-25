@@ -1446,7 +1446,9 @@ def structural_risk_report(root: str, top_n: int = 20) -> dict:
             "risk_findings": [],
         }
 
-    G_u = G.to_undirected()
+    from .reduce import _project_undirected
+
+    G_u = _project_undirected(G, func_by_name)
     btw: dict = nx.betweenness_centrality(G_u, normalized=True)
     cv_set: set = set(nx.articulation_points(G_u))
 

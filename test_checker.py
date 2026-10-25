@@ -5451,3 +5451,77 @@ def test_interproc_import_qualified_resolution_no_false_positive(tmp_path):
     assert not any(
         "helper" in fid for fid in func_ids
     ), f"c::helper must NOT be tainted — c::parse is clean; got {func_ids}"
+
+
+def test_interproc_subprocess_check_false_is_unchecked(tmp_path):
+    """check=False is an explicit opt-out of checking, not a check."""
+    from .pact_interproc import analyze_codebase
+
+    (tmp_path / "m.py").write_text(
+        "import subprocess\n"
+        "def deploy(cmd):\n"
+        "    subprocess.run(cmd, check=False)\n"
+    )
+    kinds = {(v.violation_type, v.func_id) for v in analyze_codebase(tmp_path)}
+    assert ("subprocess_unchecked_transitive", "m::deploy") in kinds, kinds
+
+
+def test_interproc_json_loads_in_except_handler_is_unguarded(tmp_path):
+    """A call inside the except handler is not protected by that try."""
+    from .pact_interproc import analyze_codebase
+
+    (tmp_path / "m.py").write_text(
+        "import json\n"
+        "def parse(s, fallback):\n"
+        "    try:\n"
+        "        return int(s)\n"
+        "    except ValueError:\n"
+        "        return json.loads(fallback)\n"
+    )
+    func_ids = {v.func_id for v in analyze_codebase(tmp_path)}
+    assert "m::parse" in func_ids, func_ids
+
+
+def test_interproc_unrelated_try_does_not_stop_propagation(tmp_path):
+    """A try/except around some other call must not clear taint on this one."""
+    from .pact_interproc import analyze_codebase
+
+    (tmp_path / "a.py").write_text(
+        "import json\n"
+        "def parse(data):\n"
+        "    return json.loads(data)\n"
+        "def process(data, n):\n"
+        "    try:\n"
+        "        int(n)\n"
+        "    except ValueError:\n"
+        "        pass\n"
+        "    return parse(data)\n"
+    )
+    func_ids = {v.func_id for v in analyze_codebase(tmp_path)}
+    assert "a::process" in func_ids, func_ids
+
+
+def test_interproc_same_stem_in_different_packages_not_merged(tmp_path):
+    """a/utils.py and b/utils.py must not collapse into one 'utils::parse'."""
+    from .pact_interproc import analyze_codebase
+
+    (tmp_path / "a").mkdir()
+    (tmp_path / "b").mkdir()
+    (tmp_path / "a" / "utils.py").write_text(
+        "import json\ndef parse(s):\n    return json.loads(s)\n"
+    )
+    (tmp_path / "b" / "utils.py").write_text(
+        "import json\n"
+        "def parse(s):\n"
+        "    try:\n"
+        "        return json.loads(s)\n"
+        "    except ValueError:\n"
+        "        return None\n"
+    )
+    (tmp_path / "b" / "user.py").write_text(
+        "from .utils import parse\ndef use(s):\n    return parse(s)\n"
+    )
+    hits = {(v.func_id, Path(v.file).parent.name) for v in analyze_codebase(tmp_path)}
+    files = {f for _, f in hits}
+    assert any(fid.endswith("::parse") and d == "a" for fid, d in hits), hits
+    assert "b" not in files, hits  # b/utils.parse is guarded; b/user.use is clean

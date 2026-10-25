@@ -353,6 +353,69 @@ class TestCLI:
             loop_main([])
         assert exc_info.value.code != 0
 
+    @staticmethod
+    def _capture_loop(monkeypatch):
+        from . import pact_loop
+
+        seen = {}
+
+        class _FakeLoop:
+            def __init__(self, **kw):
+                seen.update(kw)
+
+            def run(self):
+                return None
+
+        monkeypatch.setattr(pact_loop, "PactLoop", _FakeLoop)
+        monkeypatch.setattr(pact_loop, "_API_KEY", "")
+        for var in (
+            "ANTHROPIC_API_KEY",
+            "PACT_LLM_API_KEY",
+            "PACT_ANTHROPIC_API_KEY",
+            "ANTHROPIC_AUTH_TOKEN",
+            "PACT_LLM_MODEL",
+        ):
+            monkeypatch.delenv(var, raising=False)
+        return pact_loop, seen
+
+    def test_loop_honours_pact_llm_model_env(self, monkeypatch, tmp_path):
+        """--model must default to None so PACT_LLM_MODEL is not overridden."""
+        pact_loop, seen = self._capture_loop(monkeypatch)
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
+        monkeypatch.setenv("PACT_LLM_MODEL", "env-model")
+        pact_loop.main([str(tmp_path), "--test-cmd", "true"])
+        assert seen["model"] == "env-model"
+
+    def test_loop_accepts_pact_llm_api_key(self, monkeypatch, tmp_path):
+        """The loop must use the same key chain as every other LLM command."""
+        pact_loop, seen = self._capture_loop(monkeypatch)
+        monkeypatch.setenv("PACT_LLM_API_KEY", "sk-or-x")
+        pact_loop.main([str(tmp_path), "--test-cmd", "true"])
+        assert seen["api_key"] == "sk-or-x"
+
+    def test_loop_runs_under_mcp_sampling_without_key(self, monkeypatch, tmp_path):
+        """With an MCP sampling backend installed no API key is required."""
+        from . import llm
+
+        pact_loop, seen = self._capture_loop(monkeypatch)
+        llm.set_sampling_backend(lambda m, n, s: "")
+        try:
+            pact_loop.main([str(tmp_path), "--test-cmd", "true"])
+        finally:
+            llm.clear_sampling_backend()
+        assert seen, "PactLoop never constructed — main() exited on missing key"
+
+    def test_mcp_pact_loop_autodetects_test_cmd(self, monkeypatch, tmp_path):
+        """MCP schema makes test_cmd optional; omitting it must not exit 2."""
+        from . import mcp_server
+
+        pact_loop, seen = self._capture_loop(monkeypatch)
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
+        (tmp_path / "pytest.ini").write_text("[pytest]\n")
+        result = mcp_server._tool_pact_loop({"target": str(tmp_path)})
+        assert result["exit_code"] == 0, result
+        assert "pytest" in seen["test_cmd"]
+
 
 # ---------------------------------------------------------------------------
 # Cache invalidation

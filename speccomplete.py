@@ -52,7 +52,7 @@ def _build_user_msg(filename: str, source: str, skeleton: str) -> str:
 def spec_complete(
     path: Path,
     output: Optional[Path] = None,
-    model: str = "claude-haiku-4-5-20251001",
+    model: Optional[str] = None,
     api_key: Optional[str] = None,
 ) -> str:
     """
@@ -66,7 +66,7 @@ def spec_complete(
     module_name = "".join(w.capitalize() for w in path.stem.split("_"))
     skeleton = _spec_synthesize(source, module_name)
 
-    from .llm import make_client, resolve_key
+    from .llm import make_client, resolve_key, resolve_model
 
     key = resolve_key(api_key)
     client = make_client(key)
@@ -78,7 +78,7 @@ def spec_complete(
     )
 
     response = client.messages.create(
-        model=model,
+        model=resolve_model(model),
         max_tokens=4096,
         system=_SYSTEM,
         messages=[{"role": "user", "content": user_msg}],
