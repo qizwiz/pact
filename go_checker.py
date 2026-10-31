@@ -30,7 +30,6 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
-from typing import Optional
 
 from .failure_mode import FailureEvidence
 
@@ -42,7 +41,7 @@ _CHECKER_DIR = Path(__file__).parent / "go" / "checker"
 _BINARY_NAME = "pact-go"
 
 
-def _find_binary() -> Optional[str]:
+def _find_binary() -> str | None:
     """Return path to pact-go binary, or None if not found."""
     # 1. Pre-compiled binary next to main.go
     local = _CHECKER_DIR / _BINARY_NAME
@@ -70,8 +69,8 @@ def _can_go_run() -> bool:
 def run_go_checker(
     paths: list[str | Path],
     *,
-    binary: Optional[str] = None,
-    extra_args: Optional[list[str]] = None,
+    binary: str | None = None,
+    extra_args: list[str] | None = None,
 ) -> list[FailureEvidence]:
     """
     Run pact-go on the given paths and return a list of FailureEvidence.
@@ -98,16 +97,21 @@ def run_go_checker(
     # Build command
     resolved_binary = binary or _find_binary()
 
+    # `go run <dir>` only works when the cwd is inside that module (otherwise go
+    # reports "go.mod file not found"), so the fallback runs from _CHECKER_DIR and
+    # input paths are made absolute so they still resolve from there.
+    run_cwd: str | None = None
     if resolved_binary:
         cmd = [resolved_binary]
     elif _can_go_run():
         cmd = ["go", "run", str(_CHECKER_DIR)]
+        run_cwd = str(_CHECKER_DIR)
     else:
         # No Go toolchain or binary — skip silently so Python analysis still runs
         return []
 
     for p in paths:
-        p = Path(p)
+        p = Path(p).resolve()
         if p.is_dir():
             cmd += ["--dir", str(p)]
         elif p.is_file():
@@ -122,6 +126,7 @@ def run_go_checker(
             capture_output=True,
             text=True,
             timeout=60,
+            cwd=run_cwd,
         )
     except (subprocess.TimeoutExpired, OSError):
         return []
