@@ -85,7 +85,9 @@ None.
 
 - CI's `ci.yml` passes `--ignore=test_go_checker.py`, which is why the broken `go run`
   fallback never showed up in CI.
-- `go/checker/go.mod` declares `go 1.25.0`, but the local toolchain is go1.24.7. Go's toolchain
-  directive takes care of that through the proxy, and the Go tests passed in this environment.
+- `go/checker/go.mod` declares `go 1.25.0`, but the local toolchain is go1.24.7. With
+  `GOTOOLCHAIN=auto`, Go fetched `golang.org/toolchain@v0.0.1-go1.25.0.linux-amd64` into the module
+  cache, and `go version` inside `go/checker` reports go1.25.0. A machine that can't download
+  toolchains would need go1.25 installed.
 - The other skips come from optional extras that `.[dev]` doesn't install: semgrep, scipy,
   beniget, tree-sitter, gudhi, and java/TLA+.
