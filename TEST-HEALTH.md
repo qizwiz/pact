@@ -59,3 +59,33 @@ Skipped (48, all `skipif` / `importorskip` on optional tools that `.[dev]` doesn
 | 2 | `test_tda.py` | gudhi not installed |
 | 1 | `test_package_imports.py` | scipy not installed |
 | 1 | `test_specgen.py` | java / tla2tools.jar not available |
+
+## AFTER (`d5f31ac` + BEFORE record + cherry-picked `e62c63d`)
+
+Same venv and command as BEFORE.
+
+| collected | passed | failed | error | skipped | xfail |
+|----------:|-------:|-------:|------:|--------:|------:|
+| 936 | **888** | 0 | 0 | 48 | 0 |
+
+`888 passed, 48 skipped, 8 warnings in 205.62s (0:03:25)`, exit 0.
+
+**Before → after:** passed 884 → 888 (+4: the four `TestGoCheckerIntegration` tests), failed
+4 → 0, skipped 48 → 48 (same reasons as above), collected 936 → 936. No tests were added or removed.
+
+No test was deleted, skipped, or xfailed to move a number:
+`git diff d5f31ac -- 'test_*.py' conftest.py pytest.ini` is empty. The only code change is
+`go_checker.py`.
+
+### Still failing
+
+None.
+
+## Notes (not changed here)
+
+- CI's `ci.yml` passes `--ignore=test_go_checker.py`, which is why the broken `go run`
+  fallback never showed up in CI.
+- `go/checker/go.mod` declares `go 1.25.0`, but the local toolchain is go1.24.7. Go's toolchain
+  directive takes care of that through the proxy, and the Go tests passed in this environment.
+- The other skips come from optional extras that `.[dev]` doesn't install: semgrep, scipy,
+  beniget, tree-sitter, gudhi, and java/TLA+.
